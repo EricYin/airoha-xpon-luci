@@ -1,5 +1,5 @@
 #!/bin/sh
-# xpon-iptv.sh —— IPTV 组播配置后端（结合 SDK gpon_igmp / ecnt_igmp）
+# xpon-iptv.sh —— IPTV 组播配置后端
 #
 # 数据源：xpon.iptv.*（LuCI 业务页写入）
 #   vlan          IPTV 业务 VLAN（联通 3169）
@@ -9,12 +9,12 @@
 #                 MULTCAST_SNOOPING_MODE=0 / CONTROL_MODE=1，proxy 需真机验证映射）
 #   igmp_version  2 | 3（每业务口 igmp_set_ver）
 #   igmp_fastleave 0|1（每业务口 igmp_set_fastleave）
-#   iptv_port     绑定 LAN 口（SDK xPONIGMP_PORT_ETH_START=1，默认 port 1~4
+#   iptv_port     绑定 LAN 口（默认 port 1~4
 #                 对应 eth0.1~eth0.4；XG2010G 实际 LAN 口为 eth0.4/5/7，
 #                 port 号需真机用 igmp_get_portvlan_id 验证）
 #   stb_port      专口透传（由 hotplug 25-iptv-port 处理，本脚本不重复）
 #
-# 安全：全部命令静默（> /dev/null 2>&1）；igmp_del_mulvlan 先删旧值再 add，
+# 安全：全部命令静默（> /dev/null 2>&1）；mvlan del 先删旧值再 add，
 # 避免重复登记同组播 VLAN；xpon_app/业务页保存时调用。
 
 IGMP=/userfs/bin/xponigmpcmd
@@ -35,8 +35,8 @@ port=$(uci -q get xpon.iptv.iptv_port)
 
 # 1) 组播 VLAN 登记表：先清旧值再登记新值（幂等且不堆积）
 if [ -n "$mvid" ] && [ "$mvid" -ge 1 ] 2>/dev/null && [ "$mvid" -le 4094 ] 2>/dev/null; then
-	$IGMP igmp_del_mulvlan "$mvid" >/dev/null 2>&1
-	$IGMP igmp_add_mulvlan "$mvid" >/dev/null 2>&1
+	$IGMP mvlan del "$mvid" >/dev/null 2>&1
+	$IGMP mvlan add "$mvid" >/dev/null 2>&1
 fi
 
 # 2) 组播转发模式：0=Snooping（默认），1=Control（Proxy 语义，需真机验证）
@@ -46,7 +46,7 @@ case "$igmp" in
 	proxy)    $IGMP igmp_set_fwdmode 1 >/dev/null 2>&1 ;;
 esac
 
-# 3) 业务口参数：绑定口（iptv_port）或 SDK 默认 uni port 1
+# 3) 业务口参数：绑定口（iptv_port）或默认 UNI port 1
 for p in ${port:-1}; do
 	case "$p" in
 		''|*[!0-9]*) continue ;;

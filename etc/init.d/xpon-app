@@ -9,10 +9,16 @@ STOP=89
 
 start() {
 	[ -f /etc/config/xpon ] || return 0
+	# 先抵消 S00xponconfig 的认证覆盖（-z $gponauth 笔误），再下发
+	/usr/bin/xpon-apply.sh restore-auth
 	/usr/bin/xpon-apply.sh auth
 	/usr/bin/xpon-apply.sh mac
 	/usr/bin/xpon-apply.sh leds
 	/usr/bin/xpon-apply.sh iptv
+	# 组播 M-VLAN 白名单重放（网络 wan_vlan 段，内存表重启丢失）
+	/usr/bin/xpon-mvlan.sh
+	# 刷新“驱动实际登记”快照（后台，供 LuCI 只读展示）
+	/usr/bin/xpon-mvlan-snap.sh >/dev/null 2>&1 &
 	[ "$(uci -q get xpon.fallback.enable)" = "1" ] && /usr/bin/xpon-fallback.sh &
 }
 

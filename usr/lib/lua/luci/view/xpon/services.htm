@@ -1,200 +1,27 @@
-<%+header%>
-<script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
+<%+header%><script src="<%=resource%>/view/xpon.js"></script>
+<style>.svc-toolbar{display:flex;justify-content:space-between;align-items:center;margin:8px 0}.svc-switch{padding:10px 0}.svc-dialog{border:1px solid #ccd3da;padding:12px;margin:8px 0;background:#f8fafb}.svc-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}.svc-fields label{display:flex;flex-direction:column;gap:4px}.xpon-mcast-badge{display:inline-block;padding:2px 8px;border-radius:3px;font-weight:600}.xpon-mcast-ok{color:#237804;background:#f6ffed;border:1px solid #b7eb8f}.xpon-mcast-warn{color:#ad6800;background:#fffbe6;border:1px solid #ffe58f}.xpon-mcast-err{color:#a8071a;background:#fff1f0;border:1px solid #ffa39e}.xpon-toggle{position:relative;display:inline-block;width:42px;height:22px}.xpon-toggle input{opacity:0;width:0;height:0}.xpon-toggle span{position:absolute;inset:0;background:#9aa4ad;border-radius:11px;cursor:pointer}.xpon-toggle span:before{content:'';position:absolute;width:18px;height:18px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}.xpon-toggle input:checked+span{background:#237804}.xpon-toggle input:checked+span:before{transform:translateX(20px)}</style>
+<% local m=multicast or {} %><h2 name="content">PON 设置 - 业务</h2>
+<% if saved then %><div class="alert-message">配置已提交，PON 网络正在完整重载。</div><% end %>
+<% if err=='vlan_duplicate' then %><div class="alert-message error">相同 VLAN ID 绝对禁止保存。</div><% elseif err then %><div class="alert-message error">保存失败：<%=err%></div><% end %>
+<form method="post" action="save" id="pon-vlan-form" onsubmit="return xponServicesCheck(this)"><input type="hidden" name="token" value="<%=token%>"/><input type="hidden" name="page" value="services"/><input type="hidden" id="vlan_count" name="vlan_count" value="<%=#services%>"/>
+<fieldset class="cbi-section"><legend>PON 业务 VLAN</legend><div class="svc-toolbar"><span>接口创建为 <code>pon.&lt;VLAN ID&gt;</code></span><button type="button" class="cbi-button cbi-button-add" onclick="xponVlanAdd()">添加 VLAN</button></div>
+<table class="cbi-section-table"><thead><tr><th>VLAN ID</th><th>接口</th><th>优先级</th><th>备注</th><th>操作</th></tr></thead><tbody id="pon-vlan-body">
+<% for i,s in ipairs(services) do local n=i-1 %><tr class="pon-vlan-row" data-index="<%=n%>"><td><input class="cbi-input-text svc-vlan-input" type="number" min="1" max="4094" name="vlan_<%=n%>_id" value="<%=s.vlan_id%>" required/></td><td><code>pon.<%=s.vlan_id%></code><% if s.runtime then %> <small>运行中</small><% end %></td><td><select name="vlan_<%=n%>_priority"><% for p=0,7 do %><option value="<%=p%>"<% if s.priority==tostring(p) then %> selected<% end %>><%=p%></option><% end %></select></td><td><input class="cbi-input-text" name="vlan_<%=n%>_remark" value="<%=s.remark%>" placeholder="仅用于 LuCI 显示"/></td><td><input type="hidden" name="vlan_<%=n%>_deleted" value="0"/><button type="button" class="cbi-button cbi-button-remove" onclick="xponVlanDelete(this)">删除</button></td></tr><% end %>
+</tbody></table><p class="cbi-value-description">VLAN 范围 1-4094，不允许 0、4095 或重复 VID。优先级通过 <code>vconfig set_egress_map/set_ingress_map</code> 应用。</p>
 
-<h2 name="content">XG2010G PON — 业务 Services</h2>
-<br />
+</fieldset><div class="cbi-page-actions"><button type="submit" class="cbi-button cbi-button-apply">保存并重载 PON 网络</button></div></form>
 
-<% if saved then %>
-	<div class="alert-message">已保存并应用：network 已重载，netifd 引擎已重建 pon.&lt;vid&gt; 子接口与 WAN 接口。</div>
-<% end %>
-<% if err then %>
-	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（VLAN 1~4094；MTU 576~9600；PPPoE 需要账号）。</div>
-<% end %>
-
-<div class="alert-message">
-	国内 ISP 标准：<b>INTERNET=PPPoE 拨号</b>、<b>IPTV=PPPoE/IPoE 拨号</b>（可单独 VLAN 或指定 LAN 口透传）、
-	<b>VOICE=静态/DHCP</b>、TR069=管理通道。<br />
-	红线：HGU 不整桥（payload 一律 routed，不进 br-lan）；IPTV STB 自带 3169 标签，禁止在 LAN 侧二次打标；
-	同一 VLAN 不能配给两个业务；保存前先清旧规则再重建（防风暴/防封号）。
-</div>
-
-<form class="cbi-map" method="post" action="save" onsubmit="return xponServicesCheck(this)">
-	<input type="hidden" name="token" value="<%=token%>" />
-	<input type="hidden" name="page" value="services" />
-
-<%
-for _, svc in ipairs(services) do
-	local id = svc.id
-	local v = svc.v
-%>
-	<fieldset class="cbi-section">
-		<legend><%=svc.name%>（<%=id%>）</legend>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="<%=id%>_enable">启用</label>
-			<div class="cbi-value-field">
-				<input type="checkbox" id="<%=id%>_enable" name="<%=id%>_enable" value="1"<% if v.enable == "1" then %> checked="checked"<% end %> class="cbi-input-checkbox" />
-				<div class="cbi-value-description">关闭后删除对应 wan_vlan 段与接口，避免旧规则残留。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="<%=id%>_vlan">业务 VLAN</label>
-			<div class="cbi-value-field">
-				<input type="number" id="<%=id%>_vlan" name="<%=id%>_vlan" class="cbi-input-text" min="1" max="4094" value="<%=v.vlan%>" />
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="<%=id%>_pbit">802.1p</label>
-			<div class="cbi-value-field">
-				<select id="<%=id%>_pbit" name="<%=id%>_pbit" class="cbi-input-select">
-<% for p = 0, 7 do %>
-					<option value="<%=p%>"<% if v.pbit == tostring(p) then %> selected="selected"<% end %>><%=p%></option>
-<% end %>
-				</select>
-				<div class="cbi-value-description">TR069=7，VOICE=0，INTERNET/IPTV 按省份（多数 0/4）。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="<%=id%>_mtu">MTU</label>
-			<div class="cbi-value-field">
-				<input type="number" id="<%=id%>_mtu" name="<%=id%>_mtu" class="cbi-input-text" min="576" max="9600" value="<%=v.mtu%>" />
-				<div class="cbi-value-description">PPPoE 载荷 1500 → 接口 MTU 1492；TR069/VOICE=1500。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="<%=id%>_proto">拨号/获取方式</label>
-			<div class="cbi-value-field">
-				<select id="<%=id%>_proto" name="<%=id%>_proto" class="cbi-input-select" onchange="xponProtoToggle(this)">
-					<option value="pppoe"<% if v.proto == "pppoe" then %> selected="selected"<% end %>>PPPoE 拨号</option>
-					<option value="ipoe"<% if v.proto == "ipoe" or v.proto == "dhcp" then %> selected="selected"<% end %>>IPoE / DHCP</option>
-					<option value="static"<% if v.proto == "static" then %> selected="selected"<% end %>>静态 IP</option>
-				</select>
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-pppoe">
-			<label class="cbi-value-title" for="<%=id%>_username">PPPoE 账号</label>
-			<div class="cbi-value-field">
-				<input type="text" id="<%=id%>_username" name="<%=id%>_username" class="cbi-input-text" value="<%=v.username%>" autocomplete="username" />
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-pppoe">
-			<label class="cbi-value-title" for="<%=id%>_password">PPPoE 密码</label>
-			<div class="cbi-value-field">
-				<input type="password" id="<%=id%>_password" name="<%=id%>_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持原值" />
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-static">
-			<label class="cbi-value-title" for="<%=id%>_ipaddr">IP 地址</label>
-			<div class="cbi-value-field">
-				<input type="text" id="<%=id%>_ipaddr" name="<%=id%>_ipaddr" class="cbi-input-text" value="<%=v.ipaddr%>" placeholder="如 23.50.128.40" />
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-static">
-			<label class="cbi-value-title" for="<%=id%>_netmask">子网掩码</label>
-			<div class="cbi-value-field">
-				<input type="text" id="<%=id%>_netmask" name="<%=id%>_netmask" class="cbi-input-text" value="<%=v.netmask%>" placeholder="255.255.240.0" />
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-static">
-			<label class="cbi-value-title" for="<%=id%>_gateway">默认网关</label>
-			<div class="cbi-value-field">
-				<input type="text" id="<%=id%>_gateway" name="<%=id%>_gateway" class="cbi-input-text" value="<%=v.gateway%>" placeholder="23.50.128.1" />
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="<%=id%>_metric">路由优先级 metric</label>
-			<div class="cbi-value-field">
-				<input type="number" id="<%=id%>_metric" name="<%=id%>_metric" class="cbi-input-text" min="0" max="255" value="<%=v.metric%>" />
-			</div>
-		</div>
-
-<% if id == "iptv" then %>
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="iptv_mcast_vlan">组播 VLAN</label>
-			<div class="cbi-value-field">
-				<input type="number" id="iptv_mcast_vlan" name="iptv_mcast_vlan" class="cbi-input-text" min="1" max="4094" value="<%=v.mcast_vlan%>" />
-				<div class="cbi-value-description">
-					联通示例 3799。SDK <code>xponigmpcmd igmp_add_mulvlan</code> 登记 M-VLAN 过滤表；
-					多数省份 OLT 直接在 3169 业务 VLAN 内送组播，<b>此值可留空</b>（仅 STB 直连/单独
-					组播 VLAN 场景才填）。保存后由 <code>xpon-iptv.sh</code> 先删后加，不重复登记。
-				</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="iptv_port">组播绑定 LAN 口（xponigmpcmd port）</label>
-			<div class="cbi-value-field">
-				<input type="text" id="iptv_port" name="iptv_port" class="cbi-input-text" value="<%=v.iptv_port%>" placeholder="如 1 或 '1 2'，留空=SDK 默认 port 1" pattern="[0-9 ]*" />
-				<div class="cbi-value-description">
-					给 SDK 组播引擎登记的 LAN 口（<code>igmp_add_portvlan / igmp_set_func / igmp_set_ver</code>）。
-					SDK 默认 port 1~4 = eth0.1~eth0.4；XG2010G 实际 LAN 口是 eth0.4/5/7，
-					<b>port 号请先用状态页 igmp_get_portvlan_id 真机验证</b>。多个口用空格分隔。
-				</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="iptv_stb_port">IPTV 专口透传</label>
-			<div class="cbi-value-field">
-				<input type="text" id="iptv_stb_port" name="iptv_stb_port" class="cbi-input-text" value="<%=v.stb_port%>" placeholder="留空=路由拨号；如 eth0.5 或 lan2" pattern="(eth[0-9.]+|lan[1-4])?" />
-				<div class="cbi-value-description">STB 自带标签 PPPoE/IPoE 拨号时，把该口从 br-lan 摘出并桥到 pon.&lt;vlan&gt;（hotplug 25-iptv-port 生效）。不确定透传方式请留空。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="iptv_igmp">组播模式</label>
-			<div class="cbi-value-field">
-				<select id="iptv_igmp" name="iptv_igmp" class="cbi-input-select">
-					<option value="snooping"<% if v.igmp == "snooping" then %> selected="selected"<% end %>>Snooping</option>
-					<option value="proxy"<% if v.igmp == "proxy" then %> selected="selected"<% end %>>Proxy</option>
-					<option value="off"<% if v.igmp == "off" then %> selected="selected"<% end %>>关闭</option>
-				</select>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="iptv_igmp_version">IGMP 版本</label>
-			<div class="cbi-value-field">
-				<select id="iptv_igmp_version" name="iptv_igmp_version" class="cbi-input-select">
-					<option value="2"<% if v.igmp_version == "2" then %> selected="selected"<% end %>>V2</option>
-					<option value="3"<% if v.igmp_version == "3" then %> selected="selected"<% end %>>V3</option>
-				</select>
-				<div class="cbi-value-description">运营商要求组播 Proxy V2（<code>igmp_set_ver &lt;port&gt; 2</code>）。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="iptv_igmp_fastleave">IGMP 快速离开</label>
-			<div class="cbi-value-field">
-				<input type="checkbox" id="iptv_igmp_fastleave" name="iptv_igmp_fastleave" value="1"<% if v.igmp_fastleave == "1" then %> checked="checked"<% end %> class="cbi-input-checkbox" />
-				<div class="cbi-value-description">频道切换立即离开组（SDK 默认仅 CUC/CT 构建开启，本机建议开启）。</div>
-			</div>
-		</div>
-<% end %>
-	</fieldset>
-<% end %>
-
-	<div class="cbi-page-actions">
-		<input type="submit" class="cbi-button cbi-button-apply" value="保存并应用（重建 VLAN + 重载网络）" />
-		<input type="reset" class="cbi-button cbi-button-reset" value="重置表单" />
-	</div>
-</form>
-
-<script type="text/javascript">
-<%
-for _, svc in ipairs(services) do
-%>
-xponProtoToggle(document.getElementById('<%=svc.id%>_proto'));
-<% end %>
-</script>
+<fieldset class="cbi-section"><legend>组播 VLAN</legend>
+<% if m.ok then %><div class="alert-message">组播 VLAN 操作成功，驱动状态已刷新。</div><% end %>
+<% if m.error then %><div class="alert-message error">组播 VLAN 操作失败：<%=m.error%></div><% end %>
+<table class="cbi-section-table"><thead><tr><th>组播 VLAN ID</th><th>绑定接口</th><th>组播状态</th><th>绑定开关</th><th>操作</th></tr></thead><tbody>
+<% if #(m.rows or {}) == 0 then %><tr><td colspan="5" class="xpon-na">未配置组播 VLAN</td></tr><% end %>
+<% for _,r in ipairs(m.rows or {}) do local state=r.bound and '已绑定' or (r.state=='registered' and '已注册未绑定' or '异常'); local cls=r.bound and 'ok' or (r.state=='registered' and 'warn' or 'err') %>
+<tr><td><code><%=r.vlan_id%></code></td><td><% if r.interface_vid~='' then %><code>pon.<%=r.interface_vid%></code>（UNI <%=r.port%>）<% else %><span class="xpon-na">未配置</span><% end %></td><td><span class="xpon-mcast-badge xpon-mcast-<%=cls%>"><%=state%></span></td><td>
+<form method="post" action="multicast" style="display:inline"><input type="hidden" name="token" value="<%=token%>"/><input type="hidden" name="op" value="bind"/><input type="hidden" name="vlan_id" value="<%=r.vlan_id%>"/><input type="hidden" name="bound" value="<%=r.bound and '0' or '1'%>"/><label class="xpon-toggle" title="切换端口 VLAN 绑定"><input type="checkbox"<%=r.bound and ' checked' or ''%> onchange="this.form.submit()"/><span></span></label></form>
+</td><td><form method="post" action="multicast" style="display:inline" onsubmit="return confirm('删除将执行 mvlan del 和 port vlan del，是否继续？')"><input type="hidden" name="token" value="<%=token%>"/><input type="hidden" name="op" value="delete"/><input type="hidden" name="vlan_id" value="<%=r.vlan_id%>"/><button type="submit" class="cbi-button cbi-button-remove">删除</button></form></td></tr>
+<% end %></tbody></table>
+<form method="post" action="multicast" class="svc-dialog"><input type="hidden" name="token" value="<%=token%>"/><input type="hidden" name="op" value="add"/><div class="svc-fields"><label>添加组播 VLAN<input type="number" min="1" max="4094" name="vlan_id" required/></label><label>绑定 PON 接口<select name="interface_vid" required><% for _,s in ipairs(services or {}) do %><option value="<%=s.vlan_id%>">pon.<%=s.vlan_id%></option><% end %></select></label><label>IGMP 版本<select name="igmp_version"><option value="2">v2</option><option value="3">v3</option></select></label><label>UNI 端口索引<input type="number" min="1" max="4" name="port" value="1" required/></label></div><div style="margin-top:10px"><button type="submit" class="cbi-button cbi-button-add">添加</button></div></form>
+</fieldset>
+<template id="pon-vlan-template"><tr class="pon-vlan-row" data-index="__N__"><td><input class="cbi-input-text svc-vlan-input" type="number" min="1" max="4094" name="vlan___N___id" required/></td><td><code>pon.&lt;VID&gt;</code></td><td><select name="vlan___N___priority"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select></td><td><input class="cbi-input-text" name="vlan___N___remark" placeholder="仅用于 LuCI 显示"/></td><td><input type="hidden" name="vlan___N___deleted" value="0"/><button type="button" class="cbi-button cbi-button-remove" onclick="xponVlanDelete(this)">删除</button></td></tr></template>
 <%+footer%>

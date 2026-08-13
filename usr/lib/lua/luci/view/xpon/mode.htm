@@ -1,78 +1,234 @@
 <%+header%>
 <script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
+<style type="text/css">.xpon-na{color:#999;font-style:italic;}</style>
 
-<h2 name="content">XG2010G PON — 模式 Mode（HGU / SFU × GPON / XGPON / XGSPON）</h2>
+<h2 name="content">PON设置 — 模式 Mode（SFU / HGU 形态）</h2>
 <br />
+<%
+local function esc(s)
+	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+%>
 
 <% if saved then %>
 	<div class="alert-message">已写入 U-Boot env（<code>onu_type</code>）。<b>重启后生效</b>——如未重启，本次仍是旧模式。</div>
 <% end %>
-<% if err == "hex" then %>
-	<div class="alert-message error">保存被拒绝：onu_type 需为 2 位十六进制（如 62 / 72）。</div>
+<% if v.pending then %>
+	<div class="alert-message">env 中 <code>onu_type=<%=v.env%></code> 与本次启动 <code><%=v.cmdline%></code> 不一致——<b>重启后才会切换到 env 值</b>。重启前请确认 <code>bootargs</code> 里的 onu_type 也已同步（<code>fw_printenv bootargs | grep onu_type</code>），否则重启后仍会是旧值。</div>
+<% end %>
+<% if v.tech_mismatch then %>
+	<div class="alert-message error">认证页 PON 技术 <code><%=v.pon_tech%></code>（<%=v.pon_tech_name%>）与当前运行模式 <code><%=v.run_tech%></code> 不一致。
+		<b>若是有意切换</b>（如 XGPON → XGSPON），保存后重启生效；<b>若是误选</b>，请先到“认证 → PON 模式”改正再保存。</div>
+<% end %>
+<% if err == "low" then %>
+	<div class="alert-message error">保存被拒绝：请选择 SFU 或 HGU 形态。</div>
 <% elseif err == "apply" then %>
 	<div class="alert-message error">写入失败：检查 fw_setenv 是否可用（uboot-envtools / fw_env.config）。</div>
 <% end %>
+<% if v.vlan_msg then %>
+	<div class="alert-message<% if not v.vlan_ok then %> error<% end %>"><%=v.vlan_msg%></div>
+<% end %>
 
-<div class="alert-message">
-	PON 模式来自 U-Boot 的 <code>onu_type</code> bootarg 字节（不是 DTS），
-	SDK <code>dump_pon_type_mode_info</code> 官方解码：
-	<b>bits[1:0]</b> = ONU 类型（<code>1</code>=SFU、<code>2</code>=HGU），
-	<b>bits[7:4]</b> = PON 模式（<code>1</code>=GPON、<code>6</code>=XGPON、<code>7</code>=XGSPON）。<br />
-	<b>本机 TTL 当前 <code>61</code> = SFU+XGPON</b>（uboot 仓库 README“61=HGU”是错的）；
-	出厂 <code>71</code> = SFU+XGSPON。联通 HGU 家庭网关请用 <code>62</code>（HGU+XGPON）。<br />
-	<b>SFU 变体（x1/x0）没有 VEIP / LAN 侧组播引擎</b>，SDK 组播收敛只对 HGU(<code>0x2</code>) 生效
-	（<code>ra_nat_multicast.c</code>），IPTV 组播请务必选 <code>6x/7x</code> 中的 HGU 值。<br />
-	<b>必须与 OLT 端口能力一致</b>，切换后需重启并重新注册（LOID 已持久化，netifd 重启自动重放）。
-	选错可能导致无法 O5；恢复方法：U-Boot 提示符下 <code>setenv onu_type 62; saveenv; reset</code>。
-</div>
+<form class="cbi-map" method="get" action="mode" onsubmit="return xponModeCheck(this)" id="modeform">
+	<input type="hidden" name="token" value="<%=token%>" />
+	<input type="hidden" name="page" value="mode" />
+
+	<fieldset class="cbi-section">
+		<legend>目标形态（选择前置；写入 U-Boot env，重启后生效）</legend>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="onu_low">ONU 形态</label>
+			<div class="cbi-value-field">
+<%
+local sel_hex = v.forms[1].hex
+for _, f in ipairs(v.forms) do
+	if v.cur_low == f.low then sel_hex = f.hex end
+end
+%>
+				<select id="onu_low" name="onu_low" class="cbi-input-select" onchange="xponModePreview()">
+<%
+for _, f in ipairs(v.forms) do
+%>
+					<option value="<%=f.low%>" data-hex="<%=f.hex%>"<% if v.cur_low == f.low then %> selected="selected"<% end %>><%=f.name%></option>
+<% end %>
+				</select>
+				<div class="cbi-value-description">
+					<b>HGU（家庭网关）</b>= 国内运营商默认，LAN 桥接 + VEIP + IPTV 组播完整；
+					<b>SFU（桥形态）</b>= 纯桥/实验，无 VEIP/组播引擎。
+					当前技术 <code><%=v.pon_tech%></code>（<%=v.pon_tech_name%>）→ 将写入
+					<code>onu_type=<span id="onu-type-preview"><%=sel_hex%></span></code>。</div>
+			</div>
+		</div>
+
+		<div class="cbi-page-actions">
+			<button type="submit" name="apply" value="reboot" class="cbi-button cbi-button-apply">保存并重启（生效）</button>
+			<button type="submit" name="apply" value="save" class="cbi-button cbi-button-reset">仅保存到 env（不重启）</button>
+		</div>
+		<div class="cbi-value-description">
+			保存写入 U-Boot env，重启后生效。
+		</div>
+	</fieldset>
+</form>
+
+<fieldset class="cbi-section">
+	<legend>PON VLAN 接口（pon.&lt;VID&gt;，802.1q 拨号子接口）</legend>
+	<div class="cbi-value-description" style="margin-bottom:8px;">
+		创建 VLAN 用于 <b>PPPoE / 静态 IP 拨号</b>（上网 / IPTV / VOIP / TR069 各业务一个子接口）。
+		添加后自动写入 <code>/etc/config/network</code>（wan_vlan 段，重启自动重建），无需单独勾选。
+	</div>
+
+	<table class="cbi-section-table">
+		<tr><th>接口</th><th>VID</th><th>Pbit</th><th>组播 M-VLAN</th><th>操作</th></tr>
+<% if #(v.vlans or {}) == 0 then %>
+		<tr><td colspan="5" class="xpon-na">（暂无 pon.&lt;VID&gt; 子接口——业务拨号前需先添加）</td></tr>
+		<tr><td colspan="5">
+			<details open="open">
+				<summary>读取诊断（若确实建过接口仍显示“暂无”，把这段原样贴给排查）</summary>
+				<pre style="background:#f5f5f5;border:1px solid #ddd;border-radius:3px;padding:8px;font-size:12px;overflow:auto;">vlan_diag: <%=esc(v.vlan_diag or "")%>
+
+== cat /proc/net/vlan/config ==
+<%=esc(v.vlan_cfg_raw or "")%>
+
+== ls -1 /proc/net/vlan/ ==
+<%=esc(v.vlan_dir_raw or "")%>
+
+== ifconfig (pon/eth) ==
+<%=esc(v.vlan_if_raw or "")%>
+
+== ip -o link show type vlan ==
+<%=esc(v.vlan_ip_raw or "")%></pre>
+			</details>
+		</td></tr>
+<% else %>
+<% for _, vl in ipairs(v.vlans or {}) do %>
+		<tr>
+			<td><code>pon.<%=vl.vid%></code></td>
+			<td><%=vl.vid%></td>
+			<td><%=vl.pbit%></td>
+			<td><% if vl.mcast ~= "" then %><code><%=vl.mcast%></code><% else %><span class="xpon-na">—</span><% end %></td>
+			<td>
+				<form method="get" action="mode" onsubmit="return xponPonVlanCheck(this)" style="display:inline;margin:0;">
+					<input type="hidden" name="token" value="<%=token%>" />
+					<input type="hidden" name="page" value="mode" />
+					<input type="hidden" name="ponvlan_op" value="del" />
+					<input type="hidden" name="ponvlan_vid" value="<%=vl.vid%>" />
+					<input type="hidden" name="ponvlan_del_persist" value="1" />
+					<button type="submit" class="cbi-button cbi-button-reset" style="margin-left:6px;">删除</button>
+				</form>
+			</td>
+		</tr>
+<% end %>
+<% end %>
+	</table>
+
+	<div class="cbi-value-description" style="margin:6px 0;">
+		驱动实际登记组播 M-VLAN（读快照 <code>/tmp/xpon-mvlan-act.txt</code>，开机 / 添加删除组播后由后台刷新）：
+		<% if #(v.mvlan_act or {}) == 0 then %>
+			<span class="xpon-na">无登记 / 快照未刷新（HGU 形态 + IGMP 引擎就绪后，添加组播或重启即显示）</span>
+		<% else %>
+			<code><%=table.concat(v.mvlan_act, ", ")%></code>
+		<% end %>
+	</div>
+
+	<div class="cbi-value-description" style="margin:8px 0 4px;"><b>已持久化配置（<code>wan_vlan</code>，重启自动重建）</b></div>
+	<table class="cbi-section-table">
+		<tr><th>VID</th><th>payload</th><th>组播 M-VLAN</th><th>当前接口</th><th>操作</th></tr>
+<% if #(v.persisted or {}) == 0 then %>
+		<tr><td colspan="5" class="xpon-na">（无持久化配置——添加 pon.&lt;VID&gt; 后自动写入此表）</td></tr>
+<% else %>
+<% for _, pd in ipairs(v.persisted or {}) do %>
+		<tr>
+			<td><code><%=pd.vid%></code></td>
+			<td><code><%=pd.payload%></code></td>
+			<td><% if pd.mcast ~= "" then %><code><%=pd.mcast%></code><% else %><span class="xpon-na">—</span><% end %></td>
+			<td><% if pd.present then %>已创建 <code>pon.<%=pd.vid%></code><% else %><span class="xpon-na">未创建（重启后由 netifd 建）</span><% end %></td>
+			<td>
+				<form method="get" action="mode" onsubmit="return xponPonVlanCheck(this)" style="display:inline;margin:0;">
+					<input type="hidden" name="token" value="<%=token%>" />
+					<input type="hidden" name="page" value="mode" />
+					<input type="hidden" name="ponvlan_op" value="del" />
+					<input type="hidden" name="ponvlan_vid" value="<%=pd.vid%>" />
+					<input type="hidden" name="ponvlan_del_persist" value="1" />
+					<button type="submit" class="cbi-button cbi-button-reset" style="margin-left:6px;">删除</button>
+				</form>
+			</td>
+		</tr>
+<% end %>
+<% end %>
+	</table>
+
+	<form class="cbi-map" method="get" action="mode" onsubmit="return xponPonVlanCheck(this)" id="modevlanform" style="margin-top:10px;">
+		<input type="hidden" name="token" value="<%=token%>" />
+		<input type="hidden" name="page" value="mode" />
+		<input type="hidden" name="ponvlan_op" value="add" />
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="ponvlan_vid">VLAN ID</label>
+			<div class="cbi-value-field">
+				<input type="text" id="ponvlan_vid" name="ponvlan_vid" class="cbi-input-text" maxlength="4" placeholder="如 466" pattern="[0-9]{1,4}" list="ponvlan_vid_list" />
+				<datalist id="ponvlan_vid_list">
+<% for _, vl in ipairs(v.vlans or {}) do %>
+					<option value="<%=vl.vid%>">已有接口 pon.<%=vl.vid%></option>
+<% end %>
+<% for _, pd in ipairs(v.persisted or {}) do %>
+					<option value="<%=pd.vid%>">已持久化 VID <%=pd.vid%>（wan_vlan）</option>
+<% end %>
+				</datalist>
+				<div class="cbi-value-description">1~4094。例：上网 466、IPTV 3169、VOICE 3040、TR069 3600。</div>
+			</div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="ponvlan_pbit">Pbit（802.1p，可选）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="ponvlan_pbit" name="ponvlan_pbit" class="cbi-input-text" maxlength="1" value="0" placeholder="0" pattern="[0-7]" />
+				<div class="cbi-value-description">0~7，对应 <code>vconfig set_egress_map / set_ingress_map</code>；多数业务 0 即可。</div>
+			</div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="ponvlan_mvids">组播 M-VLAN（可选）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="ponvlan_mvids" name="ponvlan_mvids" class="cbi-input-text" maxlength="40" placeholder="如 3799，多个用逗号分隔" pattern="[0-9][0-9,，]*" />
+				<div class="cbi-value-description">
+					绑定 IPTV 组播 VLAN（联通示例 3799）。登记 <code>xponigmpcmd mvlan add</code> 白名单
+					（<code>xpon_ani_pass_mvlan</code> 要求下行组播帧 VID 已登记，否则丢帧），重启由 xpon-app 自动重放。
+					仅 HGU 形态 + IGMP Snooping/Proxy 生效（SFU 无组播引擎）。
+				</div>
+			</div>
+		</div>
+		<div class="cbi-page-actions">
+			<button type="submit" class="cbi-button cbi-button-apply">添加 pon.&lt;VID&gt;</button>
+		</div>
+	</form>
+
+	<details style="margin:10px 0;">
+		<summary>PON VLAN 读取诊断（原始输出，排查读不出 pon.&lt;VID&gt; 时贴这里）</summary>
+		<div class="cbi-value-description" style="margin:4px 0;">诊断：<code><%=esc(v.vlan_diag or "（无）")%></code></div>
+		<pre style="background:#f5f5f5;border:1px solid #ddd;border-radius:3px;padding:8px;font-size:12px;overflow:auto;">== cat /proc/net/vlan/config ==
+<%=esc(v.vlan_cfg_raw or "")%>
+
+== ls -1 /proc/net/vlan/ ==
+<%=esc(v.vlan_dir_raw or "")%>
+
+== ifconfig (pon/eth) ==
+<%=esc(v.vlan_if_raw or "")%>
+
+== ip -o link show type vlan ==
+<%=esc(v.vlan_ip_raw or "")%>
+
+== cat /tmp/xpon-mvlan-act.txt（组播登记快照） ==
+<%=esc(v.mvlan_cnt_raw or "（未生成）")%></pre>
+	</details>
+</fieldset>
 
 <fieldset class="cbi-section">
 	<legend>当前状态（只读）</legend>
 	<table class="cbi-section-table">
 		<tr><th>项目</th><th>值</th></tr>
-		<tr><td>env 中 onu_type（fw_printenv）</td><td><code><%=v.env ~= "" and v.env or "N/A（未设置）"%></code></td></tr>
-		<tr><td>本次启动生效（/proc/cmdline）</td><td><code><%=v.cmdline ~= "" and v.cmdline or "N/A"%></code></td></tr>
-		<tr><td>驱动模式（sys_xpon_mode）</td><td><code><%=v.sys_mode ~= "" and v.sys_mode or "N/A"%></code>（1=GPON，6=XGPON，7=XGSPON；<code>61</code>=SFU+XGPON）</td></tr>
-		<tr><td>已加载 xpon 模块</td><td><code><%=v.ko ~= "" and v.ko or "N/A"%></code>（xpon.ko=GPON，xpon_10g.ko=XGPON/XGSPON）</td></tr>
-		<tr><td>BBF247 标志（/proc/gpon 与 /proc/xgpon）</td><td><code>gpon=<%=v.bbf_gpon ~= "" and v.bbf_gpon or "N/A"%> xgpon=<%=v.bbf_xgpon ~= "" and v.bbf_xgpon or "N/A"%></code></td></tr>
+		<tr><td>当前运行</td><td><b><%=v.run_dec.form%></b>（<%=v.run_dec.form_cn%>）+ <b><%=v.run_dec.tech%></b>（<%=v.run_dec.tech_cn%>）</td></tr>
+		<tr><td>env 目标</td><td><b><%=v.env_dec.form%></b>（<%=v.env_dec.form_cn%>）+ <b><%=v.env_dec.tech%></b>（<%=v.env_dec.tech_cn%>）<% if v.pending then %>（<b>重启后才生效</b>）<% else %>（与当前运行一致）<% end %></td></tr>
+		<tr><td>PON 技术（认证页设置）</td><td><code><%=v.pon_tech%></code>（<%=v.pon_tech_name%>）</td></tr>
+		<tr><td>BBF247 标志</td><td><% if (v.bbf_gpon ~= "" and v.bbf_gpon ~= "0") or (v.bbf_xgpon ~= "" and v.bbf_xgpon ~= "0") then %>已启用（BBF247 脚本模式）<% else %>未启用（普通模式）<% end %></td></tr>
 	</table>
 </fieldset>
 
-<form class="cbi-map" method="post" action="save" onsubmit="return xponModeCheck(this)">
-	<input type="hidden" name="token" value="<%=token%>" />
-	<input type="hidden" name="page" value="mode" />
-
-	<fieldset class="cbi-section">
-		<legend>目标模式（写入 U-Boot env，重启后生效）</legend>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="onu_type">选择模式</label>
-			<div class="cbi-value-field">
-				<select id="onu_type" name="onu_type" class="cbi-input-select">
-<%
-local cur = v.cmdline ~= "" and v.cmdline or v.env
-for _, m in ipairs(v.modes) do
-%>
-					<option value="<%=m.id%>"<% if cur == m.id then %> selected="selected"<% end %>><%=m.name%> — <%=m.desc%></option>
-<% end %>
-				</select>
-				<div class="cbi-value-description">当前值自动选中（按 cmdline 优先）。HGU 值 = 6x/7x 末尾为 2；SFU = 末尾 1。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="custom_onu_type">自定义值（可选，覆盖下拉）</label>
-			<div class="cbi-value-field">
-				<input type="text" id="custom_onu_type" name="custom_onu_type" class="cbi-input-text" maxlength="2" pattern="[0-9a-fA-F]{2}" placeholder="如 62 / 72" />
-				<div class="cbi-value-description">2 位十六进制。仅当你知道确切含义时使用。</div>
-			</div>
-		</div>
-
-		<div class="cbi-page-actions">
-			<button type="submit" name="apply" value="save" class="cbi-button cbi-button-apply">仅保存到 env（不重启）</button>
-			<button type="submit" name="apply" value="reboot" class="cbi-button cbi-button-reset">保存并重启（生效）</button>
-		</div>
-	</fieldset>
-</form>
-
+<script type="text/javascript">xponModePreview(); xponModeCaptureInit(document.getElementById('modeform'));</script>
 <%+footer%>

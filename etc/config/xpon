@@ -1,12 +1,21 @@
 # xpon-luci 私有配置（认证厂商信息 / 业务模板 / LED / 回退规则）
-# 由 LuCI “XG2010G PON” 菜单读写；network.xpon_auth / wan_vlan 由 netifd 引擎原生读取
+# 由 LuCI “PON设置” 菜单读写；network.xpon_auth / wan_vlan 由 netifd 引擎原生读取
 
 config auth 'device'
 	option vendor_id 'MTKG'
-	option equipment_id ''
-	option onu_version ''
+	option equipment_id 'KE2.119.241R2B'
+	option onu_version 'RP0201'
 	option omcc_version '0xA3'
 	option pon_mac ''
+	option auth_type_g 'LOID'
+	option loid ''
+	option loid_password ''
+	option def_sn ''
+	option sn ''
+	option xpon_sn_auth_type 'ascii'
+	option sn_regid_password ''
+	option epon_oui ''
+	option epon_ven_info ''
 
 config service 'tr069'
 	option enable '0'

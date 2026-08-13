@@ -1,46 +1,95 @@
 <%+header%>
+<% local atg = (v.auth_type_g or ""):lower() %>
+<%
+local rt = v.rt or {}
+local function esc(s)
+	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+%>
 <script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
 
-<h2 name="content">XG2010G PON — 认证 Auth</h2>
+<h2 name="content">PON设置 — 认证 Auth</h2>
 <br />
 
 <% if saved then %>
 	<div class="alert-message">已保存并应用：认证参数已下发，OMCI 已重启。若未上线请核对 LOID/SN 是否与装维工单一致。</div>
 <% end %>
 <% if err then %>
-	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；SN 12 字节；密码格式 ascii/hex 二选一）。</div>
+	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；PON SN 为 12 字节完整 SN 或 8 位 hex 后半段；PON Vendor ID 4 字节 ASCII；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；EPON 模式 PON MAC 必填）。</div>
 <% end %>
 
-<form class="cbi-map" method="post" action="save" onsubmit="return xponAuthCheck(this)">
+<form class="cbi-map" method="post" action="save" onsubmit="return xponAuthCheck(this)" id="authform">
 	<input type="hidden" name="token" value="<%=token%>" />
 	<input type="hidden" name="page" value="auth" />
 
 	<fieldset class="cbi-section">
-		<legend>GPON 认证（network.xpon_auth，netifd 引擎开机自动重放）</legend>
-
+		<legend>设备形态（重启后生效）</legend>
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="pon_mode">PON 模式</label>
+			<label class="cbi-value-title" for="onu_low">ONU 形态</label>
 			<div class="cbi-value-field">
-				<select id="pon_mode" name="pon_mode" class="cbi-input-select">
-					<option value="GPON"<% if v.pon_mode == "GPON" then %> selected="selected"<% end %>>GPON</option>
+				<select id="onu_low" name="onu_low" class="cbi-input-select">
+					<option value="2"<% if tostring(v.onu_low) == "2" then %> selected="selected"<% end %>>HGU（家庭网关）</option>
+					<option value="1"<% if tostring(v.onu_low) == "1" then %> selected="selected"<% end %>>SFU（桥形态）</option>
 				</select>
 				<div class="cbi-value-description">
-					XG2010G 固定 <b>GPON</b>（GPON/XGPON/XGSPON 均用 GPON 系 OMCI 管理）。
-					EPON：SDK 有代码（<code>epon_oam</code> + <code>oamcfgCmd set loid0</code>），
-					但依赖 <code>eth0.1~eth0.4</code> 与独立 EPON 驱动，XG2010G 无 EPON PHY、
-					厂商迁移未启用，<b>不可选</b>。物理模式切换在“模式”页（<code>onu_type</code>）。
+					HGU 支持 LAN 桥接、VEIP 与 IPTV 组播；SFU 用于纯桥接。
+					保存时按下方 PON 模式组合写入 <code>onu_type</code>，重启后生效。
+					当前启动：<code><%=esc(v.onu_type_run ~= "" and v.onu_type_run or "未知")%></code>；env：<code><%=esc(v.onu_type_env ~= "" and v.onu_type_env or "未知")%></code>。
 				</div>
 			</div>
 		</div>
+	</fieldset>
+
+	<fieldset class="cbi-section">
+		<legend>PON 认证</legend>
 
 		<div class="cbi-value">
+			<label class="cbi-value-title" for="pon_tech">PON 模式</label>
+			<div class="cbi-value-field">
+				<select id="pon_tech" name="pon_tech" class="cbi-input-select" onchange="xponAuthToggle()">
+<%
+local ptech = v.pon_tech or "GPON"
+for _, t in ipairs(v.pon_techs or {}) do
+%>
+					<option value="<%=t.id%>"<% if ptech == t.id then %> selected="selected"<% end %>><%=t.name%></option>
+<% end %>
+				</select>
+				<div class="cbi-value-description">GPON/XGPON/XGSPON → OMCI（可选 SN/LOID）；10G-EPON → OAM（固定 LOID）。</div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-gpon-auth">
 			<label class="cbi-value-title" for="auth_type_g">认证方式</label>
 			<div class="cbi-value-field">
 				<select id="auth_type_g" name="auth_type_g" class="cbi-input-select" onchange="xponAuthToggle()">
-					<option value="sn"<% if v.auth_type_g == "sn" then %> selected="selected"<% end %>>SN（默认）</option>
-					<option value="loid"<% if v.auth_type_g == "loid" then %> selected="selected"<% end %>>LOID（推荐，重启自动重放）</option>
+					<option value="loid"<% if atg == "loid" then %> selected="selected"<% end %>>LOID（大多数：电信/联通）</option>
+					<option value="password"<% if atg == "password" then %> selected="selected"<% end %>>PASSWORD（移动：SN+Password 认证）</option>
 				</select>
-				<div class="cbi-value-description">LOID 失效根因：出厂 <b>auth_type_g=sn</b>，netifd 重启只重放 SN。联通 LOID 认证务必选 LOID。</div>
+				<div class="cbi-value-description"><b>LOID（默认）</b>：电信/联通；<b>PASSWORD</b>：移动，填「PON SN」+「REG_ID」。出厂固件开机可能打回 sn，保存一次即持久化。</div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title">EPON 认证方式</label>
+			<div class="cbi-value-field">
+				<span class="cbi-input-text" style="padding:4px 8px;">LOID（固定）</span>
+				<div class="cbi-value-description">EPON/XEPON 仅支持 LOID。</div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title" for="epon_oui">EPON OUI（必填，EPON 模式）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="epon_oui" name="epon_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_oui%>" placeholder="089AC7" pattern="[0-9A-Fa-f]{6}" />
+				<div class="cbi-value-description">3 字节 hex；= PON MAC 前 3 字节，填了 MAC 自动提取。</div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title" for="epon_ven_info">EPON 厂商信息（可选）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="epon_ven_info" name="epon_ven_info" class="cbi-input-text" maxlength="8" value="<%=v.epon_ven_info%>" placeholder="4D150100" pattern="[0-9A-Fa-f]{8}" />
+				<div class="cbi-value-description">4 字节 hex，可选。</div>
 			</div>
 		</div>
 
@@ -48,7 +97,7 @@
 			<label class="cbi-value-title" for="loid">LOID</label>
 			<div class="cbi-value-field">
 				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 H060161032" />
-				<div class="cbi-value-description">≤24 字节，运营商提供。</div>
+				<div class="cbi-value-description">≤24 字节，运营商提供。当前系统生效：<code><%=esc(rt.loid ~= "" and rt.loid or "（空）")%></code></div>
 			</div>
 		</div>
 
@@ -56,23 +105,8 @@
 			<label class="cbi-value-title" for="loid_password">LOID 密码</label>
 			<div class="cbi-value-field">
 				<input type="password" id="loid_password" name="loid_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持原值" />
-				<div class="cbi-value-description">多数省份为空。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-loid">
-			<label class="cbi-value-title" for="def_sn">默认 SN（LOID 模式）</label>
-			<div class="cbi-value-field">
-				<input type="text" id="def_sn" name="def_sn" class="cbi-input-text" maxlength="12" value="<%=v.def_sn%>" />
-				<div class="cbi-value-description">LOID 模式下 SDK 仍会先 set sn 再 set loid，保持出厂值即可。</div>
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-sn">
-			<label class="cbi-value-title" for="sn">PON SN</label>
-			<div class="cbi-value-field">
-				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 ABCD12345678" />
-				<div class="cbi-value-description">12 字节。注意：S00xponconfig 会用 /tmp/dsd.env 的 fsan 覆盖此值，xpon-app(START=11) 会重新写回。</div>
+				<div class="cbi-value-description">多数省份为空；LOID 密码 ≠ GPON PWD，别互相抄。<br />
+					当前已配置：<code><%=v.loid_password_set and "已设置（不显示明文）" or "（空）"%></code></div>
 			</div>
 		</div>
 
@@ -80,73 +114,134 @@
 			<label class="cbi-value-title" for="xpon_sn_auth_type">SN 密码格式</label>
 			<div class="cbi-value-field">
 				<select id="xpon_sn_auth_type" name="xpon_sn_auth_type" class="cbi-input-select">
-					<option value="ascii"<% if v.xpon_sn_auth_type == "ascii" then %> selected="selected"<% end %>>ascii</option>
-					<option value="hex"<% if v.xpon_sn_auth_type == "hex" then %> selected="selected"<% end %>>hex</option>
+					<option value="ascii"<% if v.xpon_sn_auth_type == "ascii" then %> selected="selected"<% end %>>ascii（普通密码）</option>
+					<option value="hex"<% if v.xpon_sn_auth_type == "hex" then %> selected="selected"<% end %>>hex（16 进制编码）</option>
+					<option value="regid"<% if v.xpon_sn_auth_type == "regid" then %> selected="selected"<% end %>>regid（注册码，旧配置兼容）</option>
 				</select>
+				<div class="cbi-value-description">仅 GPON SN 认证用（政企专线 SN+PWD）；ascii/hex 是同一密码的两种写法。移动 Password 用下方 REG_ID。</div>
 			</div>
 		</div>
 
 		<div class="cbi-value xpon-sn">
-			<label class="cbi-value-title" for="sn_ascii_password">SN 密码 (ascii)</label>
+			<label class="cbi-value-title" for="sn_password">SN 密码</label>
 			<div class="cbi-value-field">
-				<input type="password" id="sn_ascii_password" name="sn_ascii_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持原值" />
+				<input type="password" id="sn_password" name="sn_password" class="cbi-input-text" autocomplete="new-password" maxlength="36" placeholder="留空 = 保持原值（按上面格式填）" />
+				<div class="cbi-value-description">ascii ≤10 / hex ≤20；留空不改。家宽一般不需要 PWD，政企专线可能开启 SN+PWD。<br />
+					当前已配置：<code><%=esc(v.sn_password ~= "" and "已设置（不显示明文）" or "（空）")%></code></div>
 			</div>
 		</div>
 
-		<div class="cbi-value xpon-sn">
-			<label class="cbi-value-title" for="sn_hex_password">SN 密码 (hex)</label>
+		<div class="cbi-value xpon-regid">
+			<label class="cbi-value-title" for="reg_id">REG_ID（移动 Password 注册码）</label>
 			<div class="cbi-value-field">
-				<input type="password" id="sn_hex_password" name="sn_hex_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持原值" />
+				<input type="password" id="reg_id" name="reg_id" class="cbi-input-text" autocomplete="new-password" maxlength="36" placeholder="留空 = 保持原值" />
+				<div class="cbi-value-description">仅移动 Password 认证需要，只填这一个（≤36 位），旧猫认证页「密码/REG_ID」直接抄。<br />
+					当前已配置：<code><%=esc(v.reg_id ~= "" and "已设置（不显示明文）" or "（空）")%></code></div>
 			</div>
 		</div>
 	</fieldset>
 
 	<fieldset class="cbi-section">
-		<legend>厂商信息（/etc/config/xpon，netifd 不管理，由 xpon-app 下发）</legend>
+		<legend>厂商信息</legend>
+		<div class="alert-message error">
+			<b>改猫风险提示：</b>PON Vendor ID 与 PON SN 共同构成 ONU 身份。错误值可能导致 OLT 拒绝注册；
+			Vendor ID 必须与完整 SN 的前 4 个 ASCII 字节完全一致。修改前请记录当前生效值。
+		</div>
 
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="vendor_id">厂商 ID</label>
+			<label class="cbi-value-title" for="vendor_id">PON Vendor ID（厂商代码，4 字节 ASCII）</label>
 			<div class="cbi-value-field">
-				<input type="text" id="vendor_id" name="vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.vendor_id%>" placeholder="MTKG" />
-				<div class="cbi-value-description">omcicfgCmd set vendor_id（4 字节）。</div>
+				<input type="text" id="vendor_id" name="vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.vendor_id%>" list="vendor_id_list" placeholder="MTKG" pattern="[A-Za-z0-9]{4}" />
+				<datalist id="vendor_id_list">
+					<option value="HWTC">HWTC 华为</option>
+					<option value="ZTEG">ZTEG 中兴</option>
+					<option value="FHTT">FHTT 烽火</option>
+					<option value="ALCL">ALCL 诺基亚贝尔</option>
+					<option value="SCOM">SCOM 天邑</option>
+					<option value="SKYW">SKYW 创维</option>
+					<option value="MTKG">MTKG（出厂默认）</option>
+				</datalist>
+				<div class="cbi-value-description">4 字节 ASCII，须与 PON SN 前 4 位完全匹配；填 8 位 hex SN 时自动用它拼完整 SN。修改 Vendor ID 时必须同步修改 PON SN。<br />
+				当前系统生效：<code><%=esc(rt.vendor_id ~= "" and rt.vendor_id or "（空）")%></code></div>
 			</div>
 		</div>
 
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="equipment_id">设备 ID</label>
+			<label class="cbi-value-title" for="sn">PON SN</label>
 			<div class="cbi-value-field">
-				<input type="text" id="equipment_id" name="equipment_id" class="cbi-input-text" value="<%=v.equipment_id%>" placeholder="KE2.119.241R2B" />
+				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 ABCD12345678" />
+				<div class="cbi-value-description">12 字节（厂商代码 4 + 后半段 8）；填 8 位 hex 后半段时自动拼接当前 Vendor ID。保存前会再次核对两者一致性。</div>
+				<div class="cbi-value-description">当前系统生效：<code><%=esc(rt.sn ~= "" and rt.sn or "（空）")%></code></div>
 			</div>
 		</div>
 
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="onu_version">ONU 版本</label>
+			<label class="cbi-value-title" for="equipment_id">设备标识（Equipment ID，必填）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="equipment_id" name="equipment_id" class="cbi-input-text" maxlength="20" required value="<%=v.equipment_id%>" list="equipment_id_list" placeholder="KE2.119.241R2B" pattern="[\x20-\x7E]{1,20}" />
+				<datalist id="equipment_id_list">
+					<option value="HG8145V5-B3">华为 HG8145V5-B3</option>
+					<option value="F673A-V2.0">中兴 F673A-V2.0</option>
+					<option value="HG6201T-R2B">烽火 HG6201T-R2B</option>
+					<option value="TEWA-882G-RP0201">天邑 TEWA-882G-RP0201</option>
+					<option value="CGN-3421-A2">剑桥 CGN-3421-A2</option>
+				</datalist>
+				<div class="cbi-value-description">1~20 个可打印 ASCII；通过 <code>omcicfgCmd set equipmentId</code> 写入。目标编码规则为“[MAC地址前6位]-[批次2位][省份3位][MAC地址12位]”，完整展开为 24 字符，超过设备 OMCI 字段的 20 字节上限，不能直接写入，需由运营商提供 20 字节编码规则。出厂默认 KE2.119.241R2B。<br />
+					当前系统生效：<code><%=esc(rt.equipment_id ~= "" and rt.equipment_id or "（空）")%></code></div>
+			</div>
+		</div>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="onu_version">ONU 版本（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="onu_version" name="onu_version" class="cbi-input-text" value="<%=v.onu_version%>" placeholder="RP0201" />
+				<div class="cbi-value-description">可选，模拟原猫软件版本；出厂默认 RP0201；不填 = 保持原值。<br />
+					当前系统生效：<code><%=esc(rt.onu_version ~= "" and rt.onu_version or "（空）")%></code></div>
 			</div>
 		</div>
 
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="omcc_version">OMCC 版本</label>
+			<label class="cbi-value-title" for="omcc_version">OMCC 版本（可选，芯片能力标识）</label>
 			<div class="cbi-value-field">
-				<input type="text" id="omcc_version" name="omcc_version" class="cbi-input-text" value="<%=v.omcc_version%>" placeholder="0xA3" />
+				<input type="text" id="omcc_version" name="omcc_version" class="cbi-input-text" value="<%=v.omcc_version%>" list="omcc_version_list" placeholder="0xA3" pattern="0[xX][0-9a-fA-F]{1,2}" />
+				<datalist id="omcc_version_list">
+					<option value="0xA3">0xA3（出厂默认）</option>
+					<option value="0xA4">0xA4</option>
+					<option value="0xB0">0xB0</option>
+				</datalist>
+				<div class="cbi-value-description">芯片能力标识，出厂默认 0xA3；典型 0xA3 / 0xA4 / 0xB0，通常无需改动。<br />
+					当前系统生效：<code><%=esc(rt.omcc_version ~= "" and rt.omcc_version or "（空）")%></code></div>
 			</div>
 		</div>
 
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="pon_mac">PON MAC（留空=默认）</label>
+			<label class="cbi-value-title" for="omci_spec_ver">OMCI 协议版本（specVer，只读兼容项）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="omci_spec_ver" name="omci_spec_ver" class="cbi-input-text" value="<%=v.omci_spec_ver%>" placeholder="留空 = 不下发" pattern="(0[xX][0-9a-fA-F]{1,2}|[0-9]{1,3})" />
+				<div class="cbi-value-description">
+					设备以 0~255 保存该字段；仅在设备明确要求时填写，留空保持当前值。<br />
+					当前系统生效：<code><%=esc(rt.spec_ver ~= "" and rt.spec_ver or "（空/未下发）")%></code>
+				</div>
+			</div>
+		</div>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="pon_mac">PON MAC（可修改；EPON 必填）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="pon_mac" name="pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.pon_mac%>" placeholder="如 00:AA:BB:01:23:40" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">默认取 /tmp/dsd.env 的 wan_mac；此处可显式覆盖（ifconfig pon hw ether）。</div>
+				<div class="cbi-value-description">可修改；EPON 模式必填。留空 = 取 dsd wan_mac。</div>
+				<div class="cbi-value-description">当前系统生效：<code><%=esc(rt.pon_mac ~= "" and rt.pon_mac or "（空）")%></code>（留空时默认 <code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code>）</div>
 			</div>
 		</div>
+
 	</fieldset>
 
 	<div class="cbi-page-actions">
-		<input type="submit" class="cbi-button cbi-button-apply" value="保存并应用（下发 + 重启 OMCI）" />
+		<input type="submit" class="cbi-button cbi-button-apply" value="保存并应用（下发 + 整机重启）" />
 		<input type="reset" class="cbi-button cbi-button-reset" value="重置表单" />
+		<div class="cbi-value-description" style="margin-top:8px;">保存后先通过设备命令回读校验，再整机重启；当前 LuCI 会话会失效，约 2-3 分钟后需重新登录。密码留空 = 保持原值。</div>
 	</div>
 </form>
 
-<script type="text/javascript">xponAuthToggle();</script>
+<script type="text/javascript">xponAuthToggle(); xponAuthCaptureInit(document.getElementById('authform')); xponAuthLiveCheck();</script>
 <%+footer%>
