@@ -1,0 +1,78 @@
+<%+header%>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
+
+<h2 name="content">XG2010G PON — 模式 Mode（HGU / SFU × GPON / XGPON / XGSPON）</h2>
+<br />
+
+<% if saved then %>
+	<div class="alert-message">已写入 U-Boot env（<code>onu_type</code>）。<b>重启后生效</b>——如未重启，本次仍是旧模式。</div>
+<% end %>
+<% if err == "hex" then %>
+	<div class="alert-message error">保存被拒绝：onu_type 需为 2 位十六进制（如 62 / 72）。</div>
+<% elseif err == "apply" then %>
+	<div class="alert-message error">写入失败：检查 fw_setenv 是否可用（uboot-envtools / fw_env.config）。</div>
+<% end %>
+
+<div class="alert-message">
+	PON 模式来自 U-Boot 的 <code>onu_type</code> bootarg 字节（不是 DTS），
+	SDK <code>dump_pon_type_mode_info</code> 官方解码：
+	<b>bits[1:0]</b> = ONU 类型（<code>1</code>=SFU、<code>2</code>=HGU），
+	<b>bits[7:4]</b> = PON 模式（<code>1</code>=GPON、<code>6</code>=XGPON、<code>7</code>=XGSPON）。<br />
+	<b>本机 TTL 当前 <code>61</code> = SFU+XGPON</b>（uboot 仓库 README“61=HGU”是错的）；
+	出厂 <code>71</code> = SFU+XGSPON。联通 HGU 家庭网关请用 <code>62</code>（HGU+XGPON）。<br />
+	<b>SFU 变体（x1/x0）没有 VEIP / LAN 侧组播引擎</b>，SDK 组播收敛只对 HGU(<code>0x2</code>) 生效
+	（<code>ra_nat_multicast.c</code>），IPTV 组播请务必选 <code>6x/7x</code> 中的 HGU 值。<br />
+	<b>必须与 OLT 端口能力一致</b>，切换后需重启并重新注册（LOID 已持久化，netifd 重启自动重放）。
+	选错可能导致无法 O5；恢复方法：U-Boot 提示符下 <code>setenv onu_type 62; saveenv; reset</code>。
+</div>
+
+<fieldset class="cbi-section">
+	<legend>当前状态（只读）</legend>
+	<table class="cbi-section-table">
+		<tr><th>项目</th><th>值</th></tr>
+		<tr><td>env 中 onu_type（fw_printenv）</td><td><code><%=v.env ~= "" and v.env or "N/A（未设置）"%></code></td></tr>
+		<tr><td>本次启动生效（/proc/cmdline）</td><td><code><%=v.cmdline ~= "" and v.cmdline or "N/A"%></code></td></tr>
+		<tr><td>驱动模式（sys_xpon_mode）</td><td><code><%=v.sys_mode ~= "" and v.sys_mode or "N/A"%></code>（1=GPON，6=XGPON，7=XGSPON；<code>61</code>=SFU+XGPON）</td></tr>
+		<tr><td>已加载 xpon 模块</td><td><code><%=v.ko ~= "" and v.ko or "N/A"%></code>（xpon.ko=GPON，xpon_10g.ko=XGPON/XGSPON）</td></tr>
+		<tr><td>BBF247 标志（/proc/gpon 与 /proc/xgpon）</td><td><code>gpon=<%=v.bbf_gpon ~= "" and v.bbf_gpon or "N/A"%> xgpon=<%=v.bbf_xgpon ~= "" and v.bbf_xgpon or "N/A"%></code></td></tr>
+	</table>
+</fieldset>
+
+<form class="cbi-map" method="post" action="save" onsubmit="return xponModeCheck(this)">
+	<input type="hidden" name="token" value="<%=token%>" />
+	<input type="hidden" name="page" value="mode" />
+
+	<fieldset class="cbi-section">
+		<legend>目标模式（写入 U-Boot env，重启后生效）</legend>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="onu_type">选择模式</label>
+			<div class="cbi-value-field">
+				<select id="onu_type" name="onu_type" class="cbi-input-select">
+<%
+local cur = v.cmdline ~= "" and v.cmdline or v.env
+for _, m in ipairs(v.modes) do
+%>
+					<option value="<%=m.id%>"<% if cur == m.id then %> selected="selected"<% end %>><%=m.name%> — <%=m.desc%></option>
+<% end %>
+				</select>
+				<div class="cbi-value-description">当前值自动选中（按 cmdline 优先）。HGU 值 = 6x/7x 末尾为 2；SFU = 末尾 1。</div>
+			</div>
+		</div>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="custom_onu_type">自定义值（可选，覆盖下拉）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="custom_onu_type" name="custom_onu_type" class="cbi-input-text" maxlength="2" pattern="[0-9a-fA-F]{2}" placeholder="如 62 / 72" />
+				<div class="cbi-value-description">2 位十六进制。仅当你知道确切含义时使用。</div>
+			</div>
+		</div>
+
+		<div class="cbi-page-actions">
+			<button type="submit" name="apply" value="save" class="cbi-button cbi-button-apply">仅保存到 env（不重启）</button>
+			<button type="submit" name="apply" value="reboot" class="cbi-button cbi-button-reset">保存并重启（生效）</button>
+		</div>
+	</fieldset>
+</form>
+
+<%+footer%>

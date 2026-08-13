@@ -1,0 +1,70 @@
+#!/bin/sh
+# xpon-luci 首次安装/升级兜底（uci-defaults 只跑一次，随后自删）
+
+# 1) /etc/config/xpon 缺失时重建（防误删后 LuCI 报错）
+X=/etc/config/xpon
+if [ ! -f "$X" ]; then
+	cat > "$X" <<'EOF'
+config auth 'device'
+	option vendor_id 'MTKG'
+	option equipment_id ''
+	option onu_version ''
+	option omcc_version '0xA3'
+	option pon_mac ''
+
+config service 'tr069'
+	option enable '0'
+	option vlan '3600'
+	option pbit '7'
+	option mtu '1500'
+	option proto 'static'
+
+config service 'internet'
+	option enable '1'
+	option vlan '466'
+	option pbit '0'
+	option mtu '1492'
+	option proto 'pppoe'
+	option ip6proto 'dhcpv6'
+
+config service 'iptv'
+	option enable '1'
+	option vlan '3169'
+	option mcast_vlan '3799'
+	option pbit '4'
+	option mtu '1500'
+	option proto 'ipoe'
+	option igmp 'snooping'
+	option igmp_version '2'
+	option iptv_port ''
+	option igmp_fastleave '1'
+
+config service 'voice'
+	option enable '1'
+	option vlan '3040'
+	option pbit '0'
+	option mtu '1500'
+	option proto 'static'
+	option metric '10'
+
+config led 'behaviour'
+	option fix_sts_green '1'
+
+config fallback 'rules'
+	option enable '0'
+	option gem_base '10'
+EOF
+fi
+
+# 2) 确保 network.xpon_auth 存在（S00xponconfig 也会建，这里只补缺省键、不覆盖已有值）
+uci -q get network.xpon_auth >/dev/null || uci set network.xpon_auth='xpon_auth'
+uci -q get network.xpon_auth.pon_mode >/dev/null || uci set network.xpon_auth.pon_mode='GPON'
+uci -q get network.xpon_auth.auth_type_g >/dev/null || uci set network.xpon_auth.auth_type_g='loid'
+uci -q get network.xpon_auth.xpon_sn_auth_type >/dev/null || uci set network.xpon_auth.xpon_sn_auth_type='ascii'
+uci -q get network.xpon_auth.sn >/dev/null || uci set network.xpon_auth.sn='NoNumber'
+uci -q get network.xpon_auth.def_sn >/dev/null || uci set network.xpon_auth.def_sn='NoNumber'
+uci -q get network.xpon_auth.loid >/dev/null || uci set network.xpon_auth.loid=''
+uci -q get network.xpon_auth.loid_password >/dev/null || uci set network.xpon_auth.loid_password=''
+uci commit network
+
+exit 0

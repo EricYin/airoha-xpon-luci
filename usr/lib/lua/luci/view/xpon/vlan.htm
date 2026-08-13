@@ -1,0 +1,78 @@
+<%+header%>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
+<style type="text/css">pre.xpon-dump{background:#f5f5f5;border:1px solid #ddd;border-radius:3px;padding:8px;font-size:12px;line-height:1.4;overflow:auto;white-space:pre-wrap;word-break:break-all;}</style>
+
+<h2 name="content">XG2010G PON — VLAN 表 / 回退规则</h2>
+<br />
+
+<% if act == "save" then %>
+	<div class="alert-message">设置已保存，network 已重载。</div>
+<% elseif act == "fallback" then %>
+	<div class="alert-message">设置已保存，并已执行“补全缺失规则”（仅缺才补，已存在即跳过）。</div>
+<% elseif act == "refresh" then %>
+	<div class="alert-message">已刷新（只读回显，未做任何修改）。</div>
+<% end %>
+
+<div class="alert-message">
+	只读回显当前 GEM/ponvlan 表。<b>不要</b>手动重复添加 OLT 已下发的规则——
+	重复/错配规则会形成风暴，可能被运营商封锁。回退守护默认关闭，仅在 OLT 不下发规则时开启。
+</div>
+
+<form class="cbi-map" method="post" action="save">
+	<input type="hidden" name="token" value="<%=token%>" />
+	<input type="hidden" name="page" value="vlan" />
+
+	<fieldset class="cbi-section">
+		<legend>回退规则守护（xpon.fallback）</legend>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="fallback_enable">启用回退补表</label>
+			<div class="cbi-value-field">
+				<input type="checkbox" id="fallback_enable" name="fallback_enable" value="1"<% if fallback_enable == "1" then %> checked="checked"<% end %> class="cbi-input-checkbox" />
+				<div class="cbi-value-description">开启后 xpon-app 启动时/每 60s 检查一次；规则已存在（含 OLT 下发）则跳过，只加不删。</div>
+			</div>
+		</div>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="gem_base">手工规则起始 gemPort</label>
+			<div class="cbi-value-field">
+				<input type="number" id="gem_base" name="gem_base" class="cbi-input-text" min="10" max="1023" value="<%=gem_base%>" />
+				<div class="cbi-value-description">≥10，避开 OLT 自动分配的 gemPort（默认 10 起，顺序递增）。</div>
+			</div>
+		</div>
+
+		<div class="cbi-page-actions">
+			<button type="submit" name="action" value="save" class="cbi-button cbi-button-apply">保存开关</button>
+			<button type="submit" name="action" value="fallback" class="cbi-button cbi-button-reset">保存并立即补全缺失规则</button>
+			<button type="submit" name="action" value="refresh" class="cbi-button cbi-button-neutral">仅刷新</button>
+		</div>
+	</fieldset>
+</form>
+
+<%
+local function esc(s)
+	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+%>
+
+<fieldset class="cbi-section">
+	<legend>GEM 上行映射（gponmapcmd showGemPortRule）</legend>
+	<pre class="xpon-dump"><%=esc(gem_up)%></pre>
+</fieldset>
+
+<fieldset class="cbi-section">
+	<legend>GEM 下行映射（gponmapcmd showDownRule）</legend>
+	<pre class="xpon-dump"><%=esc(gem_down)%></pre>
+</fieldset>
+
+<fieldset class="cbi-section">
+	<legend>PON VLAN 规则（ponvlancmd showrule 1/3/4）</legend>
+	<pre class="xpon-dump"><%=esc(ponvlan)%></pre>
+</fieldset>
+
+<fieldset class="cbi-section">
+	<legend>桥接现状（brctl show）</legend>
+	<pre class="xpon-dump"><%=esc(bridge)%></pre>
+</fieldset>
+
+<%+footer%>

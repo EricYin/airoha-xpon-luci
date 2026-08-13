@@ -1,0 +1,16 @@
+<%+header%>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
+<style type="text/css">pre.xpon-status{background:#f5f5f5;border:1px solid #ddd;border-radius:3px;padding:8px;font-size:12px;line-height:1.4;overflow:auto;min-height:200px;}</style>
+
+<h2 name="content">XG2010G PON — 状态 Status</h2>
+<br />
+
+<div class="alert-message">
+	每 5 秒自动刷新（只读）。O5 = 已注册上线；如果 O5 但无业务，检查“认证 / 业务 / VLAN”页配置与 OLT 下发的 GEM 表。
+</div>
+
+<div class="cbi-section">
+	<pre id="xpon-status-dump" class="xpon-status">加载中…</pre>
+</div>
+
+<%+footer%>

@@ -1,0 +1,22 @@
+#!/bin/sh /etc/rc.common
+# xpon-luci 开机重放（在 S00xponconfig 之后）：
+#   * 重放 LOID/SN/厂商信息（S00 会用 /tmp/dsd.env 的 fsan 覆盖 network.xpon_auth.sn）
+#   * 覆盖 PON MAC（可选）
+#   * LED 修复（sts_green 常亮 / 上网灯触发器）
+#   * 可选：规则守护进程（xpon.fallback.enable=1 时启动）
+START=11
+STOP=89
+
+start() {
+	[ -f /etc/config/xpon ] || return 0
+	/usr/bin/xpon-apply.sh auth
+	/usr/bin/xpon-apply.sh mac
+	/usr/bin/xpon-apply.sh leds
+	/usr/bin/xpon-apply.sh iptv
+	[ "$(uci -q get xpon.fallback.enable)" = "1" ] && /usr/bin/xpon-fallback.sh &
+}
+
+stop() {
+	killall xpon-fallback.sh 2>/dev/null
+	killall xpon-fallback 2>/dev/null
+}
