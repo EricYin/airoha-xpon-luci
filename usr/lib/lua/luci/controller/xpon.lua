@@ -1377,7 +1377,12 @@ local function save_services(fv)
 		end
 		local opts = { device=ifdev, proto=row.proto, auto=row.enable, mtu=row.mtu, xpon_managed="1", xpon_service=row.key }
 		if row.mode == "routed" then wan_ifaces[#wan_ifaces + 1] = iface end
-		if row.proto == "pppoe" then opts.username=row.username; opts.ipv6="auto" end
+		if row.proto == "pppoe" then
+			opts.username=row.username; opts.ipv6="auto"
+			-- netifd defaults to "pppoe-<UCI interface>". xpon_<service_key>
+			-- can exceed Linux IFNAMSIZ (15 visible bytes), so use the unique VID.
+			opts.pppname="pppoe-pon" .. row.vlan_id
+		end
 		if row.proto == "static" then opts.ipaddr=row.ipaddr; opts.netmask=row.netmask; opts.gateway=row.gateway end
 		u:section("network", "interface", iface, opts)
 		local password = row.password ~= "" and row.password or old_password[row.key] or old_password_iface[iface]

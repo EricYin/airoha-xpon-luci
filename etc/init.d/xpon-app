@@ -7,9 +7,34 @@
 START=11
 STOP=89
 
+normalize_pppoe_names() {
+	local meta iface vid expected current changed=0
+
+	# Upgrade existing managed services before S20network starts. Without an
+	# explicit pppname, netifd builds pppoe-xpon_<key>, which may be truncated
+	# by Linux and leave the logical interface permanently pending.
+	for meta in $(uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=xpon_service$/\1/p"); do
+		[ "$(uci -q get "network.$meta.xpon_managed")" = 1 ] || continue
+		iface=$(uci -q get "network.$meta.interface")
+		vid=$(uci -q get "network.$meta.vlan_id")
+		case "$vid" in ''|*[!0-9]*) continue ;; esac
+		[ "$vid" -ge 1 ] 2>/dev/null && [ "$vid" -le 4094 ] 2>/dev/null || continue
+		[ -n "$iface" ] || continue
+		[ "$(uci -q get "network.$iface.xpon_managed")" = 1 ] || continue
+		[ "$(uci -q get "network.$iface.proto")" = pppoe ] || continue
+		expected="pppoe-pon$vid"
+		current=$(uci -q get "network.$iface.pppname")
+		[ "$current" = "$expected" ] && continue
+		uci set "network.$iface.pppname=$expected" || continue
+		changed=1
+	done
+	[ "$changed" = 0 ] || uci commit network
+}
+
 start() {
 	[ -f /etc/config/xpon ] || [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon
 	[ -f /etc/config/xpon ] || return 0
+	normalize_pppoe_names
 	# preinit 的 axon_platform_manager 缺失时补建 DSD 环境。
 	[ -s /tmp/dsd.env ] || /usr/bin/xpon-dsd-env.sh
 	# 先抵消 S00xponconfig 的认证覆盖，确保 S20network 读取持久认证值。
