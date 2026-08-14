@@ -8,17 +8,15 @@ START=11
 STOP=89
 
 start() {
+	[ -f /etc/config/xpon ] || [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon
 	[ -f /etc/config/xpon ] || return 0
-	# 先抵消 S00xponconfig 的认证覆盖（-z $gponauth 笔误），再下发
+	# preinit 的 axon_platform_manager 缺失时补建 DSD 环境。
+	[ -s /tmp/dsd.env ] || /usr/bin/xpon-dsd-env.sh
+	# 先抵消 S00xponconfig 的认证覆盖，确保 S20network 读取持久认证值。
 	/usr/bin/xpon-apply.sh restore-auth
-	/usr/bin/xpon-apply.sh auth
-	/usr/bin/xpon-apply.sh mac
 	/usr/bin/xpon-apply.sh leds
-	/usr/bin/xpon-apply.sh iptv
-	# 组播 M-VLAN 白名单重放（网络 wan_vlan 段，内存表重启丢失）
-	/usr/bin/xpon-mvlan.sh
-	# 刷新“驱动实际登记”快照（后台，供 LuCI 只读展示）
-	/usr/bin/xpon-mvlan-snap.sh >/dev/null 2>&1 &
+	# vendorId/equipmentId/onuVersion 等只存在共享内存，必须等 OMCI 启动后重放。
+	/usr/bin/xpon-replay.sh >/dev/null 2>&1 &
 	[ "$(uci -q get xpon.fallback.enable)" = "1" ] && /usr/bin/xpon-fallback.sh &
 }
 

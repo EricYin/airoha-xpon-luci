@@ -6,7 +6,7 @@ var xponAuthInit = {};
 function xponAuthCaptureInit(form) {
 	if (!form) return;
 	var fields = ['onu_low', 'pon_tech', 'auth_type_g', 'loid', 'loid_password', 'def_sn', 'sn',
-		'xpon_sn_auth_type', 'sn_password', 'reg_id', 'vendor_id', 'equipment_id', 'onu_version',
+		'xpon_sn_auth_type', 'sn_password', 'reg_id', 'equipment_id', 'onu_version',
 		'omcc_version', 'omci_spec_ver', 'pon_mac', 'epon_oui', 'epon_ven_info'];
 	fields.forEach(function (id) {
 		var el = form.elements[id];
@@ -74,34 +74,17 @@ function xponAuthCheck(form) {
 		alert('EPON/10G-EPON 认证需要填写 LOID');
 		return false;
 	}
-	if ((auth === 'SN' || auth === 'REGID') && form.sn.value.trim().length === 0) {
-		alert('SN 认证需要填写 PON SN');
+	var snv = form.sn.value.trim();
+	if (!epon && snv.length === 0) {
+		alert('GPON/XGPON/XGSPON 需要填写完整 PON SN');
 		return false;
 	}
-	if (auth === 'SN' || auth === 'REGID') {
-		var snv = form.sn.value.trim();
-		if (snv.length !== 12 && !(snv.length === 8 && /^[0-9a-fA-F]+$/.test(snv))) {
-			alert('PON SN 需为 12 字节完整 SN，或 8 位十六进制后半段（保存时自动拼厂商代码）');
-			return false;
-		}
-		if (snv.length === 12 && form.vendor_id.value.trim()) {
-			var vid = form.vendor_id.value.trim().toUpperCase();
-			if (snv.toUpperCase().substring(0, 4) !== vid) {
-				alert('PON Vendor ID（' + vid + '）必须与 PON SN 前 4 位（' + snv.substring(0, 4) + '）完全匹配');
-				return false;
-			}
-		}
-	}
-	if (form.vendor_id.value.trim() && !/^[A-Za-z0-9]{4}$/.test(form.vendor_id.value.trim())) {
-		alert('PON Vendor ID 需为 4 字节 ASCII（如 ZTEG）');
+	if (!epon && !/^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$/.test(snv)) {
+		alert('PON SN 必须是 12 字符：前 4 位厂商代码 + 后 8 位十六进制序列号（如 AXON10503407）');
 		return false;
 	}
-	if (!/^[\x20-\x7E]{1,20}$/.test(form.equipment_id.value.trim())) {
-		alert('设备标识为必填项，须为 1~20 个可打印 ASCII 字符；OMCI Equipment ID 字段不能容纳 24 字符格式');
-		return false;
-	}
-	if (form.omcc_version.value.trim() && !/^0[xX][0-9a-fA-F]{1,2}$/.test(form.omcc_version.value.trim())) {
-		alert('OMCC 版本需为 0x 开头的 1~2 位十六进制（如 0xA3 / 0xA4 / 0xB0）');
+	if (form.equipment_id.value.trim() && !/^[\x20-\x7E]{1,24}$/.test(form.equipment_id.value.trim())) {
+		alert('Equipment ID 非空时须为 1~24 个可打印 ASCII 字符');
 		return false;
 	}
 	if (form.omci_spec_ver.value.trim()) {
@@ -150,9 +133,8 @@ function xponAuthCheck(form) {
 		alert('EPON 厂商信息需为 8 位 16 进制字符（如 4D150100）');
 		return false;
 	}
-	var vendorChanged = xponAuthInit.vendor_id !== undefined && form.vendor_id.value !== xponAuthInit.vendor_id;
 	var snChanged = xponAuthInit.sn !== undefined && form.sn.value !== xponAuthInit.sn;
-	if ((vendorChanged || snChanged) && !confirm('你正在修改 ONU 身份（PON SN / Vendor ID）。错误参数可能导致 OLT 拒绝注册。已确认两者匹配并已记录原值，是否继续？')) {
+	if (snChanged && !confirm('你正在修改 ONU 身份（PON SN，Vendor ID 将取前 4 位）。错误参数可能导致 OLT 拒绝注册。已记录原值，是否继续？')) {
 		return false;
 	}
 	if (!confirm('保存后将立即重启设备，预计耗时 2-3 分钟，是否继续？')) {
@@ -162,35 +144,52 @@ function xponAuthCheck(form) {
 }
 
 function xponAuthLiveCheck() {
-	var vendor=document.getElementById('vendor_id'), sn=document.getElementById('sn'), loid=document.getElementById('loid');
-	if (!vendor || !sn || !loid) return;
+	var sn=document.getElementById('sn'), loid=document.getElementById('loid');
+	if (!sn || !loid) return;
 	function validate() {
-		var v=vendor.value.trim().toUpperCase(), s=sn.value.trim().toUpperCase();
-		var mismatch=s.length===12 && v.length===4 && s.substring(0,4)!==v;
-		vendor.style.borderColor=mismatch?'#d70000':''; sn.style.borderColor=mismatch?'#d70000':'';
-		vendor.setCustomValidity(mismatch?'SN 前 4 位必须与 Vendor ID 一致':'');
-		sn.setCustomValidity(mismatch?'SN 前 4 位必须与 Vendor ID 一致':'');
+		var s=sn.value.trim();
+		var invalid=s.length>0 && !/^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$/.test(s);
+		sn.style.borderColor=invalid?'#d70000':'';
+		sn.setCustomValidity(invalid?'须为 4 位厂商代码 + 8 位十六进制序列号':'');
 		loid.setCustomValidity(new TextEncoder().encode(loid.value).length>24?'LOID 不能超过 24 字节':'');
 	}
-	vendor.addEventListener('input',validate); sn.addEventListener('input',validate); loid.addEventListener('input',validate); validate();
+	sn.addEventListener('input',validate); loid.addEventListener('input',validate); validate();
 }
 
 function xponServicesCheck(form) {
-	var seen = {}, rows = form.querySelectorAll('.pon-vlan-row');
+	var seen = {}, ports = {}, rows = document.querySelectorAll('.pon-vlan-row');
+	function val(idx, name) { var e=form.elements['vlan_'+idx+'_'+name]; return e ? e.value.trim() : ''; }
+	function ipv4(s) { if (!s) return true; var p=s.split('.'); return p.length===4 && p.every(function(x){return /^\d{1,3}$/.test(x)&&+x<=255;}); }
 	for (var i = 0; i < rows.length; i++) {
 		var idx = rows[i].getAttribute('data-index');
 		if (form.elements['vlan_' + idx + '_deleted'].value === '1') continue;
-		var vid = parseInt(form.elements['vlan_' + idx + '_id'].value, 10);
+		var vid = parseInt(val(idx,'id'), 10), mtu=parseInt(val(idx,'mtu'),10);
 		if (!(vid >= 1 && vid <= 4094)) { alert('VLAN ID 必须在 1~4094 之间'); return false; }
 		if (seen[vid]) { alert('相同 VLAN ID 绝对禁止保存'); return false; }
 		seen[vid] = true;
+		if (!(mtu>=576&&mtu<=2000)) { alert('MTU 必须在 576~2000 之间'); return false; }
+		var mode=val(idx,'mode'), proto=val(idx,'proto'), port=val(idx,'lan_port');
+		if (mode==='bridged' && proto!=='none') { alert('桥接业务的协议必须选择“无（桥接）”'); return false; }
+		if (mode==='routed' && proto==='none') { alert('路由业务必须选择 DHCP、PPPoE 或静态 IPv4'); return false; }
+		if (proto==='pppoe' && !val(idx,'username')) { alert('PPPoE 业务必须填写用户名'); return false; }
+		if (proto==='static' && (!val(idx,'ipaddr')||!val(idx,'netmask'))) { alert('静态 IPv4 必须填写地址和子网掩码'); return false; }
+		for (var j=0,names=['ipaddr','netmask','gateway','dns1','dns2'];j<names.length;j++) if(!ipv4(val(idx,names[j]))){alert('IPv4 地址格式错误：'+val(idx,names[j]));return false;}
+		if (port!=='none') { if(mode!=='bridged'){alert('LAN/STB 端口只能绑定到桥接业务');return false;} if(ports[port]){alert(port.toUpperCase()+' 已被其他业务绑定');return false;} ports[port]=true; }
+		var mv=val(idx,'mcast_vlan'); if(mv && (val(idx,'service_type')!=='iptv' || +mv<1 || +mv>4094)){alert('组播 VLAN 只能关联 IPTV 业务，范围 1~4094');return false;}
 	}
-	if (form.multicast_enabled && form.multicast_enabled.checked) { var mv=parseInt(form.multicast_vlan.value,10); if(!(mv>=1&&mv<=4094)){alert('启用组播后必须填写 1~4094 的组播 VLAN');return false;} }
-	return confirm('此操作将重载 PON 网络，可能导致短暂断连，是否继续？');
+	return confirm('将重建所有 xpon_managed=1 的业务配置并重载网络。未受管配置不会修改。\n绑定 LAN/STB 端口可能使该端口暂时断连，是否继续？');
 }
-function xponVlanDelete(btn){if(!confirm('删除该 VLAN 将重载 PON 网络，可能导致短暂断连，是否继续？'))return;var r=btn.closest('tr'),i=r.dataset.index;r.querySelector('[name="vlan_'+i+'_deleted"]').value='1';r.style.display='none';}
-function xponVlanAdd(){var c=document.getElementById('vlan_count'),n=parseInt(c.value,10)||0,t=document.getElementById('pon-vlan-template').innerHTML.replace(/__N__/g,n);document.getElementById('pon-vlan-body').insertAdjacentHTML('beforeend',t);c.value=n+1;}
+function xponVlanDelete(btn){if(!confirm('删除该受管业务及其 device/interface 配置，是否继续？'))return;var r=btn.closest('.pon-vlan-row'),i=r.dataset.index;r.querySelector('[name="vlan_'+i+'_deleted"]').value='1';r.style.display='none';}
+function xponVlanAdd(){var c=document.getElementById('vlan_count'),n=parseInt(c.value,10)||0,t=document.getElementById('pon-vlan-template').innerHTML.replace(/__N__/g,n);document.getElementById('pon-vlan-body').insertAdjacentHTML('beforeend',t);c.value=n+1;xponServiceFields(document.querySelector('.pon-vlan-row[data-index="'+n+'"] select[name$="_mode"]'));}
+function xponServiceFields(el){var row=el&&el.closest('.pon-vlan-row');if(!row)return;var mode=row.querySelector('select[name$="_mode"]').value,proto=row.querySelector('select[name$="_proto"]').value,type=row.querySelector('select[name$="_service_type"]').value;if(mode==='bridged'){row.querySelector('select[name$="_proto"]').value='none';proto='none';}else if(proto==='none'){row.querySelector('select[name$="_proto"]').value='dhcp';proto='dhcp';}row.querySelectorAll('[data-proto]').forEach(function(x){x.style.display=x.getAttribute('data-proto')===proto?'':'none';});row.querySelectorAll('[data-routed]').forEach(function(x){x.style.display=mode==='routed'?'':'none';});row.querySelectorAll('[data-iptv]').forEach(function(x){x.style.display=type==='iptv'?'':'none';});}
 function xponMulticastToggle(cb){document.getElementById('multicast-fields').style.display=cb.checked?'':'none';}
+function xponMulticastControl(form, changed) {
+	if (!form) return;
+	var snooping = form.elements.snooping;
+	var proxy = form.elements.proxy;
+	if (changed === 'proxy' && proxy.checked) snooping.checked = true;
+	if (changed === 'snooping' && !snooping.checked) proxy.checked = false;
+}
 
 // 模式页：预览组合出的 onu_type；重启前二次确认
 var xponModeInit = null;
@@ -254,14 +253,14 @@ function xponPonVlanCheck(form) {
 		for (var i = 0; i < parts.length; i++) {
 			var m = parseInt(parts[i], 10);
 			if (!(m >= 1 && m <= 4094)) {
-				alert('组播 M-VLAN 需为 1~4094 的整数，多个用逗号分隔');
+				alert('组播 VLAN 需为 1~4094 的整数，多个用逗号分隔');
 				return false;
 			}
 		}
 	}
 	return confirm('创建 pon.' + vid + ' 802.1q 接口（Pbit=' + (pbit || '0') + '）？' +
 		'\n将自动写入 network wan_vlan 段（重启后自动重建）。' +
-		(mv ? '\n组播 M-VLAN：' + mv + '（mvlan add 登记）' : '') +
+		(mv ? '\n组播 VLAN：' + mv + '（mvlan add 登记）' : '') +
 		'\n前提：PON 侧 GEM 通路已就绪（OLT 已下发通配规则），否则拨号会 PADO 超时。');
 }
 
@@ -272,6 +271,9 @@ function xponPonVlanCheck(form) {
 	var note = document.getElementById('xpon-status-note');
 	if (!el) return;
 	var url = (window.L && L.url) ? L.url('admin/xpon/status/data') : 'status/data';
+	var detailsUrl = (window.L && L.url) ? L.url('admin/xpon/status/details') : 'status/details';
+	var loading = false;
+	var detailsStarted = false;
 
 	function noteMsg(msg) {
 		if (!note) return;
@@ -285,7 +287,7 @@ function xponPonVlanCheck(form) {
 		});
 	}
 
-	function render(data) {
+	function render(data, includeDetails) {
 		if (data.summary && sum) {
 			var html = '';
 			for (var i = 0; i < data.summary.length; i++) {
@@ -311,7 +313,7 @@ function xponPonVlanCheck(form) {
 			sum.innerHTML = html;
 		}
 		var gv = document.getElementById('xpon-gemvlan');
-		if (gv) {
+		if (includeDetails && gv) {
 			var html = '';
 			if (data.gem_vlan && data.gem_vlan.rows && data.gem_vlan.rows.length) {
 				html = '<fieldset class="cbi-section">' +
@@ -331,7 +333,7 @@ function xponPonVlanCheck(form) {
 			}
 			gv.innerHTML = html;
 		}
-		if (data.sections) {
+		if (includeDetails && data.sections) {
 			var out = [];
 			for (var j = 0; j < data.sections.length; j++) {
 				var s = data.sections[j];
@@ -343,13 +345,17 @@ function xponPonVlanCheck(form) {
 	}
 
 	function load() {
+		if (loading) return;
+		loading = true;
 		var xhr = new XMLHttpRequest();
 		xhr.open('GET', url, true);
-		xhr.timeout = 8000;
+		xhr.timeout = 5000;
 		xhr.onload = function () {
+			loading = false;
 			if (xhr.status === 200 && xhr.responseText) {
 				try {
-					render(JSON.parse(xhr.responseText));
+					render(JSON.parse(xhr.responseText), false);
+					window.setTimeout(loadDetails, 100);
 				} catch (e) {
 					noteMsg('状态解析失败：' + e.message + '（保留上次内容）');
 				}
@@ -358,8 +364,41 @@ function xponPonVlanCheck(form) {
 			}
 		};
 		xhr.onerror = function () {
+			loading = false;
 			noteMsg('获取状态失败（保留上次内容）');
 		};
+		xhr.ontimeout = function () {
+			loading = false;
+			noteMsg('状态读取超时（保留上次内容）');
+		};
+		xhr.send();
+	}
+
+	function loadDetails() {
+		if (detailsStarted) return;
+		detailsStarted = true;
+		function retryDetails(msg) {
+			detailsStarted = false;
+			noteMsg(msg);
+		}
+		var xhr = new XMLHttpRequest();
+		xhr.open('GET', detailsUrl, true);
+		xhr.timeout = 15000;
+		xhr.onload = function () {
+			if (xhr.status === 200 && xhr.responseText) {
+				try {
+					var data = JSON.parse(xhr.responseText);
+					if (data.error) throw new Error(data.error);
+					render(data, true);
+				} catch (e) {
+					retryDetails('详细诊断读取失败：' + e.message);
+				}
+			} else {
+				retryDetails('详细诊断接口返回 HTTP ' + xhr.status);
+			}
+		};
+		xhr.onerror = function () { retryDetails('详细诊断读取失败'); };
+		xhr.ontimeout = function () { retryDetails('详细诊断读取超时'); };
 		xhr.send();
 	}
 	load();

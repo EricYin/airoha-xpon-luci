@@ -1,42 +1,31 @@
 #!/bin/sh
-# 可选“IPTV 专口透传”：仅当 xpon.iptv.stb_port 非空时生效。
-#
-# 模型：STB 自带 3169 标签 PPPoE/IPoE 拨号
-#   STB <--tagged--> br-iptv <--tagged--> pon.<vlan>
-# 步骤：
-#   1) 把指定 LAN 口从 br-lan 摘出（防 IPTV 广播扩散到其他 LAN 口/风暴）
-#   2) 建 br-iptv 桥，只放该 LAN 口 + pon.<vlan>
-# 若不确定 OLT/装维的透传方式，保持 stb_port 为空（IPTV 走路由拨号 + IGMP）。
+# 将受管桥接业务绑定的物理 LAN/STB 口从 br-lan 移入业务桥。
+# network 配置仍是标准 bridge device；这里处理交换口已被 stock br-lan
+# 占用时 netifd 无法直接 enslave 的平台差异。
 
 [ "$ACTION" = "ifup" ] || exit 0
-[ "$INTERFACE" = "iptv" ] || exit 0
-[ -f /etc/config/xpon ] || exit 0
+case "$INTERFACE" in xpon_*) ;; *) exit 0 ;; esac
 
-port=$(uci -q get xpon.iptv.stb_port)
-[ -n "$port" ] || exit 0
-vid=$(uci -q get xpon.iptv.vlan)
-[ -n "$vid" ] || exit 0
+key=${INTERFACE#xpon_}
+meta="xpon_service_$key"
+[ "$(uci -q get "network.$meta.xpon_managed")" = 1 ] || exit 0
+[ "$(uci -q get "network.$meta.mode")" = bridged ] || exit 0
+port=$(uci -q get "network.$meta.lan_port")
 
 case "$port" in
-	eth0.*) lan_if=$port ;;
-	lan1)   lan_if=eth0.4 ;;
-	lan2)   lan_if=eth0.5 ;;
-	lan3)   lan_if=eth0.6 ;;
-	lan4)   lan_if=eth0.7 ;;
-	*)      lan_if= ;;
+	lan1) lan_if=eth0.8 ;;
+	lan2) lan_if=eth0.7 ;;
+	lan3) lan_if=eth0.5 ;;
+	lan4) lan_if=eth0.4 ;;
+	*) exit 0 ;;
 esac
-[ -n "$lan_if" ] || exit 0
+
+bridge="bx-$key"
 [ -d "/sys/class/net/$lan_if" ] || exit 0
-[ -d "/sys/class/net/pon.$vid" ] || exit 0
-
+[ -d "/sys/class/net/$bridge" ] || exit 0
 brctl delif br-lan "$lan_if" 2>/dev/null
-brctl addbr br-iptv 2>/dev/null
-brctl delif br-iptv "$lan_if" 2>/dev/null
-brctl delif br-iptv "pon.$vid" 2>/dev/null
-brctl addif br-iptv "$lan_if"
-brctl addif br-iptv "pon.$vid"
+brctl delif "$bridge" "$lan_if" 2>/dev/null
+brctl addif "$bridge" "$lan_if" 2>/dev/null || exit $?
 ip link set "$lan_if" up
-ip link set "pon.$vid" up
-
-logger -t xpon-iptv "IPTV port pass-through: $lan_if <-> pon.$vid"
+logger -t xpon-services "bound $port ($lan_if) to $INTERFACE ($bridge)"
 exit 0

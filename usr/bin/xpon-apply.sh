@@ -22,12 +22,30 @@ uci_get() { uci -q get "$1"; }
 # 这里是 LOID 重启失效的真正根因。restore_auth 从 LuCI 保存的持久源
 # /etc/config/xpon（auth 类型段 device）重写 network.xpon_auth，
 # 必须在 netifd 加载网络配置（S20network）之前运行（xpon-app START=11）。
-# xpon.device.pon_mode 由 zzz-xpon 预置缺省 GPON；用户经 LuCI 认证页保存后
-# 为实际选择（GPON: auth_type_g=LOID/sn；EPON/10G-EPON: auth_type_e=LOID），
-# 此处原样写回。EPON 走 OAM（oamcfgCmd loid0），GPON 走 OMCI（omcicfgCmd）。
+# xpon.device.pon_mode 只由 LuCI 认证页成功保存时写入，并作为“用户已保存”标志。
+# EPON 走 OAM（oamcfgCmd loid0），GPON 走 OMCI（omcicfgCmd）。
 restore_auth() {
-	local t p k v
-	uci -q get xpon.device.pon_mode >/dev/null || return 0
+	local t p k v factory_sn old_loid
+	if ! uci -q get xpon.device.pon_mode >/dev/null; then
+		# 旧包/覆盖安装没有“已保存”标志时，不把模板默认冒充用户配置。
+		# 保留 network 中已有 LOID，并用 DSD 的合法 FSAN 替换 NoNumber。
+		factory_sn=$(sed -n "s/^fsan='\(.*\)'/\1/p" /tmp/dsd.env 2>/dev/null | head -1)
+		old_loid=$(uci_get network.xpon_auth.loid)
+		uci set network.xpon_auth='xpon_auth'
+		uci set network.xpon_auth.pon_mode='GPON'
+		[ "${#factory_sn}" -eq 12 ] && {
+			uci set network.xpon_auth.sn="$factory_sn"
+			uci set network.xpon_auth.def_sn="$factory_sn"
+		}
+		if [ -n "$old_loid" ]; then
+			uci set network.xpon_auth.auth_type_g='LOID'
+		else
+			uci set network.xpon_auth.auth_type_g='SN'
+		fi
+		uci commit network
+		logger -t xpon "restore-auth: 未找到已保存标志，使用 DSD/现存 LOID 初始化（sn=$factory_sn）"
+		return 0
+	fi
 	p=$(uci_get xpon.device.pon_mode); p=${p:-GPON}
 	t=$(uci_get xpon.device.auth_type_g)
 	if [ "$p" = "EPON" ]; then
@@ -62,41 +80,62 @@ restore_auth() {
 		uci set network.xpon_auth.auth_type_g="$t"
 		uci -q delete network.xpon_auth.auth_type_e
 	fi
-	for k in loid loid_password def_sn sn xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
+	for k in loid def_sn sn xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
 		v=$(uci_get xpon.device.$k)
 		[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
 	done
+	# libuci 无法保存空字符串；空密码由 OMCI 就绪后的认证重放显式下发。
+	v=$(uci_get xpon.device.loid_password)
+	if [ -n "$v" ]; then
+		uci set network.xpon_auth.loid_password="$v"
+	else
+		uci -q delete network.xpon_auth.loid_password
+	fi
 	uci commit network
 	logger -t xpon "restore-auth: 已恢复 pon_mode=$p auth_type=$([ "$p" = EPON ] && echo EPON-LOID || echo "$t")（loid=$(uci_get network.xpon_auth.loid)）"
 }
 
 apply_auth() {
-	local mode auth sn_type loid loidpw defsn sn apwd hexpwd regpwd
+	local mode auth sn_type loid loidpw defsn sn apwd hexpwd regpwd identity_sn identity_vendor
+	local equipment_val onuver_val omcc_val
+	identity_get() {
+		iv=$(uci_get network.xpon_auth.$1)
+		[ -n "$iv" ] || iv=$(uci_get xpon.device.$1)
+		printf '%s' "$iv"
+	}
 	mode=$(uci_get network.xpon_auth.pon_mode); [ -z "$mode" ] && mode=GPON
 	auth=$(uci_get network.xpon_auth.auth_type_g); [ -z "$auth" ] && auth=LOID
 	case "$auth" in loid|LOID) auth=loid ;; sn|SN) auth=sn ;; esac
 	sn=$(uci_get network.xpon_auth.sn)
+	sn=$(printf '%s' "$sn" | tr 'a-z' 'A-Z')
 	loid=$(uci_get network.xpon_auth.loid)
 	loidpw=$(uci_get network.xpon_auth.loid_password)
 	defsn=$(uci_get network.xpon_auth.def_sn)
+	defsn=$(printf '%s' "$defsn" | tr 'a-z' 'A-Z')
 	sn_type=$(uci_get network.xpon_auth.xpon_sn_auth_type); [ -z "$sn_type" ] && sn_type=ascii
 	apwd=$(uci_get network.xpon_auth.sn_ascii_password)
 	hexpwd=$(uci_get network.xpon_auth.sn_hex_password)
 	regpwd=$(uci_get network.xpon_auth.sn_regid_password)
+	equipment_val=$(identity_get equipment_id)
+	onuver_val=$(identity_get onu_version)
+	omcc_val=$(identity_get omcc_version)
+	valid_pon_sn() {
+		[ "${#1}" -eq 12 ] || return 1
+		vpart=${1%????????}
+		spart=${1#????}
+		case "$vpart" in *[!A-Z0-9]*|'') return 1 ;; esac
+		case "$spart" in *[!0-9A-F]*|'') return 1 ;; esac
+		return 0
+	}
 
 	# omcicfgCmd 对参数有长度校验（如 SN 必须 12 字节、loid ≤24 字节），
 	# 空值/非法长度一律跳过并记日志——避免误覆盖出厂 SN（NoNumber 8 字节会被拒）。
-	# 8 位 hex = 旧猫 setmac GPONSN 后半段（不含厂商代码），自动拼 PON Vendor ID 成 12 字节完整 SN
 	set_sn() { # $1=sn
 		[ -n "$1" ] || return 0
-		if [ "${#1}" -eq 8 ] && printf '%s' "$1" | grep -qE '^[0-9a-fA-F]+$'; then
-			vid=$(uci_get xpon.device.vendor_id)
-			[ -n "$vid" ] && [ "${#vid}" -eq 4 ] && set -- "$vid$1"
-		fi
-		if [ "${#1}" -eq 12 ]; then
+		if valid_pon_sn "$1"; then
 			$OMCI set sn "$1" >/dev/null 2>&1
 		else
-			logger -t xpon "skip set sn '$1'（需 12 字节，保持出厂 SN）"
+			logger -t xpon "skip set sn '$1'（须为 4 位厂商代码 + 8 位 hex，保持出厂 SN）"
 		fi
 	}
 
@@ -104,7 +143,8 @@ apply_auth() {
 		if [ "$auth" = "loid" ]; then
 			set_sn "${defsn:-$sn}"
 			[ -n "$loid" ] && $OMCI set loid "$loid" >/dev/null 2>&1
-			[ -n "$loidpw" ] && $OMCI set loidPasswd "$loidpw" >/dev/null 2>&1
+			# 空字符串是有效配置，表示 LOID-only；不能保留 netifd 的 ECONET 默认值。
+			$OMCI set loidPasswd "$loidpw" >/dev/null 2>&1
 		else
 			set_sn "$sn"
 			# SN 密码：本固件 omcicfgCmd 无 passwdAscii/passwdHex 子命令
@@ -120,20 +160,34 @@ apply_auth() {
 				[ -n "$apwd" ] && $PONMGRCLI gpon set passwd ascii "$apwd" >/dev/null 2>&1
 			fi
 		fi
-		# 厂商信息（netifd 引擎不管，这里补；段名是 device，类型 auth）。
+		# 厂商信息（netifd 引擎不管）。pon_mode 同时作为认证页已成功保存标志；
+		# 没有标志时不能把旧安装包的模板默认当成用户配置下发。
 		# omcicfgCmd 子命令为驼峰：vendorId / equipmentId / onuVersion / omccVersion
 		# （snake_case 会打印 valid subcommands 帮助并静默失败）
-	[ -n "$(uci_get xpon.device.vendor_id)" ] && $OMCI set vendorId "$(uci_get xpon.device.vendor_id)" >/dev/null 2>&1
-		[ -n "$(uci_get xpon.device.equipment_id)" ] && $OMCI set equipmentId "$(uci_get xpon.device.equipment_id)" >/dev/null 2>&1
-		[ -n "$(uci_get xpon.device.onu_version)" ] && $OMCI set onuVersion "$(uci_get xpon.device.onu_version)" >/dev/null 2>&1
-	[ -n "$(uci_get xpon.device.omcc_version)" ] && $OMCI set omccVersion "$(uci_get xpon.device.omcc_version)" >/dev/null 2>&1
-	# 记录固件实际回读值，便于区分 UCI 保存成功与 OMCI 下发成功。
-	for attr in vendorId equipmentId onuVersion omccVersion; do
-		want=$(uci_get xpon.device.$(printf '%s' "$attr" | sed 's/vendorId/vendor_id/;s/equipmentId/equipment_id/;s/onuVersion/onu_version/;s/omccVersion/omcc_version/'))
-		[ -n "$want" ] || continue
-		have=$($OMCI get "$attr" 2>/dev/null | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1)
-		[ "$have" = "$want" ] || logger -t xpon "apply_auth: $attr 下发不一致 want='$want' have='$have'"
-	done
+		if [ -n "$(uci_get xpon.device.pon_mode)" ]; then
+			identity_sn=${defsn:-$sn}
+			identity_vendor=
+			if valid_pon_sn "$identity_sn"; then
+				identity_vendor=${identity_sn%????????}
+			fi
+			[ -n "$identity_vendor" ] && $OMCI set vendorId "$identity_vendor" >/dev/null 2>&1
+			[ -n "$equipment_val" ] && $OMCI set equipmentId "$equipment_val" >/dev/null 2>&1
+			[ -n "$onuver_val" ] && $OMCI set onuVersion "$onuver_val" >/dev/null 2>&1
+			[ -n "$omcc_val" ] && $OMCI set omccVersion "$omcc_val" >/dev/null 2>&1
+			# 记录实际回读值，区分 UCI 保存成功与 OMCI 下发成功。
+			for attr in vendorId equipmentId onuVersion omccVersion; do
+				want=$(identity_get "$(printf '%s' "$attr" | sed 's/vendorId/vendor_id/;s/equipmentId/equipment_id/;s/onuVersion/onu_version/;s/omccVersion/omcc_version/')")
+				[ "$attr" = vendorId ] && want=$identity_vendor
+				[ -n "$want" ] || continue
+				have=$($OMCI get "$attr" 2>/dev/null | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1)
+				[ "$have" = "$want" ] || logger -t xpon "apply_auth: $attr 下发不一致 want='$want' have='$have'"
+			done
+		else
+			# 未保存状态采用 DSD/网络 SN 的前四字节，避免旧模板 MTKG 与 AXON SN 不一致。
+			factory_vendor=${sn%????????}
+			[ "${#sn}" -eq 12 ] && [ "${#factory_vendor}" -eq 4 ] && \
+				$OMCI set vendorId "$factory_vendor" >/dev/null 2>&1
+		fi
 		# OMCI 消息交互协议版本（specVer，uint8；与 G.988 标准 2 字节版本的映射需真机验证）
 		[ -n "$(uci_get xpon.device.omci_spec_ver)" ] && $OMCI set specVer "$(uci_get xpon.device.omci_spec_ver)" >/dev/null 2>&1
 	elif [ "$mode" = "EPON" ]; then
@@ -216,11 +270,13 @@ apply_ponmode() {
 	}
 
 	# 1) 更新 bootargs 里的 onu_type=（保留其余参数，如 tclinux_info/ethaddr）
-	local ba newba
-	ba=$(fw_printenv bootargs 2>/dev/null)
+	local ba ba_raw newba
+	ba_raw=$(fw_printenv -n bootargs 2>/dev/null)
+	ba=$ba_raw
+	while [ "${ba#bootargs=}" != "$ba" ]; do ba=${ba#bootargs=}; done
 	if [ -n "$ba" ]; then
 		newba=$(printf '%s' "$ba" | sed "s/onu_type=[0-9a-fA-F]*/onu_type=$val/")
-		[ -n "$newba" ] && fw_setenv bootargs "$newba"
+		[ -n "$newba" ] && [ "$newba" != "$ba_raw" ] && fw_setenv bootargs "$newba"
 	fi
 	# 2) 独立 onu_type 变量（bootcmd 若从变量拼 bootargs 也能生效）
 	fw_setenv onu_type "$val"

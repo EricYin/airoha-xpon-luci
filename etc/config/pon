@@ -1,6 +1,0 @@
-config multicast 'multicast'
-	option enabled '0'
-	option vlan_id ''
-	option igmp_version '2'
-	option port '1'
-

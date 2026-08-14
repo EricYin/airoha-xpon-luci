@@ -9,7 +9,9 @@ local dispatcher = require "luci.dispatcher"
 local sys = require "luci.sys"
 local util = require "luci.util"
 local uci = require "luci.model.uci"
+local uci_native = require "uci"
 local ltemplate = require "luci.template"
+local fs = require "nixio.fs"
 
 local formvalue = http.formvalue
 
@@ -136,14 +138,17 @@ function index()
 	-- 业务 Services 页默认不内置（模板 services.htm 保留在包内，
 	-- 需要时取消下面这行注释即可单独挂出）
 	entry({"admin", "xpon", "services"}, call("action_services"), "业务", 3)
+	entry({"admin", "xpon", "service-vlan"}, post("action_service_vlan")).leaf = true
 	entry({"admin", "xpon", "provision"}, call("action_provision"), "OMCI", 4)
 	entry({"admin", "xpon", "status"}, call("action_status"), "状态", 5)
 
 	-- 手写表单直接提交各字段，不包含名为 data 的字段；post_on({data=true})
 	-- 会导致路由条件不匹配并回到登录页，表现为“被登出且未保存”。
 	entry({"admin", "xpon", "save"}, post("action_save")).leaf = true
+	entry({"admin", "xpon", "services", "action"}, post("action_service_action")).leaf = true
 	entry({"admin", "xpon", "multicast"}, post("action_multicast")).leaf = true
 	entry({"admin", "xpon", "status", "data"}, call("action_status_data")).leaf = true
+	entry({"admin", "xpon", "status", "details"}, call("action_status_details")).leaf = true
 end
 
 ------------------------------------------------------------------------
@@ -154,24 +159,41 @@ local function uget(config, section, option)
 	return uci.cursor():get(config, section, option)
 end
 
-local function section_exists(config, section)
-	return uci.cursor():get_all(config, section) ~= nil
+local function ensure_section(u, config, section, stype)
+	u = u or uci.cursor()
+	if u:get_all(config, section) then
+		return true
+	end
+	local name, err = u:section(config, stype, section, {})
+	return name ~= nil and name ~= false, err
 end
 
-local function ensure_section(config, section, stype)
-	local u = uci.cursor()
-	if not section_exists(config, section) then
-		u:add(config, stype, section)
-	end
+local function ensure_xpon_config_file()
+	local path = "/etc/config/xpon"
+	if fs.access(path) then return true end
+	local ok = fs.writefile(path, "config auth 'device'\n")
+	return ok and fs.access(path) or false
 end
 
 local function sh(cmd)
-	return util.trim(sys.exec(cmd .. " 2>&1") or "")
+	-- /tmp/ponstatus 的定长记录带大量 NUL 填充；它们没有文本意义，
+	-- 且会被 JSON 编码成成百上千个 \u0000。
+	local out = sys.exec(cmd .. " 2>&1") or ""
+	return util.trim((out:gsub("%z", "")))
 end
 
 -- 写系统日志（logread 可查），单引号转义防注入
 local function logger(tag, msg)
 	sys.call("logger -t " .. tag .. " '" .. (msg or ""):gsub("'", "'\\''") .. "' 2>/dev/null")
+end
+
+local function schedule_reboot(delay)
+	delay = tonumber(delay) or 8
+	local cmd = "touch /tmp/xpon-reboot-pending; " ..
+		"( sleep " .. delay .. "; logger -t xpon '认证参数已保存，执行整机重启'; sync; " ..
+		"ubus call system reboot >/dev/null 2>&1 || /sbin/reboot ) " ..
+		">/dev/null 2>&1 </dev/null &"
+	return sys.call(cmd) == 0
 end
 
 -- gponmapcmd / ponvlancmd 的 show 结果由内核日志输出（stdout 为空）。
@@ -332,31 +354,43 @@ end
 function auth_values()
 	local u = uci.cursor()
 	local v = {}
-	v.pon_mode          = uget("network", "xpon_auth", "pon_mode") or "GPON"
-	v.auth_type_g       = uget("network", "xpon_auth", "auth_type_g") or "LOID"
-	v.auth_type_e       = uget("network", "xpon_auth", "auth_type_e") or "LOID"
-	v.loid              = uget("network", "xpon_auth", "loid") or ""
-	v.loid_password     = uget("network", "xpon_auth", "loid_password") or ""
-	v.sn                = uget("network", "xpon_auth", "sn") or ""
-	v.xpon_sn_auth_type = uget("network", "xpon_auth", "xpon_sn_auth_type") or "ascii"
+	local private_saved = (uget("xpon", "device", "pon_mode") or "") ~= ""
+	-- /etc/config/xpon 是抵抗 S00xponconfig 覆盖的持久源；仅在它没有值时
+	-- 才回退到 network.xpon_auth。
+	local function saved(field, dflt)
+		local s
+		if private_saved then
+			s = uget("xpon", "device", field)
+			if s ~= nil and s ~= "" then return s end
+		end
+		s = uget("network", "xpon_auth", field)
+		if s ~= nil and s ~= "" then return s end
+		return dflt
+	end
+	v.pon_mode          = saved("pon_mode", "GPON")
+	v.auth_type_g       = saved("auth_type_g", "LOID")
+	v.auth_type_e       = saved("auth_type_e", "LOID")
+	v.loid              = saved("loid", "")
+	v.loid_password     = saved("loid_password", "")
+	v.sn                = saved("sn", "")
+	v.xpon_sn_auth_type = saved("xpon_sn_auth_type", "ascii")
 	-- PASSWORD（移动 SN+Password）落库为 SN + regid，读回时还原成独立选项
 	if v.auth_type_g:lower() == "sn" and v.xpon_sn_auth_type:lower() == "regid" then
 		v.auth_type_g = "password"
 	end
-	v.sn_ascii_password = uget("network", "xpon_auth", "sn_ascii_password") or ""
-	v.sn_hex_password   = uget("network", "xpon_auth", "sn_hex_password") or ""
-	v.sn_regid_password = uget("network", "xpon_auth", "sn_regid_password") or ""
+	v.sn_ascii_password = saved("sn_ascii_password", "")
+	v.sn_hex_password   = saved("sn_hex_password", "")
+	v.sn_regid_password = saved("sn_regid_password", "")
 	-- 页面只保留一个“SN 密码”输入框，格式由 xpon_sn_auth_type 决定（ascii/hex/regid）
 	v.sn_password       = ((v.xpon_sn_auth_type == "hex") and v.sn_hex_password or
 		(v.xpon_sn_auth_type == "regid") and v.sn_regid_password or v.sn_ascii_password) or ""
 	-- 移动 Password = 独立 REG_ID 输入框，存 sn_regid_password（格式 regid）
 	v.reg_id            = (v.xpon_sn_auth_type == "regid") and v.sn_regid_password or ""
-	v.loid_password_set = (uget("network", "xpon_auth", "loid_password") or "") ~= ""
-	-- 厂商信息缺省 = 固件出厂默认（OLT 校验设备标识符，必填；用户没保存过时直接回显）
-	v.vendor_id         = uget("xpon", "device", "vendor_id") or "MTKG"
-	v.equipment_id      = uget("xpon", "device", "equipment_id") or "KE2.119.241R2B"
-	v.onu_version       = uget("xpon", "device", "onu_version") or "RP0201"
-	v.omcc_version      = uget("xpon", "device", "omcc_version") or "0xA3"
+	v.loid_password_set = v.loid_password ~= ""
+	v.vendor_id         = uget("xpon", "device", "vendor_id") or ""
+	v.equipment_id      = uget("network", "xpon_auth", "equipment_id") or uget("xpon", "device", "equipment_id") or ""
+	v.onu_version       = uget("network", "xpon_auth", "onu_version") or uget("xpon", "device", "onu_version") or ""
+	v.omcc_version      = uget("network", "xpon_auth", "omcc_version") or uget("xpon", "device", "omcc_version") or ""
 	v.omci_spec_ver     = uget("xpon", "device", "omci_spec_ver") or ""
 	v.pon_mac           = uget("xpon", "device", "pon_mac") or ""
 	v.epon_oui          = uget("xpon", "device", "epon_oui") or ""
@@ -367,39 +401,58 @@ function auth_values()
 		local out = sh("/userfs/bin/omcicfgCmd get " .. field .. " 2>&1") .. "\n"
 		return out:match("[=:]%s*(.-)%s*\n") or ""
 	end
+	local function oam_get(field)
+		local out = sh("/userfs/bin/oamcfgCmd get " .. field .. " 2>&1") .. "\n"
+		return out:match("[=:]%s*(.-)%s*\n") or ""
+	end
+	local is_epon = v.pon_mode == "EPON"
 	local rt = {
-		loid         = omci_get("loid"),
+		loid         = is_epon and oam_get("loid0") or omci_get("loid"),
 		sn           = omci_get("sn"),
 		vendor_id    = omci_get("vendorId"),
 		equipment_id = omci_get("equipmentId"),
 		onu_version  = omci_get("onuVersion"),
 		omcc_version = omci_get("omccVersion"),
 		spec_ver     = sh("/userfs/bin/omcicfgCmd get specVer 2>&1"):match("(%d+)") or "",
+		epon_oui     = is_epon and oam_get("localOui"):gsub("^0[xX]", ""):upper() or "",
+		epon_ven_info = is_epon and oam_get("localVenInfo"):gsub("^0[xX]", ""):upper() or "",
 	}
-	rt.pon_mac = sh("ifconfig pon 2>/dev/null"):match("HWaddr%s+([0-9A-Fa-f:]+)") or ""
+	local pon_ifconfig = sh("ifconfig pon 2>/dev/null")
+	rt.pon_mac = sh("cat /sys/class/net/pon/address 2>/dev/null"):match("([0-9A-Fa-f:]+)")
+		or pon_ifconfig:match("HWaddr%s+([0-9A-Fa-f:]+)")
+		or pon_ifconfig:match("ether%s+([0-9A-Fa-f:]+)") or ""
 	-- 打开页面默认读取系统现有值：UCI 未显式保存（或保存值为空）时，
 	-- 表单回退到 OMCI/驱动实际生效值（rt）——用户看到即现状，改完保存才写入 UCI。
 	-- 密码类不回显（留空 = 保持原值）。
 	local function sys_fb(field, run, dflt)
-		local s = uget("xpon", "device", field)
+		local s
+		if private_saved then
+			s = uget("xpon", "device", field)
+			if s ~= nil and s ~= "" then return s end
+		end
+		return (run ~= nil and run ~= "") and run or dflt
+	end
+	local function identity_fb(field, run, dflt)
+		local s = uget("network", "xpon_auth", field)
+		if s ~= nil and s ~= "" then return s end
+		s = uget("xpon", "device", field)
 		if s ~= nil and s ~= "" then return s end
 		return (run ~= nil and run ~= "") and run or dflt
 	end
-	-- 运行时值优先：UCI 只是下次启动的配置，不能覆盖 OMCI 当前实际值。
-	-- 旧版本仅在 UCI 有值时显示 UCI，导致“页面显示已改、设备实际没改”。
-	v.vendor_id     = (rt.vendor_id ~= "" and rt.vendor_id) or sys_fb("vendor_id", "", "MTKG")
-	v.equipment_id  = (rt.equipment_id ~= "" and rt.equipment_id) or sys_fb("equipment_id", "", "KE2.119.241R2B")
-	v.onu_version   = (rt.onu_version ~= "" and rt.onu_version) or sys_fb("onu_version", "", "RP0201")
-	v.omcc_version  = (rt.omcc_version ~= "" and rt.omcc_version) or sys_fb("omcc_version", "", "0xA3")
+	-- 输入框表示“下次启动仍要使用的值”，运行态在下方独立展示。
+	v.vendor_id     = sys_fb("vendor_id", rt.vendor_id, "")
+	v.equipment_id  = identity_fb("equipment_id", rt.equipment_id, "")
+	v.onu_version   = identity_fb("onu_version", rt.onu_version, "")
+	v.omcc_version  = identity_fb("omcc_version", rt.omcc_version, "")
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
 	-- PON MAC 默认取 DSD wan_mac（ifconfig pon 未就绪时兜底）
 	local dsd_mac = sh("grep -o 'wan_mac[=:][0-9A-Fa-f:]*' /tmp/dsd.env 2>/dev/null | head -1"):match("[0-9A-Fa-f:]+$") or ""
 	v.pon_mac       = sys_fb("pon_mac", (rt.pon_mac ~= "" and rt.pon_mac or dsd_mac), "")
 	if v.loid == "" and rt.loid ~= "" then v.loid = rt.loid end
-	if v.sn == "" and rt.sn ~= "" then v.sn = rt.sn end
+	if (v.sn == "" or v.sn == "NoNumber") and rt.sn ~= "" then v.sn = rt.sn end
 	v.pon_mac_default = dsd_mac
 	v.rt = rt
-	local pt = uget("network", "xpon_auth", "pon_tech") or ""
+	local pt = saved("pon_tech", "")
 	if pt == "" then
 		pt = (v.pon_mode == "EPON") and "EPON_10G_10G" or "GPON"
 	end
@@ -414,29 +467,97 @@ function auth_values()
 end
 
 local function service_values()
-	local rows, by_vid = {}, {}
-	uci.cursor():foreach("network", "wan_vlan", function(s)
+	local rows, owners = {}, {}
+	local uc = uci.cursor()
+	uc:foreach("network", "interface", function(s)
+		local vid = (s.device or ""):match("^pon%.(%d+)$")
+		if vid then owners[vid] = s end
+	end)
+	uc:foreach("network", "xpon_service", function(s)
 		local vid = tonumber(s.vlan_id or "")
-		if vid and vid >= 1 and vid <= 4094 then
-			local row = { name = s.remark or ("VLAN " .. vid), type = "vlan", vlan_id = tostring(vid),
-				priority = s.priority or "0", remark = s.remark or "", runtime = false }
-			by_vid[vid] = row; rows[#rows + 1] = row
+		if s.xpon_managed == "1" and vid and vid >= 1 and vid <= 4094 then
+			local key = s.service_key or s[".name"]
+			if #key > 12 or not key:match("^[A-Za-z0-9_]+$") then key = "svc_" .. tostring(vid) end
+			local owner = owners[tostring(vid)]
+			local iface = s.interface or (owner and owner[".name"]) or ("xpon_" .. key)
+			local raw = sh("ubus call network.interface." .. iface .. " status 2>/dev/null")
+			local up = raw:match('"up"%s*:%s*true') ~= nil
+			local pending = raw:match('"pending"%s*:%s*true') ~= nil
+			local uptime = raw:match('"uptime"%s*:%s*(%d+)') or ""
+			local address = raw:match('"address"%s*:%s*"([0-9%.:]+)"') or ""
+			local row = {
+				key=key, section=s[".name"], name=s.remark or ("VLAN " .. vid),
+				vlan_id=tostring(vid), priority=s.priority or "0", remark=s.remark or "",
+				enable=s.enable ~= "0" and "1" or "0", service_type=s.service_type or "internet",
+				mode=s.mode or s.payload or "routed", proto=s.proto or (owner and owner.proto) or "dhcp", mtu=s.mtu or (owner and owner.mtu) or "1500",
+				username=s.username or (owner and owner.username) or "", ipaddr=s.ipaddr or (owner and owner.ipaddr) or "", netmask=s.netmask or (owner and owner.netmask) or "",
+				gateway=s.gateway or (owner and owner.gateway) or "", dns1=s.dns1 or "", dns2=s.dns2 or "",
+				lan_port=s.lan_port or "none", mcast_vlan=s.mcast_vlan or "",
+				interface=iface, external_owner=owner and owner.xpon_managed ~= "1" and owner[".name"] or nil,
+				runtime=up, address=address, uptime=uptime,
+				state=up and "已连接" or (pending and "连接中" or (s.enable == "0" and "已禁用" or "未连接"))
+			}
+			rows[#rows + 1] = row
 		end
 	end)
-	-- 仅用有效 wan_vlan 作为可保存列表。运行时孤儿接口不能自动回填，否则删除
-	-- UCI 后 pon.10 尚未消失时，下一次保存会把 VLAN 10 再次写回配置。
-	local cfg = sh("cat /proc/net/vlan/config 2>/dev/null")
-	for _, vid_s in cfg:gmatch("(pon%.(%d+))%s+|%s+(%d+)%s+|%s+pon") do
-		local vid = tonumber(vid_s)
-		if vid and by_vid[vid] then by_vid[vid].runtime = true end
+	table.sort(rows, function(a,b) return tonumber(a.vlan_id) < tonumber(b.vlan_id) end)
+	return rows
+end
+
+local function kernel_vlan_values()
+	local rows, by_vid, refs = {}, {}, {}
+	local function ref(vid, text)
+		vid = tostring(vid or "")
+		if vid ~= "" then refs[vid] = refs[vid] or {}; refs[vid][#refs[vid] + 1] = text end
+	end
+	local uc = uci.cursor()
+	uc:foreach("network", nil, function(s)
+		if s[".type"] == "xpon_service" then ref(s.vlan_id, "业务 " .. (s.remark or s.service_key or s[".name"])) end
+		if s[".type"] == "wan_vlan" then ref(s.vlan_id, "旧 wan_vlan " .. s[".name"]) end
+		local vid = (s.name or s.device or ""):match("^pon%.(%d+)$")
+		if vid then ref(vid, s[".type"] .. " " .. s[".name"]) end
+	end)
+	uci.cursor():foreach("pon", "multicast_vlan", function(s) ref(s.interface_vid, "组播 VLAN " .. (s.vlan_id or "")) end)
+	uci.cursor():foreach("xpon", "service", function(s) ref(s.vlan, "旧业务 " .. s[".name"]) end)
+	local raw = sh("cat /proc/net/vlan/config 2>/dev/null")
+	for name, vid in raw:gmatch("(pon%.(%d+))%s+|%s+%d+%s+|%s+pon") do
+		-- Lua 多捕获中第二项就是 VID；name 保留用于兼容不同固件格式。
+		vid = name:match("(%d+)$") or vid
+		if vid and not by_vid[vid] then
+			local r = { name="pon." .. vid, vlan_id=vid, refs=refs[vid] or {}, orphan=(refs[vid] == nil) }
+			rows[#rows + 1] = r; by_vid[vid] = r
+		end
 	end
 	table.sort(rows, function(a,b) return tonumber(a.vlan_id) < tonumber(b.vlan_id) end)
 	return rows
 end
 
+function action_service_vlan()
+	local vid = tonumber(formvalue("vlan_id") or "")
+	if not vid or vid < 1 or vid > 4094 then http.redirect(xpon_url("services", "err=vlan")); return end
+	for _, row in ipairs(kernel_vlan_values()) do
+		if tonumber(row.vlan_id) == vid then
+			if not row.orphan then http.redirect(xpon_url("services", "err=vlan_in_use_" .. vid)); return end
+			local rc = sys.call("( timeout 3 vconfig rem pon." .. vid .. " || timeout 3 ip link del pon." .. vid .. " ) >/tmp/xpon-vlan-cleanup.log 2>&1")
+			http.redirect(xpon_url("services", rc == 0 and ("vlan_cleaned=" .. vid) or ("err=vlan_cleanup_" .. rc))); return
+		end
+	end
+	http.redirect(xpon_url("services", "err=vlan_not_found"))
+end
+
 local function multicast_values()
 	local rows, by_vid, registered, bindings = {}, {}, {}, {}
 	local raw = sh("/usr/bin/pon-multicast status")
+	local snooping, proxy = raw:match("control=([01]),([01])")
+	local runtime_snooping, runtime_proxy = raw:match("runtime_control=([01]),([01])")
+	local proxy_port = raw:match("proxy_port=([1-4])") or "1"
+	local runtime_proxy_port, runtime_proxy_func = raw:match("runtime_proxy_port=([1-4]),([012])")
+	local merr = formvalue("merr")
+	local error_text = {
+		backend_permission = "后端脚本不可执行（权限错误）",
+		backend_missing = "后端脚本不存在",
+		proxy_port = "代理绑定端口无效",
+	}
 	for vid in raw:gmatch("mvlan=(%d+)") do registered[vid] = true end
 	for port, vid in raw:gmatch("binding=(%d+),(%d+)") do bindings[vid] = port end
 	for vid, ifvid, configured_bound, configured_port in
@@ -455,21 +576,66 @@ local function multicast_values()
 		if not by_vid[vid] then rows[#rows + 1] = { vlan_id=vid, interface_vid="", bound=false, port="0", state="registered", configured=false } end
 	end
 	table.sort(rows, function(a,b) return tonumber(a.vlan_id) < tonumber(b.vlan_id) end)
-	return { rows=rows, result=raw, error=formvalue("merr"), ok=formvalue("mok") }
+	return {
+		rows=rows, result=raw, error=error_text[merr] or merr, ok=formvalue("mok"),
+		snooping=snooping or "1", proxy=proxy or "0",
+		runtime_snooping=runtime_snooping, runtime_proxy=runtime_proxy,
+		proxy_port=proxy_port, runtime_proxy_port=runtime_proxy_port,
+		runtime_proxy_func=runtime_proxy_func,
+	}
+end
+
+local function iptv_business_values()
+	local rows, seen = {}, {}
+	local port_map = { lan1="1", lan2="2", lan3="3", lan4="4" }
+	uci.cursor():foreach("network", "xpon_service", function(s)
+		local vid = tonumber(s.vlan_id or "")
+		if s.service_type == "iptv" and vid and vid >= 1 and vid <= 4094 and not seen[vid] then
+			rows[#rows + 1] = { vlan_id=tostring(vid), name=s.remark or "IPTV", port=port_map[s.lan_port] or "1" }; seen[vid] = true
+		end
+	end)
+	uci.cursor():foreach("xpon", "service", function(s)
+		local vid = tonumber(s.vlan or "")
+		if s[".name"] == "iptv" and vid and vid >= 1 and vid <= 4094 and not seen[vid] then
+			local port = tonumber(s.iptv_port or "") or 1; if port < 1 or port > 4 then port = 1 end
+			rows[#rows + 1] = { vlan_id=tostring(vid), name="IPTV", port=tostring(port) }; seen[vid] = true
+		end
+	end)
+	table.sort(rows, function(a,b) return tonumber(a.vlan_id) < tonumber(b.vlan_id) end)
+	return rows
 end
 
 function action_multicast()
 	local op = formvalue("op") or ""
+	if op == "control" then
+		local snooping = formvalue("snooping") == "1" and "1" or "0"
+		local proxy = formvalue("proxy") == "1" and "1" or "0"
+		local proxy_port = tonumber(formvalue("proxy_port") or "")
+		if not proxy_port or proxy_port < 1 or proxy_port > 4 then
+			http.redirect(xpon_url("services", "merr=proxy_port"))
+			return
+		end
+		if proxy == "1" then snooping = "1" end
+		local rc = sys.call(string.format(
+			"/usr/bin/pon-multicast control %s %s %d >/tmp/pon-multicast-action.log 2>&1",
+			snooping, proxy, proxy_port))
+		local result = rc == 0 and "mok=control" or
+			(rc == 126 and "merr=backend_permission" or
+			(rc == 127 and "merr=backend_missing" or ("merr=driver_" .. rc)))
+		http.redirect(xpon_url("services", result))
+		return
+	end
 	local vid = tonumber(formvalue("vlan_id") or "")
 	if not vid or vid < 1 or vid > 4094 then
 		http.redirect(xpon_url("services", "merr=vlan")); return
 	end
 	local cmd
 	if op == "add" then
-		local port = tonumber(formvalue("port") or "1") or 1
 		local ver = tonumber(formvalue("igmp_version") or "2") or 2
 		local ifvid = tonumber(formvalue("interface_vid") or "")
-		if port < 1 or port > 4 or (ver ~= 2 and ver ~= 3) or not ifvid or ifvid < 1 or ifvid > 4094 then
+		local port
+		for _, b in ipairs(iptv_business_values()) do if tonumber(b.vlan_id) == ifvid then port = tonumber(b.port) end end
+		if not port or port < 1 or port > 4 or (ver ~= 2 and ver ~= 3) or not ifvid or ifvid < 1 or ifvid > 4094 then
 			http.redirect(xpon_url("services", "merr=options")); return
 		end
 		if sh("ip link show pon." .. ifvid) == "" then
@@ -484,7 +650,29 @@ function action_multicast()
 		http.redirect(xpon_url("services", "merr=operation")); return
 	end
 	local rc = sys.call(cmd .. " >/tmp/pon-multicast-action.log 2>&1")
-	http.redirect(xpon_url("services", rc == 0 and "mok=1" or ("merr=driver_" .. rc)))
+	local result
+	if rc == 0 then
+		if op == "delete" then
+			local nu = uci.cursor()
+			nu:foreach("network", "xpon_service", function(s)
+				if tonumber(s.mcast_vlan or "") == vid then nu:delete("network", s[".name"], "mcast_vlan") end
+			end)
+			nu:save("network"); nu:commit("network")
+			local xu = uci.cursor()
+			xu:foreach("xpon", "service", function(s)
+				if tonumber(s.mcast_vlan or "") == vid then xu:delete("xpon", s[".name"], "mcast_vlan") end
+			end)
+			xu:save("xpon"); xu:commit("xpon")
+		end
+		result = "mok=1"
+	elseif rc == 126 then
+		result = "merr=backend_permission"
+	elseif rc == 127 then
+		result = "merr=backend_missing"
+	else
+		result = "merr=driver_" .. rc
+	end
+	http.redirect(xpon_url("services", result))
 end
 
 -- 组播 M-VLAN“实际登记”只读快照：读 /tmp/xpon-mvlan-act.txt（由 xpon-mvlan-snap.sh
@@ -698,7 +886,7 @@ end
 local function vlan_msg_for(vlan, rc, vid)
 	if vlan == "add" then
 		if rc == "ok" then
-			return ("已创建 <code>pon.%s</code> 802.1q 接口（已写入 network wan_vlan，重启自动重建；组播 M-VLAN 已写入配置，登记由后台执行、开机自动重放）。"):format(vid), true
+			return ("已创建 <code>pon.%s</code> 802.1q 接口（已写入 network wan_vlan，重启自动重建；组播 VLAN 已写入配置，登记由后台执行、开机自动重放）。"):format(vid), true
 		end
 		return ("创建 <code>pon.%s</code> 失败：确认 pon 口存在、8021q 模块已加载（<code>lsmod | grep 8021q</code>）。"):format(vid), false
 	elseif vlan == "del" then
@@ -738,6 +926,13 @@ end
 -- set_egress_map / set_ingress_map（Pbit）；组播登记 xpon_ani_pass_mvlan（xpon_igmp_core.c）。
 -- 返回 (ok, exists)：exists=接口是否创建成功（决定 rc=ok/fail）。
 local function ponvlan_add(vid, pbit, mvids)
+	local existing, unmanaged = nil, false
+	uci.cursor():foreach("network", "wan_vlan", function(s)
+		if s.vlan_id == tostring(vid) then
+			if s.xpon_managed == "1" then existing = s[".name"] else unmanaged = true end
+		end
+	end)
+	if unmanaged then return false, false end
 	local ok = pcall(function()
 		if sh("command -v vconfig 2>/dev/null") ~= "" then
 			sys.call("timeout 3 vconfig add pon " .. vid .. " 2>/dev/null")
@@ -753,16 +948,14 @@ local function ponvlan_add(vid, pbit, mvids)
 		-- 持久化（必做）：netifd 的 wan_vlan 段会在启动时创建 pon.<VID>，
 		-- 段内 mcast_vlan 为自定义字段（netifd 忽略），由 xpon-mvlan.sh 重启重放登记
 		local u = uci.cursor()
-		local sec = nil
-		u:foreach("network", "wan_vlan", function(s)
-			if s.vlan_id == tostring(vid) then sec = s[".name"] end
-		end)
+		local sec = existing
 		if not sec then
 			sec = "pon_vlan_" .. vid
-			ensure_section("network", sec, "wan_vlan")
+			ensure_section(u, "network", sec, "wan_vlan")
 			u:set("network", sec, "vlan_id", tostring(vid))
 			u:set("network", sec, "payload", "routed")
 		end
+		u:set("network", sec, "xpon_managed", "1")
 		if #mvids > 0 then
 			u:set("network", sec, "mcast_vlan", table.concat(mvids, ","))
 			-- 组播登记改后台异步：xponigmpcmd 在部分环境会阻塞 ioctl，
@@ -788,13 +981,20 @@ end
 
 -- 删除 pon.<VID>；del_persist=1 时连带删除 wan_vlan 段并清组播 M-VLAN 登记
 local function ponvlan_del(vid, del_persist)
+	if del_persist then
+		local owned = false
+		uci.cursor():foreach("network", "wan_vlan", function(s)
+			if s.vlan_id == tostring(vid) and s.xpon_managed == "1" then owned = true end
+		end)
+		if not owned then return false end
+	end
 	return pcall(function()
 		sys.call("(timeout 3 vconfig rem pon." .. vid .. " 2>/dev/null || timeout 3 ip link del pon." .. vid .. " 2>/dev/null)")
 		logger("xpon", "ponvlan_del vid=" .. vid .. " persist=" .. tostring(del_persist))
 		if del_persist then
 			local u = uci.cursor()
 			u:foreach("network", "wan_vlan", function(s)
-				if s.vlan_id == tostring(vid) then
+				if s.vlan_id == tostring(vid) and s.xpon_managed == "1" then
 					local bg = {}
 					for _, m in ipairs(parse_mvids(s.mcast_vlan)) do
 						bg[#bg + 1] = "/userfs/bin/xponigmpcmd mvlan del " .. m .. " >/dev/null 2>&1"
@@ -843,9 +1043,10 @@ local function save_onu_mode()
 	return true
 end
 
--- 设备标识：OMCI equipmentId 属性为 20 字节可打印 ASCII。
-local function ascii20(s)
-	if #s < 1 or #s > 20 then return false end
+-- Equipment ID：可选；非空时允许 1~24 个可打印 ASCII 字符。
+local function ascii24_optional(s)
+	if #s == 0 then return true end
+	if #s > 24 then return false end
 	for i = 1, #s do
 		local b = s:byte(i)
 		if not (b >= 32 and b <= 126) then return false end
@@ -864,8 +1065,39 @@ local function specver_ok(s)
 	return n ~= nil and n >= 0 and n <= 255
 end
 
+-- Lua pattern 不支持正则表达式的 {n,m} 数量语法，长度必须显式判断。
+local function hex_len(s, min_len, max_len)
+	s = s or ""
+	return #s >= min_len and #s <= max_len and s:match("^%x+$") ~= nil
+end
+
+local function normalize_omccver(s)
+	s = (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if s == "" then return "" end
+	local n
+	if s:match("^0[xX]%x+$") then
+		n = tonumber(s:sub(3), 16)
+	elseif s:match("^%x+$") and s:match("[a-fA-F]") then
+		n = tonumber(s, 16)
+	elseif s:match("^%d+$") then
+		-- 一至两位数字沿用界面的十六进制语义；三位数字按十进制兼容。
+		n = (#s <= 2) and tonumber(s, 16) or tonumber(s, 10)
+	end
+	if not n or n < 0 or n > 255 then return nil end
+	return string.format("0x%02X", n)
+end
+
+local function ponmac_ok(s)
+	return #(s or "") == 17 and s:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") ~= nil
+end
+
 local function save_auth(fv)
-	local u = uci.cursor()
+	if not ensure_xpon_config_file() then
+		return nil, "persist_config_xpon"
+	end
+	-- 认证持久化使用固件自带的原生 uci.so，绕开 luci.model.uci 的 ubus
+	-- session 包装层；后者对新增的 xpon package 可能返回成功但没有落盘。
+	local u = uci_native.cursor()
 	local ptech = fv("pon_tech") or "GPON"
 	local valid = {}
 	for _, t in ipairs(pon_techs) do valid[t.id] = true end
@@ -885,22 +1117,26 @@ local function save_auth(fv)
 	else
 		auth_type = "SN"
 	end
+	local submitted_loid_password = fv("loid_password") or ""
+	local stored_loid_password = u:get("xpon", "device", "loid_password")
+		or u:get("network", "xpon_auth", "loid_password") or ""
+	local loid_password = submitted_loid_password ~= "" and submitted_loid_password
+		or (fv("loid_password_clear") == "1" and "" or stored_loid_password)
 	-- EPON/XEPON 用 auth_type_e（TYPE_EPON_AUTH），EPON 只支持 LOID 认证，必须大写
 	local auth_type_e = "LOID"
-	-- 厂商信息：PON Vendor ID（4 字节 ASCII，须与 SN 前 4 位一致）；8 位 hex SN = 旧猫 setmac GPONSN 后半段
-	local vendor_id = (fv("vendor_id") or ""):gsub("%s+", "")
-	local sn = fv("sn") or ""
-	if #sn == 8 and sn:match("^[0-9a-fA-F]+$") and #vendor_id == 4 then
-		sn = vendor_id .. sn
-	end
+	-- 页面只接收完整 PON SN；Vendor ID 始终由前 4 位派生，避免两个配置源不一致。
+	local sn = (fv("sn") or ""):gsub("%s+", ""):upper()
+	if sn == "NONUMBER" then sn = "" end
+	local vendor_id = (#sn == 12) and sn:sub(1, 4) or ""
 	-- EPON OUI = PON MAC 前 3 字节（含 OUI 的 MAC 才是 EPON OLT 认的东西），填了 MAC 就自动提取
 	local pon_mac = fv("pon_mac") or ""
 	local eoui = fv("epon_oui") or ""
-	if eoui == "" and pon_mac:match("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$") then
+	if eoui == "" and ponmac_ok(pon_mac) then
 		eoui = pon_mac:gsub(":", ""):sub(1, 6):upper()
 	end
 	-- OMCI 协议版本（specVer）：固件存 uint8；omcicfgCmd 用 atoi 解析 -> 统一落库为十进制
 	local omci_spec_ver = (fv("omci_spec_ver") or ""):gsub("%s+", "")
+	local omcc_version = normalize_omccver(fv("omcc_version")) or ""
 	if omci_spec_ver ~= "" then
 		local svn = tonumber(omci_spec_ver)
 		if not svn and omci_spec_ver:match("^0[xX][0-9a-fA-F]+$") then
@@ -913,7 +1149,8 @@ local function save_auth(fv)
 		end
 	end
 
-	ensure_section("network", "xpon_auth", "xpon_auth")
+	local network_ok = ensure_section(u, "network", "xpon_auth", "xpon_auth")
+	if not network_ok then return nil, "persist_section_network" end
 	u:set("network", "xpon_auth", "pon_mode", pmode)
 	u:set("network", "xpon_auth", "pon_tech", ptech)
 	if pmode == "EPON" then
@@ -924,11 +1161,14 @@ local function save_auth(fv)
 		u:delete("network", "xpon_auth", "auth_type_e")
 	end
 	if fv("loid") and fv("loid") ~= "" then u:set("network", "xpon_auth", "loid", fv("loid")) end
-	if fv("loid_password") and fv("loid_password") ~= "" then
-		u:set("network", "xpon_auth", "loid_password", fv("loid_password"))
-	end
+	-- libuci 会把空字符串保存为“选项不存在”；设备重放脚本将其解释为
+	-- LOID-only，并在 OMCI 就绪后显式清空原厂 netifd 注入的 ECONET。
+	u:set("network", "xpon_auth", "loid_password", loid_password)
 	if sn ~= "" then u:set("network", "xpon_auth", "def_sn", sn); u:set("network", "xpon_auth", "sn", sn) end
 	u:set("network", "xpon_auth", "xpon_sn_auth_type", snf)
+	if fv("equipment_id") and fv("equipment_id") ~= "" then u:set("network", "xpon_auth", "equipment_id", fv("equipment_id")) end
+	if fv("onu_version") and fv("onu_version") ~= "" then u:set("network", "xpon_auth", "onu_version", fv("onu_version")) end
+	if omcc_version ~= "" then u:set("network", "xpon_auth", "omcc_version", omcc_version) end
 	-- 移动 Password = 只填 REG_ID（regid ≤36）；SN 认证 = ascii/hex 密码（可空）
 	local snpwd = (ui_auth == "password") and (fv("reg_id") or "") or (fv("sn_password") or "")
 	if snpwd ~= "" then
@@ -949,7 +1189,8 @@ local function save_auth(fv)
 
 	-- 镜像到 /etc/config/xpon（auth 类型段 device）：开机 restore-auth 的持久源，
 	-- 抵消 S00xponconfig 每次开机把 network.xpon_auth 打回 sn 的问题
-	ensure_section("xpon", "device", "auth")
+	local device_ok = ensure_section(u, "xpon", "device", "auth")
+	if not device_ok then return nil, "persist_section_device" end
 	u:set("xpon", "device", "pon_mode", pmode)
 	u:set("xpon", "device", "pon_tech", ptech)
 	if pmode == "EPON" then
@@ -960,9 +1201,7 @@ local function save_auth(fv)
 		u:delete("xpon", "device", "auth_type_e")
 	end
 	if fv("loid") and fv("loid") ~= "" then u:set("xpon", "device", "loid", fv("loid")) end
-	if fv("loid_password") and fv("loid_password") ~= "" then
-		u:set("xpon", "device", "loid_password", fv("loid_password"))
-	end
+	u:set("xpon", "device", "loid_password", loid_password)
 	if sn ~= "" then u:set("xpon", "device", "def_sn", sn); u:set("xpon", "device", "sn", sn) end
 	u:set("xpon", "device", "xpon_sn_auth_type", snf)
 	if snpwd ~= "" then
@@ -983,48 +1222,195 @@ local function save_auth(fv)
 	if vendor_id ~= "" then u:set("xpon", "device", "vendor_id", vendor_id) end
 	if fv("equipment_id") and fv("equipment_id") ~= "" then u:set("xpon", "device", "equipment_id", fv("equipment_id")) end
 	if fv("onu_version") and fv("onu_version") ~= "" then u:set("xpon", "device", "onu_version", fv("onu_version")) end
-	if fv("omcc_version") and fv("omcc_version") ~= "" then u:set("xpon", "device", "omcc_version", fv("omcc_version")) end
+	if omcc_version ~= "" then u:set("xpon", "device", "omcc_version", omcc_version) end
 	if omci_spec_ver ~= "" then u:set("xpon", "device", "omci_spec_ver", omci_spec_ver) end
 	if pon_mac ~= "" then u:set("xpon", "device", "pon_mac", pon_mac) end
 	u:set("xpon", "device", "epon_oui", eoui)
 	u:set("xpon", "device", "epon_ven_info", fv("epon_ven_info") or "")
 
 	u:save("network")
-	u:commit("network")
+	local network_commit = u:commit("network")
+	if not network_commit then return nil, "persist_commit_network" end
 	u:save("xpon")
-	u:commit("xpon")
+	local xpon_commit = u:commit("xpon")
+	if not xpon_commit then return nil, "persist_commit_xpon" end
+	-- 原厂 OMCI 启动脚本从 gpon.ONU.OMCCVersion 读取默认值；同步该配置，
+	-- 再由 xpon-replay 在 OMCI 就绪后覆盖运行态，避免启动窗口使用旧版本。
+	if omcc_version ~= "" and u:get("gpon", "ONU") then
+		local gv = omcc_version:gsub("^0[xX]", ""):upper()
+		u:set("gpon", "ONU", "OMCCVersion", gv)
+		u:save("gpon")
+		local gpon_commit = u:commit("gpon")
+		if not gpon_commit then return nil, "persist_commit_gpon" end
+	end
+	-- UCI Lua API 的写操作可能只返回 nil 而不抛异常；提交后使用新 cursor
+	-- 回读关键身份字段，禁止“页面提示成功但持久配置没写进去”。
+	local check = uci_native.cursor()
+	local equipment = fv("equipment_id") or ""
+	local onu_version = fv("onu_version") or ""
+	if equipment ~= "" and check:get("network", "xpon_auth", "equipment_id") ~= equipment then
+		return nil, "persist_equipment_id"
+	end
+	if onu_version ~= "" and check:get("network", "xpon_auth", "onu_version") ~= onu_version then
+		return nil, "persist_onu_version"
+	end
+	if omcc_version ~= "" and check:get("network", "xpon_auth", "omcc_version") ~= omcc_version then
+		return nil, "persist_omcc_version"
+	end
+	return true
 end
 
 local function save_services(fv)
 	local rows, count = {}, tonumber(fv("vlan_count") or "0") or 0
-	local seen = {}
+	local seen, ports, keys, mvids = {}, {}, {}, {}
+	local allowed_type = { internet=true, tr069=true, iptv=true, voice=true, other=true }
+	local allowed_proto = { pppoe=true, dhcp=true, static=true, none=true }
+	local allowed_port = { none=true, lan1=true, lan2=true, lan3=true, lan4=true }
+	local function valid_ipv4(v)
+		if v == "" then return true end
+		local a,b,c,d = v:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+		return a and tonumber(a)<=255 and tonumber(b)<=255 and tonumber(c)<=255 and tonumber(d)<=255
+	end
+	local valid_masks = { ["0.0.0.0"]=true, ["128.0.0.0"]=true, ["192.0.0.0"]=true, ["224.0.0.0"]=true, ["240.0.0.0"]=true, ["248.0.0.0"]=true, ["252.0.0.0"]=true, ["254.0.0.0"]=true, ["255.0.0.0"]=true }
+	for bits=9,32 do
+		local n, oct = bits, {}
+		for j=1,4 do local b=math.min(n,8); oct[j]=tostring(256-2^(8-b)); n=n-b end
+		valid_masks[table.concat(oct, ".")] = true
+	end
 	for i = 0, count - 1 do
 		if fv("vlan_" .. i .. "_deleted") ~= "1" then
 			local p = "vlan_" .. i .. "_"
-			local row = { vlan_id=fv(p.."id") or "", priority=fv(p.."priority") or "0", remark=fv(p.."remark") or "" }
+			local row = {
+				key=fv(p.."key") or "", interface=fv(p.."interface") or "", adopt=fv(p.."adopt") == "1",
+				vlan_id=fv(p.."id") or "", priority=fv(p.."priority") or "0",
+				remark=fv(p.."remark") or "", enable=fv(p.."enable") == "1" and "1" or "0",
+				service_type=fv(p.."service_type") or "internet", mode=fv(p.."mode") or "routed",
+				proto=fv(p.."proto") or "dhcp", mtu=fv(p.."mtu") or "1500",
+				username=fv(p.."username") or "", password=fv(p.."password") or "",
+				ipaddr=fv(p.."ipaddr") or "", netmask=fv(p.."netmask") or "",
+				gateway=fv(p.."gateway") or "", dns1=fv(p.."dns1") or "", dns2=fv(p.."dns2") or "",
+				lan_port=fv(p.."lan_port") or "none", mcast_vlan=fv(p.."mcast_vlan") or ""
+			}
 			local vid = tonumber(row.vlan_id)
-			local pri = tonumber(row.priority)
+			local pri, mtu, mvid = tonumber(row.priority), tonumber(row.mtu), tonumber(row.mcast_vlan)
+			if row.key == "" then row.key = "svc_" .. tostring(vid or i) end
+			if #row.key > 12 or not row.key:match("^[A-Za-z0-9_]+$") or keys[row.key] then return nil, "service_key" end
+			if row.interface ~= "" and not row.interface:match("^[A-Za-z0-9_]+$") then return nil, "interface_name" end
+			keys[row.key] = true
 			if not vid or vid < 1 or vid > 4094 or not pri or pri < 0 or pri > 7 then return nil, "vlan" end
 			if seen[vid] then return nil, "vlan_duplicate" end
+			if not allowed_type[row.service_type] or (row.mode ~= "routed" and row.mode ~= "bridged") or not allowed_proto[row.proto] then return nil, "service_mode" end
+			if row.mode == "bridged" then row.proto = "none" end
+			if row.mode == "routed" and row.proto == "none" then return nil, "service_proto" end
+			if not mtu or mtu < 576 or mtu > 2000 then return nil, "mtu" end
+			if row.proto == "pppoe" and row.username == "" then return nil, "pppoe_username" end
+			if row.proto == "static" and (row.ipaddr == "" or row.netmask == "") then return nil, "static_required" end
+			if not valid_ipv4(row.ipaddr) or not valid_ipv4(row.netmask) or not valid_ipv4(row.gateway) or not valid_ipv4(row.dns1) or not valid_ipv4(row.dns2) then return nil, "ipv4" end
+			if row.proto == "static" and not valid_masks[row.netmask] then return nil, "netmask" end
+			if not allowed_port[row.lan_port] then return nil, "lan_port" end
+			if row.lan_port ~= "none" and (row.mode ~= "bridged" or ports[row.lan_port]) then return nil, ports[row.lan_port] and "port_conflict" or "port_mode" end
+			if row.lan_port ~= "none" then ports[row.lan_port] = true end
+			if row.mcast_vlan ~= "" and (row.service_type ~= "iptv" or not mvid or mvid < 1 or mvid > 4094) then return nil, "mcast_vlan" end
+			if mvid and mvids[mvid] then return nil, "mcast_duplicate" end
+			if mvid then mvids[mvid] = true end
 			seen[vid] = true
 			rows[#rows + 1] = row
 		end
 	end
 	local u = uci.cursor()
-	local desired = {}; for _, row in ipairs(rows) do desired[tonumber(row.vlan_id)] = true end
-	local cfg = sh("cat /proc/net/vlan/config 2>/dev/null")
-	for vid_s in cfg:gmatch("pon%.(%d+)%s+|%s+%d+%s+|%s+pon") do
-		local vid = tonumber(vid_s)
-		if vid and not desired[vid] then sys.call("timeout 3 vconfig rem pon." .. vid .. " >/dev/null 2>&1") end
-	end
-	-- 完整重建有效 wan_vlan；清理 stock 遗留空 section，避免缺省创建 VLAN 10。
-	u:foreach("network", "wan_vlan", function(s) u:delete("network", s[".name"]) end)
+	local pu, mcast_conflict = uci.cursor(), false
+	pu:foreach("pon", "multicast_vlan", function(s)
+		if s.xpon_managed ~= "1" and mvids[tonumber(s.vlan_id or "")] then mcast_conflict = true end
+	end)
+	if mcast_conflict then return nil, "unmanaged_mcast_conflict" end
+	-- 拒绝覆盖任何未受管的同名接口或同 VLAN device。
+	local conflict
+	u:foreach("network", nil, function(s)
+		if s.xpon_managed ~= "1" then
+			local dev = s.name or s.device
+			for _, row in ipairs(rows) do
+				local legacy_vlan = s[".type"] == "wan_vlan" and s.vlan_id == row.vlan_id
+				local adopt_this = row.adopt and s[".type"] == "interface" and s[".name"] == row.interface and s.device == "pon." .. row.vlan_id
+				if not adopt_this and (dev == "pon." .. row.vlan_id or legacy_vlan or s[".name"] == "xpon_" .. row.key) then conflict = row.vlan_id end
+			end
+		end
+	end)
+	if conflict then return nil, "unmanaged_conflict_" .. conflict end
+	local old_password, old_password_iface = {}, {}
+	u:foreach("network", "interface", function(s)
+		if s.password then old_password_iface[s[".name"]] = s.password end
+		if s.xpon_managed == "1" and s.xpon_service and s.password then old_password[s.xpon_service] = s.password end
+	end)
+	-- 接管是唯一允许触碰未受管段的路径，且必须由该行显式勾选。
+	for _, row in ipairs(rows) do if row.adopt and row.interface ~= "" then u:delete("network", row.interface) end end
+	-- 只删除本插件拥有的段；其他 network 配置保持原样。
+	local remove = {}
+	u:foreach("network", nil, function(s)
+		if s.xpon_managed == "1" and (s[".type"] == "xpon_service" or s.xpon_service) then
+			remove[#remove + 1] = s[".name"]
+		end
+	end)
+	for _, s in ipairs(remove) do u:delete("network", s) end
+	local wan_ifaces = {}
 	for _, row in ipairs(rows) do
-		local s = u:add("network", "wan_vlan")
-		u:set("network",s,"vlan_id",row.vlan_id); u:set("network",s,"payload","routed")
-		u:set("network",s,"priority",row.priority); u:set("network",s,"remark",row.remark); u:set("network",s,"xpon_managed","1")
+		local meta = "xpon_service_" .. row.key
+		local iface = row.adopt and row.interface or ("xpon_" .. row.key)
+		local vlan_dev = "pon." .. row.vlan_id
+		u:section("network", "xpon_service", meta, {
+			service_key=row.key, vlan_id=row.vlan_id, priority=row.priority, remark=row.remark,
+			enable=row.enable, service_type=row.service_type, mode=row.mode, proto=row.proto,
+			mtu=row.mtu, username=row.username, ipaddr=row.ipaddr, netmask=row.netmask,
+			gateway=row.gateway, dns1=row.dns1, dns2=row.dns2, lan_port=row.lan_port,
+			mcast_vlan=row.mcast_vlan
+		})
+		u:set("network", meta, "interface", iface); u:set("network", meta, "payload", row.mode); u:set("network", meta, "xpon_managed", "1")
+		local devsec = "xpon_vlan_" .. row.key
+		u:section("network", "device", devsec, { type="8021q", ifname="pon", vid=row.vlan_id, name=vlan_dev, mtu=row.mtu, xpon_managed="1", xpon_service=row.key })
+		local ifdev = vlan_dev
+		if row.mode == "bridged" then
+			local brsec, brname = "xpon_bridge_" .. row.key, "bx-" .. row.key
+			u:section("network", "device", brsec, { type="bridge", name=brname, xpon_managed="1", xpon_service=row.key })
+			local list = { vlan_dev }
+			local pmap = { lan1="eth0.8", lan2="eth0.7", lan3="eth0.5", lan4="eth0.4" }
+			if row.lan_port ~= "none" then list[#list + 1] = pmap[row.lan_port] end
+			u:set_list("network", brsec, "ports", list); ifdev = brname
+		end
+		local opts = { device=ifdev, proto=row.proto, auto=row.enable, mtu=row.mtu, xpon_managed="1", xpon_service=row.key }
+		if row.mode == "routed" then wan_ifaces[#wan_ifaces + 1] = iface end
+		if row.proto == "pppoe" then opts.username=row.username; opts.ipv6="auto" end
+		if row.proto == "static" then opts.ipaddr=row.ipaddr; opts.netmask=row.netmask; opts.gateway=row.gateway end
+		u:section("network", "interface", iface, opts)
+		local password = row.password ~= "" and row.password or old_password[row.key] or old_password_iface[iface]
+		if password then u:set("network", iface, "password", password) end
+		local dns = {}; if row.dns1 ~= "" then dns[#dns+1]=row.dns1 end; if row.dns2 ~= "" then dns[#dns+1]=row.dns2 end
+		if #dns > 0 then u:set("network", iface, "peerdns", "0"); u:set_list("network", iface, "dns", dns) end
 	end
 	u:save("network"); u:commit("network")
+	-- 将路由业务加入 firewall wan zone。用独立清单记录本插件拥有的列表项，
+	-- 更新时只替换这些项，并顺带清除旧版本遗留的 xpon_* 接口名。
+	local fu, wan_zone = uci.cursor(), nil
+	fu:foreach("firewall", "zone", function(s) if s.name == "wan" then wan_zone = s[".name"] end end)
+	if wan_zone then
+		local function as_list(v)
+			if type(v) == "table" then return v end
+			local out = {}; for x in tostring(v or ""):gmatch("%S+") do out[#out + 1] = x end; return out
+		end
+		local xu = uci.cursor()
+		local old_managed, drop, merged, have = as_list(xu:get("xpon", "firewall", "wan_networks")), {}, {}, {}
+		for _, n in ipairs(old_managed) do drop[n] = true end
+		for _, n in ipairs(as_list(fu:get("firewall", wan_zone, "network"))) do
+			if not drop[n] and not n:match("^xpon_") and not have[n] then merged[#merged + 1] = n; have[n] = true end
+		end
+		for _, n in ipairs(wan_ifaces) do if not have[n] then merged[#merged + 1] = n; have[n] = true end end
+		fu:set_list("firewall", wan_zone, "network", merged)
+		fu:save("firewall"); fu:commit("firewall")
+		if not xu:get_all("xpon", "firewall") then xu:section("xpon", "firewall", "firewall", {}) end
+		xu:set_list("xpon", "firewall", "wan_networks", wan_ifaces)
+		xu:save("xpon"); xu:commit("xpon")
+	end
+	-- 已提交的业务对象是组播关联真源，由后端统一重建配置，避免 LuCI
+	-- 多 cursor/多 config 提交时 network 与 pon 状态不同步。
+	if sys.call("/usr/bin/pon-multicast sync-services >/tmp/pon-multicast-sync.log 2>&1") ~= 0 then return nil, "mcast_sync" end
 	return true
 end
 
@@ -1034,7 +1420,7 @@ local function save_vlan(fv)
 	if fv("fallback_enable") == nil and fv("gem_base") == nil then
 		return
 	end
-	ensure_section("xpon", "rules", "fallback")
+	ensure_section(u, "xpon", "rules", "fallback")
 	u:set("xpon", "rules", "enable", fv("fallback_enable") == "1" and "1" or "0")
 	u:set("xpon", "rules", "gem_base", fv("gem_base") or "10")
 	u:save("xpon")
@@ -1102,7 +1488,7 @@ local function manual_gem(fv)
 		if exists ~= "" then
 			ok = 1
 			local u = uci.cursor()
-			ensure_section("xpon", svc, "service")
+			ensure_section(u, "xpon", svc, "service")
 			u:set("xpon", svc, "vlan", vid)
 			u:save("xpon")
 			u:commit("xpon")
@@ -1120,7 +1506,7 @@ local function manual_gem(fv)
 			" >/dev/null 2>&1; /usr/bin/xpon-mvlan-snap.sh >/dev/null 2>&1 ) >/dev/null 2>&1 </dev/null &")
 		ok = 1
 		local u = uci.cursor()
-		ensure_section("xpon", svc, "service")
+		ensure_section(u, "xpon", svc, "service")
 		u:set("xpon", svc, "mcast_vlan", mvid)
 		u:save("xpon")
 		u:commit("xpon")
@@ -1140,7 +1526,7 @@ local function manual_gem(fv)
 			ok = 1
 			-- 回写配置，便于页面临场预填/守护脚本参考
 			local u = uci.cursor()
-			ensure_section("xpon", svc, "service")
+			ensure_section(u, "xpon", svc, "service")
 			u:set("xpon", svc, "vlan", vid)
 			u:set("xpon", svc, "pbit", tostring(pbit))
 			u:set("xpon", svc, "gem", tostring(gem))
@@ -1163,7 +1549,6 @@ function action_save()
 	if page == "auth" then
 		local loid = formvalue("loid") or ""
 		local sn = (formvalue("sn") or ""):gsub("%s+", "")
-		local vendor_id = (formvalue("vendor_id") or ""):gsub("%s+", "")
 		local atg = (formvalue("auth_type_g") or ""):lower()
 		local ptech = formvalue("pon_tech") or "GPON"
 		local pmode = pon_engine_for(ptech)
@@ -1174,19 +1559,17 @@ function action_save()
 		local even = formvalue("epon_ven_info") or ""
 		if onu_low ~= "1" and onu_low ~= "2" then
 			err = "onu_low"
-		elseif #vendor_id > 0 and not vendor_id:match("^[%w]{4}$") then
-			err = "vendor_id"
-		elseif not ascii20(formvalue("equipment_id") or "") then
+		elseif pmode ~= "EPON" and (#sn ~= 12 or not sn:sub(1, 4):match("^[A-Za-z0-9]+$") or not sn:sub(5, 12):match("^[0-9a-fA-F]+$")) then
+			err = "sn"
+		elseif not ascii24_optional(formvalue("equipment_id") or "") then
 			err = "equipment_id"
-		elseif #(formvalue("omcc_version") or "") > 0 and not (formvalue("omcc_version") or ""):match("^0[xX][0-9a-fA-F]{1,2}$") then
-			err = "omcc_version"
 		elseif not specver_ok(formvalue("omci_spec_ver")) then
 			err = "omci_spec_ver"
-		elseif #eoui > 0 and not eoui:match("^[0-9a-fA-F]{6}$") then
+		elseif #eoui > 0 and not hex_len(eoui, 6, 6) then
 			err = "epon_oui"
-		elseif #even > 0 and not even:match("^[0-9a-fA-F]{8}$") then
+		elseif #even > 0 and not hex_len(even, 8, 8) then
 			err = "epon_ven_info"
-		elseif #pon_mac > 0 and not pon_mac:match("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$") then
+		elseif #pon_mac > 0 and not ponmac_ok(pon_mac) then
 			err = "pon_mac"
 		elseif #loid > 24 then
 			err = "loid"
@@ -1197,15 +1580,7 @@ function action_save()
 		elseif atg == "loid" and #loid == 0 then
 			err = "loid"
 		elseif atg == "sn" or atg == "regid" then
-			-- GPON SN 认证：SN 必填（12 字节完整或 8 位 hex 后半段），SN 密码可选
-			if #sn == 0 then
-				err = "sn"
-			elseif #sn ~= 12 and not (#sn == 8 and sn:match("^[0-9a-fA-F]+$")) then
-				err = "sn"
-			elseif #sn == 12 and #vendor_id == 4 and sn:sub(1, 4):upper() ~= vendor_id:upper() then
-				-- PON Vendor ID 必须与 SN 前 4 位完全匹配（G.988 ME7 厂商代码）
-				err = "vendor_id"
-			end
+			-- PON SN 已在通用校验中按完整格式验证；这里只校验可选密码。
 			-- SN 密码（可选）：ascii ≤10 / hex ≤20 位且只能 0-9a-f。
 			if not err then
 				local snf = (formvalue("xpon_sn_auth_type") or "ascii"):lower()
@@ -1221,27 +1596,37 @@ function action_save()
 				end
 			end
 		elseif atg == "password" then
-			-- 移动 Password：只填 REG_ID（regid ≤36，旧猫认证页 REG_ID 直接抄）；SN 用厂商信息里已回显的当前值
+			-- 移动 Password：PON SN + REG_ID。
 			local rp = formvalue("reg_id") or ""
-			if #rp > 36 then err = "reg_id" end
+			if #rp > 36 then
+				err = "reg_id"
+			end
 		end
 		if not err then
-			save_auth(formvalue)
-			local onu_val = onu_type_hex(ptech, onu_low)
-			local u = uci.cursor(); u:set("xpon","device","onu_type",onu_val); u:save("xpon"); u:commit("xpon")
-			local rc = sys.call("/usr/bin/xpon-auth-native.sh")
-			if rc ~= 0 then
-				err = "native_write_" .. tostring(rc)
+			local saved_ok, save_err = save_auth(formvalue)
+			if not saved_ok then
+				err = save_err or "persist_auth"
 			else
-				http.prepare_content("text/html; charset=utf-8")
-				http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>认证参数写入并回读成功</h2><p>设备将在约 8 秒后整机重启，当前 LuCI 登录会话将失效，这是正常现象。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
-				sys.call("( sleep 8; sync; reboot ) >/dev/null 2>&1 </dev/null &")
-				return
+				local onu_val = onu_type_hex(ptech, onu_low)
+				local u = uci.cursor(); u:set("xpon","device","onu_type",onu_val); u:save("xpon"); u:commit("xpon")
+				local rc = sys.call("/usr/bin/xpon-auth-native.sh")
+				if rc ~= 0 then
+					err = "native_write_" .. tostring(rc)
+				else
+					http.prepare_content("text/html; charset=utf-8")
+					if schedule_reboot(8) then
+						http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>认证参数写入并回读成功</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
+						return
+					end
+					err = "reboot_schedule"
+				end
 			end
 		end
 	elseif page == "services" then
 		local ok, why = save_services(formvalue)
-		if not ok then err = why end
+		if not ok then
+			http.redirect(xpon_url("services", "err=" .. tostring(why))); return
+		end
 	elseif page == "provision" then
 		local act = formvalue("action") or "save"
 		if act == "manual" then
@@ -1298,7 +1683,7 @@ function action_save()
 	if page == "auth" then
 		sys.call("( /usr/bin/xpon-apply.sh auth; /usr/bin/xpon-apply.sh mac ) >/tmp/xpon-auth-apply.log 2>&1 </dev/null &")
 	elseif page == "services" then
-		sys.call("( /etc/init.d/network reload ) >/tmp/pon-services.log 2>&1 </dev/null &")
+		sys.call("( /etc/init.d/network reload; /etc/init.d/firewall reload; sleep 2; /usr/bin/pon-multicast apply-all ) >/tmp/pon-services.log 2>&1 </dev/null &")
 	end
 
 	http.redirect(xpon_url(page, "saved=1"))
@@ -1309,19 +1694,43 @@ end
 ------------------------------------------------------------------------
 
 function action_auth()
+	local page_err = formvalue("err")
+	-- r5 已将 OMCC 设为非阻断可选项；忽略旧页面 URL 遗留的废弃错误码。
+	if page_err == "omcc_version" then page_err = nil end
 	ltemplate.render("xpon/auth", {
 		v = auth_values(),
 		saved = (formvalue("saved") == "1"),
-		err = formvalue("err"),
+		err = page_err,
 	})
 end
 
 function action_services()
 	ltemplate.render("xpon/services", {
-		services = service_values(), multicast = multicast_values(),
+		services = service_values(), kernel_vlans = kernel_vlan_values(), multicast = multicast_values(),
+		iptv_businesses = iptv_business_values(),
 		saved = (formvalue("saved") == "1"),
 		err = formvalue("err"),
+		vlan_cleaned = formvalue("vlan_cleaned"),
 	})
+end
+
+function action_service_action()
+	local key = formvalue("service") or ""
+	local op = formvalue("op") or ""
+	if not key:match("^[A-Za-z0-9_]+$") or (op ~= "up" and op ~= "down") then
+		http.redirect(xpon_url("services", "err=service_action")); return
+	end
+	local uc, iface = uci.cursor(), nil
+	uc:foreach("network", "xpon_service", function(v)
+		if v.xpon_managed == "1" and v.service_key == key then iface = v.interface end
+	end)
+	iface = iface or ("xpon_" .. key)
+	local s = uc:get_all("network", iface)
+	if not s or s[".type"] ~= "interface" or s.xpon_managed ~= "1" or s.xpon_service ~= key then
+		http.redirect(xpon_url("services", "err=service_owner")); return
+	end
+	local rc = sys.call((op == "up" and "ifup " or "ifdown ") .. iface .. " >/tmp/xpon-service-action.log 2>&1")
+	http.redirect(xpon_url("services", rc == 0 and ("service_op=" .. op) or ("err=service_runtime_" .. rc)))
 end
 
 function action_mode()
@@ -1479,7 +1888,7 @@ local function build_gem_vlan_analysis(opt)
 		local biz = table.concat(biz_parts, "、")
 		if biz == "" then
 			if role == "组播" then
-				biz = "组播/广播通道（下行专用，组播 M-VLAN 白名单）"
+				biz = "组播/广播通道（下行专用，组播 VLAN 白名单）"
 			elseif role == "OMCC 管理" then
 				biz = "OMCI 管理通道"
 			elseif wild then
@@ -1686,12 +2095,32 @@ local function optical_diag()
 end
 
 -- 收集一次状态（服务端渲染 + JSON 轮询共用同一份数据）
-local function collect_status()
+local function collect_status(include_details)
+	include_details = include_details == true
 	local function sec(title, cmd)
 		return { title = title, body = sh(cmd) }
 	end
 	local function ksec(title, cmd)
 		return { title = title, body = klog_show(cmd) }
+	end
+
+	-- 驱动模式比 UCI 更接近当前实际运行状态。EPON 家族包括
+	-- 1G/10G/Turbo EPON；其余模式均使用 GPON/OMCI 查询接口。
+	local sys_mode = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
+	local sys_mode_num = tonumber(sys_mode)
+	local is_epon = sys_mode_num == 2 or sys_mode_num == 3 or sys_mode_num == 4
+		or sys_mode_num == 5 or sys_mode_num == 12
+	local pon_family = is_epon and "epon" or "gpon"
+	local pon_info = is_epon and sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
+		or sh("/userfs/bin/ponmgr gpon get info 2>&1")
+	local fec_out
+	local mac_cnt
+	if is_epon then
+		fec_out = sh("/userfs/bin/ponmgr epon get txfec 2 2>&1; /userfs/bin/ponmgr epon get rxfec 2 2>&1")
+		mac_cnt = sh("/userfs/bin/ponmgr epon get wanCntStatus 2>&1")
+	else
+		fec_out = sh("/userfs/bin/ponmgr gpon get fec_status 2>&1")
+		mac_cnt = sh("/userfs/bin/ponmgr gpon get WanCnt 2>&1")
 	end
 
 	-- 光模块 DDM：收发光 dBm / BOSA 温度 / CPU 温度
@@ -1742,25 +2171,75 @@ local function collect_status()
 		  pct = math.floor(pon_tx / pmax * 100), cls = "xpon-fill-tx" },
 	}
 
+	-- PON MAC 层计数不同于 ifconfig 的业务接口计数，可直接反映 FEC、
+	-- CRC/BIP 和驱动丢包。字段格式已在 XGPON 真机及 AN7583 固件核对。
+	local mac_rx = tonumber(mac_cnt:match("rxFrameCnt%s+(%d+)") or mac_cnt:match("rx packets:%s*(%d+)"))
+	local mac_tx = tonumber(mac_cnt:match("txFrameCnt:%s*(%d+)") or mac_cnt:match("tx packets:%s*(%d+)"))
+	local mac_rx_drop = tonumber(mac_cnt:match("rxDropCnt:%s*(%d+)")) or 0
+	local mac_tx_drop = tonumber(mac_cnt:match("txDropCnt:%s*(%d+)")) or 0
+	local fec_uncorrectable = tonumber(mac_cnt:match("rxFecErrorCnt:%s*(%d+)")
+		or mac_cnt:match("rx FEC error cnt:%s*(%d+)")) or 0
+	local fec_corrected = tonumber(mac_cnt:match("rxFecCerrorCnt:%s*(%d+)"))
+	local crc_errors = tonumber(mac_cnt:match("rxCrcCnt:%s*(%d+)"))
+	local bip_errors = tonumber(mac_cnt:match("BipError:%s*(%d+)"))
+	local fec_rx = fec_out:match("fec_rx_status%s+is%s+(%w+)")
+		or fec_out:match("fec_rx%s*=%s*(%d+)")
+	local fec_tx = fec_out:match("fec_tx_status%s+is%s+(%w+)")
+		or fec_out:match("FEC state%s*=%s*(%d+)")
+	local fec_label = "RX " .. (fec_rx or "?") .. " / TX " .. (fec_tx or "?")
+	local mac_label = (mac_rx and mac_tx) and
+		("RX " .. fmt_num(mac_rx) .. " / TX " .. fmt_num(mac_tx)
+		 .. "（drop " .. mac_rx_drop .. "/" .. mac_tx_drop .. "）") or "N/A"
+	local err_parts = { "不可纠正 FEC " .. fec_uncorrectable }
+	if fec_corrected then err_parts[#err_parts + 1] = "已纠正 FEC " .. fmt_num(fec_corrected) end
+	if crc_errors then err_parts[#err_parts + 1] = "CRC " .. crc_errors end
+	if bip_errors then err_parts[#err_parts + 1] = "BIP " .. bip_errors end
+	local pon_error_label = table.concat(err_parts, " / ")
+	local pon_error_level = (fec_uncorrectable > 0 or (crc_errors or 0) > 0 or (bip_errors or 0) > 0)
+		and "warn" or "ok"
+
 	-- 摘要：ONU State / 认证 / OMCC / 模式 / OLT 下发（尽量取 OMCI 可查状态）
-	local omcc_out  = sh("/userfs/bin/ponmgr gpon get omcc 2>&1")
+	local omcc_out  = is_epon and "" or sh("/userfs/bin/ponmgr gpon get omcc 2>&1")
 	local alloc_id  = omcc_out:match("alloc%s+ID%s*:%s*(%d+)")
 	local gem_id    = omcc_out:match("gemport%s+ID%s*:%s*(%d+)")
-	local gem_entries = sh("/userfs/bin/ponmgr gpon get gemport 2>&1"):match("Entries%s*:%s*(%d+)")
-	local tcont_entries = sh("/userfs/bin/ponmgr gpon get tcont 2>&1 | awk 'NR>1 && NF>0{n++} END{print n+0}'")
+	local gemport_out = is_epon and "" or sh("/userfs/bin/ponmgr gpon get gemport 2>&1")
+	local tcont_out = is_epon and "" or sh("/userfs/bin/ponmgr gpon get tcont 2>&1")
+	local gem_entries = gemport_out:match("Entries%s*:%s*(%d+)")
+	local tcont_entries = is_epon and "?" or tostring(select(2, tcont_out:gsub("ALLOC ID:", "")))
 	-- GEM ↔ VLAN 关联：ponmgr GEM 表 × 上行映射（vid 列）× ME84 显式打标
-	local analysis = build_gem_vlan_analysis()
+	local map_up, map_down, map_queue = "", "", ""
+	if include_details and not is_epon then
+		map_up = klog_show("/userfs/bin/gponmapcmd showGemPortRule")
+		map_down = klog_show("/userfs/bin/gponmapcmd showDownRule")
+		map_queue = klog_show("/userfs/bin/gponmapcmd showQueueRule")
+	end
+	local analysis = is_epon and { rows = {}, note = "EPON/OAM 模式不使用 GPON GEM/TCONT 映射。" }
+		or include_details and build_gem_vlan_analysis({
+			up_text = map_up, down_text = map_down, queue_text = map_queue,
+			gp_out = gemport_out,
+		}) or { rows = {}, note = "" }
 	local gem_vlan = { rows = analysis.rows, note = analysis.note }
 
-	-- ONU State：dmesg 优先，dmesg 不可读时回退 logread，
-	-- 都没有则按 OMCC alloc（≠1023 说明已注册）推断 O5
-	local last_pt  = sh("dmesg 2>/dev/null | grep -o 'ponTime:O[0-9]*' | tail -1")
-	local pt_src   = "dmesg"
-	if last_pt == "" then
+	-- ONU State：优先使用 ponmgr/EPON 认证状态文件的正式运行状态，
+	-- 再回退内核日志；全部不可读时才根据 OMCC alloc 推断。
+	local state_id
+	if is_epon then
+		local epon_auth = pon_info:match("Auth Status:%s*([^\n]+)")
+		if epon_auth == "REG_AND_AUTH" then state_id = "5" end
+	else
+		state_id = pon_info:match("ONU State:%s*O(%d+)")
+	end
+	local last_pt = ""
+	local pt_src = "ponmgr"
+	if not state_id then
+		last_pt = sh("dmesg 2>/dev/null | grep -o 'ponTime:O[0-9]*' | tail -1")
+		pt_src = "dmesg"
+	end
+	if not state_id and last_pt == "" then
 		last_pt = sh("logread 2>/dev/null | grep -o 'ponTime:O[0-9]*' | tail -1")
 		pt_src  = "logread"
 	end
-	local state_id   = last_pt:match("O(%d+)$")
+	if not state_id then state_id = last_pt:match("O(%d+)$") end
 	local state_inf  = false
 	if not state_id and alloc_id and alloc_id ~= "1023" then
 		state_id = "5"
@@ -1769,12 +2248,15 @@ local function collect_status()
 	local pt_tail = sh("dmesg 2>/dev/null | grep ponTime | tail -8")
 	if pt_tail == "" then pt_tail = sh("logread 2>/dev/null | grep ponTime | tail -8") end
 
-	local auth_out = sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
-	local auth_raw = auth_out:match("authStat%s*=%s*(%d+)") or ""
+	local auth_out = is_epon and pon_info or sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
+	local auth_raw = is_epon and (pon_info:match("Auth Status:%s*([^\n]+)") or "")
+		or (auth_out:match("authStat%s*=%s*(%d+)") or "")
 	-- OLT 标识：/tmp/ponstatus/olt_info（axon_platform_manager 写 ME131 OLT-G）
 	local olt_out    = sh("cat /tmp/ponstatus/olt_info 2>/dev/null")
 	local olt_vendor = olt_out:match("oltVendorId%s*=%s*([%w]+)") or ""
-	local olt_equip  = olt_out:match("equipmentId%s*=%s*([%w._%-]+)") or ""
+	-- %s 会跨越换行；equipmentId 为空时不能误把下一行的键名当设备型号。
+	local olt_equip  = olt_out:match("equipmentId[ \t]*=[ \t]*([^\r\n]*)") or ""
+	olt_equip = util.trim(olt_equip)
 	local olt_names  = {
 		HWTC = "华为 Huawei", ZTEG = "中兴 ZTE", FHTT = "烽火 FiberHome",
 		FHTS = "烽火 FiberHome", ALCL = "诺基亚 Nokia(原阿尔卡特)", UTST = "UT 斯达康",
@@ -1783,8 +2265,8 @@ local function collect_status()
 	if olt_names[olt_vendor] then olt_label = olt_names[olt_vendor] end
 	if olt_equip ~= "" and olt_equip ~= "0" then olt_label = olt_label .. " / " .. olt_equip end
 
-	local sys_mode  = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
-	local onu_env   = sh("fw_printenv onu_type 2>/dev/null")
+	local onu_env_raw = sh("fw_printenv onu_type 2>/dev/null")
+	local onu_env   = onu_env_raw:match("=([0-9a-fA-F]+)$") or onu_env_raw
 	local onu_cmd   = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1"):match("=(.*)$") or ""
 	local onu_env_dec = decode_onu(onu_env)
 	local onu_cmd_dec = decode_onu(onu_cmd)
@@ -1800,7 +2282,11 @@ local function collect_status()
 		level = "err"
 	end
 	local auth_label
-	if auth_raw == "1" then
+	if is_epon and auth_raw == "REG_AND_AUTH" then
+		auth_label = "已注册并认证（REG_AND_AUTH）"
+	elseif is_epon and auth_raw == "REG_BUT_NOT_AUTH" then
+		auth_label = "已注册但未认证（REG_BUT_NOT_AUTH）"
+	elseif auth_raw == "1" then
 		auth_label = "已认证（authStat=1）"
 	elseif auth_raw == "0" then
 		auth_label = "未认证（authStat=0）"
@@ -1810,7 +2296,7 @@ local function collect_status()
 
 	local summary = {
 		{ label = "ONU 状态", value = state_label, level = level, group = "reg", wide = true },
-		{ label = "OMCI 认证", value = auth_label, group = "reg" },
+		{ label = is_epon and "OAM 认证" or "OMCI 认证", value = auth_label, group = "reg" },
 		{ label = "OLT 设备", value = (olt_label ~= "" and olt_label) or "N/A（未收到 ME131 OLT-G）",
 		  level = (olt_vendor ~= "") and "ok" or "info", group = "reg" },
 		{ label = "PON 模式（驱动 sys_xpon_mode）", value = (sys_mode ~= "" and (sys_mode .. " → " .. (pon_mode_names[tonumber(sys_mode)] or "未知"))) or "N/A", group = "reg" },
@@ -1819,6 +2305,10 @@ local function collect_status()
 		{ label = "OLT 下发（GEM / TCONT）", value = ((gem_entries or "?") .. " 条 / " .. tcont_entries .. " 条"
 			.. (#gem_vlan.rows > 0 and "（关联见下）" or "")), group = "reg" },
 		{ label = "PON 接口流量", value = "RX " .. fmt_num(pon_rx) .. " | TX " .. fmt_num(pon_tx), bars = pon_bars, group = "traffic", wide = true },
+		{ label = "PON MAC 计数（" .. string.upper(pon_family) .. "）", value = mac_label,
+		  level = (mac_rx and mac_tx) and "ok" or "info", group = "traffic", wide = true },
+		{ label = "FEC 状态", value = fec_label, level = (fec_rx or fec_tx) and "ok" or "info", group = "traffic" },
+		{ label = "PON 错误计数", value = pon_error_label, level = pon_error_level, group = "traffic" },
 		{ label = "收光（OLT→ONU 下行）", value = (rx_pwr and (rx_pwr .. " dBm" .. rx_note) or "N/A"), level = rx_level, group = "optical" },
 		{ label = "发光（ONU→OLT 上行）", value = (tx_pwr and (tx_pwr .. " dBm") or "N/A"), level = tx_pwr and "ok" or "info", group = "optical" },
 		{ label = "供电电压（Vcc）", value = (vcc and (vcc .. " V") or "N/A"), level = vcc and "ok" or "info", group = "optical" },
@@ -1827,31 +2317,36 @@ local function collect_status()
 		{ label = "光模块温度（Transceiver）", value = (xp_t and (xp_t .. " °C") or "N/A"), level = (xp_t and temp_level or "info"), group = "optical" },
 		{ label = "BOSA 温度", value = (bosa_t and (bosa_t .. " °C") or "N/A"), level = (bosa_t and bosa_level or "info"), group = "optical" },
 	}
-	local sections = {
-		sec("认证参数 (omcicfgCmd)",
-			"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat"),
-		sec("OLT-G (ME 131, OLT 标识/型号)",
-			"timeout 3 /usr/sbin/gmtk_omci_dbg me 131 2>&1"),
+	local sections = include_details and {
+		is_epon and { title = "EPON 注册与认证", body = pon_info }
+			or sec("认证参数 (omcicfgCmd)",
+				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat"),
+		is_epon and { title = "OLT-G", body = "EPON/OAM 模式不查询 OMCI ME 131。" }
+			or sec("OLT-G (ME 131, OLT 标识/型号)",
+				"timeout 3 /usr/sbin/gmtk_omci_dbg me 131 2>&1"),
 		sec("PON 接口",
 			"ifconfig pon 2>/dev/null | head -6; ip link show pon 2>/dev/null | head -3"),
+		{ title = "PON MAC / FEC 原生计数（" .. string.upper(pon_family) .. "）",
+		  body = "---- FEC ----\n" .. fec_out .. "\n\n---- counters ----\n" .. mac_cnt },
 		{ title = "光模块 DDM（en7572.ko /proc/lddla/debug + phy_10g.ko /proc/pon_phy）",
 		  body = (diag ~= "" and diag) or "（空：/proc/lddla/debug 不存在，BOB 驱动未加载）" },
-		sec("OMCC / GEM / TCONT",
-			"/userfs/bin/ponmgr gpon get omcc 2>&1; /userfs/bin/ponmgr gpon get gemport 2>&1; /userfs/bin/ponmgr gpon get tcont 2>&1"),
-		ksec("GEM 上行映射",
-			"/userfs/bin/gponmapcmd showGemPortRule"),
-		ksec("GEM 下行映射",
-			"/userfs/bin/gponmapcmd showDownRule"),
-		ksec("GEM 队列映射",
-			"/userfs/bin/gponmapcmd showQueueRule"),
+		is_epon and { title = "EPON OAM 状态", body = pon_info }
+			or { title = "OMCC / GEM / TCONT",
+				body = omcc_out .. "\n" .. gemport_out .. "\n" .. tcont_out },
+		is_epon and { title = "GEM 映射", body = "EPON/OAM 模式不使用 GPON GEM 映射。" }
+			or { title = "GEM 上行映射", body = map_up },
+		is_epon and { title = "GEM 下行映射", body = "EPON/OAM 模式不使用 GPON GEM 映射。" }
+			or { title = "GEM 下行映射", body = map_down },
+		is_epon and { title = "GEM 队列映射", body = "EPON/OAM 模式不使用 GPON GEM 映射。" }
+			or { title = "GEM 队列映射", body = map_queue },
 		ksec("PON VLAN 规则",
 			"/userfs/bin/ponvlancmd showrule 1; /userfs/bin/ponvlancmd showrule 2; /userfs/bin/ponvlancmd showrule 3; /userfs/bin/ponvlancmd showrule 4"),
 		sec("LED 状态",
 			"for d in /sys/class/leds/*/brightness; do echo $d=$(cat $d 2>/dev/null); done"),
 		sec("接口状态",
 			"ifstatus wan 2>/dev/null | head -c 600; echo; ip addr show 2>/dev/null | grep -E '^[0-9]+:|inet ' | head -40"),
-		sec("最近 PON 状态变化 (ponTime)",
-			pt_tail),
+		{ title = "最近 PON 状态变化 (ponTime)",
+		  body = pt_tail },
 		sec("BBF247 标志",
 			"for f in /proc/xgpon/bbf247Flag /proc/gpon/bbf247Flag; do [ -e $f ] && echo $f=$(cat $f 2>/dev/null); done"),
 		sec("PON 模式 (onu_type)",
@@ -1860,7 +2355,7 @@ local function collect_status()
 			"cat /tmp/xpon-mvlan-act.txt 2>/dev/null || echo '未生成：开机/添加组播后由后台刷新'"),
 		sec("OMCI 运行文件 (/tmp/ponstatus)",
 			"for f in olt_info me84_tag_info me171_tag_info omci_trap_event error_cnts xpon_mode; do if [ -e /tmp/ponstatus/$f ]; then echo '--- ' $f; cat /tmp/ponstatus/$f 2>/dev/null; fi; done"),
-	}
+	} or {}
 
 	return {
 		summary = summary,
@@ -1875,18 +2370,15 @@ local function collect_status()
 end
 
 function action_status()
-	local ok, st = pcall(collect_status)
-	if not ok then
-		st = {
-			summary = { { label = "ONU State", value = "读取失败：" .. tostring(st), level = "err" } },
-			sections = {},
-		}
-	end
-	ltemplate.render("xpon/status", { status = st })
+	-- 首屏只渲染骨架，设备状态由浏览器异步加载。
+	ltemplate.render("xpon/status", { status = {
+		summary = { { label = "PON 状态", value = "正在读取...", level = "info", wide = true } },
+		sections = {}, gem_vlan = { rows = {}, note = "" },
+	} })
 end
 
 function action_status_data()
-	local ok, st = pcall(collect_status)
+	local ok, st = pcall(collect_status, false)
 	if not ok then
 		st = {
 			summary = { { label = "ONU State", value = "读取失败：" .. tostring(st), level = "err" } },
@@ -1895,4 +2387,13 @@ function action_status_data()
 	end
 	http.prepare_content("application/json")
 	http.write(encode_json(st))
+end
+
+function action_status_details()
+	local ok, st = pcall(collect_status, true)
+	if not ok then
+		st = { sections = {}, gem_vlan = { rows = {}, note = "" }, error = tostring(st) }
+	end
+	http.prepare_content("application/json")
+	http.write(encode_json({ sections = st.sections or {}, gem_vlan = st.gem_vlan or {}, error = st.error }))
 end

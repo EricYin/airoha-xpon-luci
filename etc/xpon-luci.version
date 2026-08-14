@@ -1,4 +1,22 @@
-xpon-luci 2.3 2026-08-13
+xpon-luci 2.4 2026-08-14
+mode: UCI 缺少 onu_type 时回退读取 U-Boot 目标值，同步修复 bootargs 旧模式及重复键名前缀
+auth: LOID 空密码在 OMCI 就绪后显式下发并回读，覆盖原厂 netifd 注入的 ECONET
+multicast: IGMP/MLD 代理新增 UNI1-4 端口绑定；SDK port func=2，重放不再覆盖为 func=1
+multicast: 新增 IGMP/MLD 侦听与 SDK Control/Proxy 开关，保存后自动重放转发表
+multicast: 修复 pon-multicast 与快照脚本缺少执行权限导致 driver_126
+auth: PON SN 与 Vendor ID 合并为完整 SN 单一输入；后台拆分并分别调用 SDK 下发
+auth: 持久配置优先展示；NoNumber 不再下发；native 成功后创建可观测重启任务
+auth: GPON/EPON 逐项严格下发与运行态回读；OMCC 同步原厂 gpon 配置；启动重放失败可观测
+auth: 修复后端误用正则 {n,m} 导致 OMCC/PON MAC/EPON OUI 合法值被拒绝
+auth: OMCC 改为数值解析并规范化为 0xNN；错误页显示 auth-r4 便于识别 LuCI 旧缓存
+auth: r5 将 OMCC 改为非阻断可选项；不可解析时保持原值，不再拒绝整张认证表单
+auth: 修复 native_write_64：SN 校验改为 BusyBox ash 原生检查、清理隐藏空白并增加 network UCI 回退
+auth: 修复 ensure_section 错用 cursor:add 导致 xpon.device 身份字段静默保存失败；提交后强制 UCI 回读
+auth: 缺少 /etc/config/xpon 时由 nixio.fs 创建最小合法配置；检查 UCI section/commit 返回值
+auth: Equipment ID 放宽为 1~24 个可打印 ASCII，移除额外格式限制与冗余说明
+auth: Equipment ID 改为可选 ONU2-G 型号/标识；身份字段写入 network.xpon_auth 并用原生 uci.so 提交
+boot: preinit 从 mtd2 DSD 生成 /tmp/dsd.env；OMCI 就绪后两阶段重放设备信息
+install: /etc/config/xpon 改由 uci-defaults 首次创建，覆盖升级不再重置用户认证配置
 mode/status: 页面渲染彻底移除同步 xponigmpcmd 调用（ioctl 阻塞会挂起 LuCI→“登出”）；
 新增 xpon-mvlan-snap.sh 后台刷新“驱动实际登记”快照 /tmp/xpon-mvlan-act.txt，页面只读快照；
 provision 手动组播登记改后台 detach；status 页“IPTV 组播”诊断段改读快照

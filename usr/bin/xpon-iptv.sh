@@ -5,12 +5,10 @@
 #   vlan          IPTV 业务 VLAN（联通 3169）
 #   mcast_vlan    组播 VLAN（联通 3799；多数省份 OLT 直接在业务 VLAN 内送组播，
 #                 此值仅当需要单独登记 M-VLAN 过滤表时填写）
-#   igmp          off | snooping | proxy（xponigmpcmd igmp_set_fwdmode 的
-#                 MULTCAST_SNOOPING_MODE=0 / CONTROL_MODE=1，proxy 需真机验证映射）
 #   igmp_version  2 | 3（每业务口 igmp_set_ver）
 #   igmp_fastleave 0|1（每业务口 igmp_set_fastleave）
 #   iptv_port     绑定 LAN 口（默认 port 1~4
-#                 对应 eth0.1~eth0.4；XG2010G 实际 LAN 口为 eth0.4/5/7，
+#                 XG2010G 实际映射为 LAN1/2/3/4 = eth0.8/7/5/4，
 #                 port 号需真机用 igmp_get_portvlan_id 验证）
 #   stb_port      专口透传（由 hotplug 25-iptv-port 处理，本脚本不重复）
 #
@@ -25,8 +23,6 @@ ECNT=/userfs/bin/ecnt_igmp_cmd
 
 vid=$(uci -q get xpon.iptv.vlan)
 mvid=$(uci -q get xpon.iptv.mcast_vlan)
-igmp=$(uci -q get xpon.iptv.igmp)
-igmp=${igmp:-snooping}
 ver=$(uci -q get xpon.iptv.igmp_version)
 ver=${ver:-2}
 fast=$(uci -q get xpon.iptv.igmp_fastleave)
@@ -39,12 +35,8 @@ if [ -n "$mvid" ] && [ "$mvid" -ge 1 ] 2>/dev/null && [ "$mvid" -le 4094 ] 2>/de
 	$IGMP mvlan add "$mvid" >/dev/null 2>&1
 fi
 
-# 2) 组播转发模式：0=Snooping（默认），1=Control（Proxy 语义，需真机验证）
-case "$igmp" in
-	off)      $IGMP igmp_set_fwdmode 0 >/dev/null 2>&1 ;;
-	snooping) $IGMP igmp_set_fwdmode 0 >/dev/null 2>&1 ;;
-	proxy)    $IGMP igmp_set_fwdmode 1 >/dev/null 2>&1 ;;
-esac
+# 2) SDK 侦听/代理模式由 pon.multicast.snooping/proxy 统一管理，
+# 避免本脚本在开机延迟重放时覆盖用户刚保存的 fwdmode。
 
 # 3) 业务口参数：绑定口（iptv_port）或默认 UNI port 1
 for p in ${port:-1}; do

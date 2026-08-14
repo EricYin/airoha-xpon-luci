@@ -1,15 +1,30 @@
 #!/bin/sh
 # xpon-luci 首次安装/升级兜底（uci-defaults 只跑一次，随后自删）
 
+# 0) /etc/config/pon 缺失时创建；升级包不携带该文件，避免覆盖用户的组播 VLAN。
+P=/etc/config/pon
+if [ ! -f "$P" ]; then
+	cat > "$P" <<'EOF'
+config multicast 'multicast'
+	option enabled '0'
+	option vlan_id ''
+	option igmp_version '2'
+	option port '1'
+	option snooping '1'
+	option proxy '0'
+	option proxy_port '1'
+EOF
+fi
+
 # 1) /etc/config/xpon 缺失时重建（防误删后 LuCI 报错）
 X=/etc/config/xpon
 if [ ! -f "$X" ]; then
 	cat > "$X" <<'EOF'
 config auth 'device'
-	option vendor_id 'MTKG'
-	option equipment_id 'KE2.119.241R2B'
-	option onu_version 'RP0201'
-	option omcc_version '0xA3'
+	option vendor_id ''
+	option equipment_id ''
+	option onu_version ''
+	option omcc_version ''
 	option pon_mac ''
 	option auth_type_g 'LOID'
 	option loid ''
@@ -66,6 +81,8 @@ EOF
 fi
 
 # 2) 确保 network.xpon_auth 存在（S00xponconfig 也会建，这里只补缺省键、不覆盖已有值）
+factory_sn=$(sed -n "s/^fsan='\(.*\)'/\1/p" /tmp/dsd.env 2>/dev/null | head -1)
+[ "${#factory_sn}" -eq 12 ] || factory_sn=NoNumber
 uci -q get network.xpon_auth >/dev/null || uci set network.xpon_auth='xpon_auth'
 uci -q get network.xpon_auth.pon_mode >/dev/null || uci set network.xpon_auth.pon_mode='GPON'
 if ! uci -q get network.xpon_auth.pon_tech >/dev/null; then
@@ -82,8 +99,8 @@ if ! uci -q get network.xpon_auth.pon_tech >/dev/null; then
 fi
 uci -q get network.xpon_auth.auth_type_g >/dev/null || uci set network.xpon_auth.auth_type_g='LOID'
 uci -q get network.xpon_auth.xpon_sn_auth_type >/dev/null || uci set network.xpon_auth.xpon_sn_auth_type='ascii'
-uci -q get network.xpon_auth.sn >/dev/null || uci set network.xpon_auth.sn='NoNumber'
-uci -q get network.xpon_auth.def_sn >/dev/null || uci set network.xpon_auth.def_sn='NoNumber'
+uci -q get network.xpon_auth.sn >/dev/null || uci set network.xpon_auth.sn="$factory_sn"
+uci -q get network.xpon_auth.def_sn >/dev/null || uci set network.xpon_auth.def_sn="$factory_sn"
 uci -q get network.xpon_auth.loid >/dev/null || uci set network.xpon_auth.loid=''
 uci -q get network.xpon_auth.loid_password >/dev/null || uci set network.xpon_auth.loid_password=''
 uci commit network
@@ -93,6 +110,9 @@ uci commit network
 uci -q get xpon.device >/dev/null || uci set xpon.device='auth'
 uci -q get xpon.device.pon_tech >/dev/null || uci set xpon.device.pon_tech="$(uci -q get network.xpon_auth.pon_tech)"
 uci -q get xpon.device.auth_type_g >/dev/null || uci set xpon.device.auth_type_g='LOID'
+factory_vendor=${factory_sn%????????}
+[ "${#factory_vendor}" -eq 4 ] || factory_vendor=
+[ -n "$(uci -q get xpon.device.vendor_id)" ] || [ -z "$factory_vendor" ] || uci set xpon.device.vendor_id="$factory_vendor"
 uci -q get xpon.device.loid >/dev/null || uci set xpon.device.loid=''
 uci -q get xpon.device.loid_password >/dev/null || uci set xpon.device.loid_password=''
 uci -q get xpon.device.def_sn >/dev/null || uci set xpon.device.def_sn=''
@@ -103,7 +123,15 @@ uci -q get xpon.device.epon_oui >/dev/null || uci set xpon.device.epon_oui=''
 uci -q get xpon.device.epon_ven_info >/dev/null || uci set xpon.device.epon_ven_info=''
 uci commit xpon
 
+uci -q get pon.multicast >/dev/null || uci set pon.multicast='multicast'
+uci -q get pon.multicast.snooping >/dev/null || uci set pon.multicast.snooping='1'
+uci -q get pon.multicast.proxy >/dev/null || uci set pon.multicast.proxy='0'
+uci -q get pon.multicast.proxy_port >/dev/null || uci set pon.multicast.proxy_port="$(uci -q show pon 2>/dev/null | sed -n "s/^pon\.[^.=]*\.port='\([1-4]\)'$/\1/p" | head -1)"
+[ -n "$(uci -q get pon.multicast.proxy_port)" ] || uci set pon.multicast.proxy_port='1'
+uci commit pon
+
 # 专用 init 脚本持久重放驱动组播配置；不修改 rc.local，避免重复执行。
 [ -x /etc/init.d/pon-services ] && /etc/init.d/pon-services enable
+[ -x /etc/init.d/xpon-app ] && /etc/init.d/xpon-app enable
 
 exit 0
