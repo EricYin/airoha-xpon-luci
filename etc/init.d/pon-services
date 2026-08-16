@@ -79,6 +79,7 @@ apply_vlans() {
 
 start() {
 	# 每条组播 VLAN 独立重放；旧单值配置仅保留兼容，不再作为 UI 数据源。
+	/usr/bin/xpon-bind-lan.sh all >/dev/null 2>&1 &
 	/usr/bin/pon-multicast apply-all
 }
 restart() { apply_vlans && apply_multicast; }

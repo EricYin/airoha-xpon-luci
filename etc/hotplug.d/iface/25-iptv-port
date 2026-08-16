@@ -1,31 +1,6 @@
 #!/bin/sh
-# 将受管桥接业务绑定的物理 LAN/STB 口从 br-lan 移入业务桥。
-# network 配置仍是标准 bridge device；这里处理交换口已被 stock br-lan
-# 占用时 netifd 无法直接 enslave 的平台差异。
+# 将受管桥接业务交给统一后端核对。保存逻辑已持久化修改 br-lan，
+# 此处负责接口即时启动以及兼容升级前仍存在双重归属的配置。
 
 [ "$ACTION" = "ifup" ] || exit 0
-case "$INTERFACE" in xpon_*) ;; *) exit 0 ;; esac
-
-key=${INTERFACE#xpon_}
-meta="xpon_service_$key"
-[ "$(uci -q get "network.$meta.xpon_managed")" = 1 ] || exit 0
-[ "$(uci -q get "network.$meta.mode")" = bridged ] || exit 0
-port=$(uci -q get "network.$meta.lan_port")
-
-case "$port" in
-	lan1) lan_if=eth0.8 ;;
-	lan2) lan_if=eth0.7 ;;
-	lan3) lan_if=eth0.5 ;;
-	lan4) lan_if=eth0.4 ;;
-	*) exit 0 ;;
-esac
-
-bridge="bx-$key"
-[ -d "/sys/class/net/$lan_if" ] || exit 0
-[ -d "/sys/class/net/$bridge" ] || exit 0
-brctl delif br-lan "$lan_if" 2>/dev/null
-brctl delif "$bridge" "$lan_if" 2>/dev/null
-brctl addif "$bridge" "$lan_if" 2>/dev/null || exit $?
-ip link set "$lan_if" up
-logger -t xpon-services "bound $port ($lan_if) to $INTERFACE ($bridge)"
-exit 0
+/usr/bin/xpon-bind-lan.sh bind "$INTERFACE"

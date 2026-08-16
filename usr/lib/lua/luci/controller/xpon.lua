@@ -177,6 +177,20 @@ local function ensure_section(u, config, section, stype)
 	return name ~= nil and name ~= false, err
 end
 
+local lan_port_devices = {
+	lan1 = "eth0.8",
+	lan2 = "eth0.7",
+	lan3 = "eth0.5",
+	lan4 = "eth0.4",
+}
+
+local function option_list(v)
+	if type(v) == "table" then return v end
+	local out = {}
+	for item in tostring(v or ""):gmatch("%S+") do out[#out + 1] = item end
+	return out
+end
+
 local function ensure_xpon_config_file()
 	local path = "/etc/config/xpon"
 	if fs.access(path) then return true end
@@ -1494,6 +1508,58 @@ local function save_services(fv)
 		end
 	end
 	local u = uci.cursor()
+	local desired_lan_devices = {}
+	for _, row in ipairs(rows) do
+		if row.enable == "1" and row.mode == "bridged" and row.lan_port ~= "none" then
+			desired_lan_devices[lan_port_devices[row.lan_port]] = true
+		end
+	end
+
+	-- Access 桥接必须在持久配置中消除端口双重归属。只记录并恢复本插件
+	-- 实际从 br-lan 摘除过的端口，原本就不属于 br-lan 的 LAN1/WAN 不动。
+	local xu = uci.cursor()
+	local old_detached = {}
+	for _, dev in ipairs(option_list(xu:get("xpon", "lan_binding", "detached_ports"))) do
+		if lan_port_devices.lan1 == dev or lan_port_devices.lan2 == dev or
+		   lan_port_devices.lan3 == dev or lan_port_devices.lan4 == dev then
+			old_detached[#old_detached + 1] = dev
+		end
+	end
+	local br_lan_section
+	u:foreach("network", "device", function(s)
+		if s.type == "bridge" and s.name == "br-lan" then br_lan_section = s[".name"] end
+	end)
+	if next(desired_lan_devices) and not br_lan_section then return nil, "br_lan_device" end
+	local detached = {}
+	if br_lan_section then
+		local current, present = option_list(u:get("network", br_lan_section, "ports")), {}
+		for _, dev in ipairs(current) do present[dev] = true end
+		for _, dev in ipairs(old_detached) do
+			if desired_lan_devices[dev] then detached[dev] = true end
+		end
+
+		-- 解除绑定时，仅恢复先前由本插件摘除的端口。
+		for _, dev in ipairs(old_detached) do
+			if not desired_lan_devices[dev] and not present[dev] then
+				current[#current + 1] = dev
+				present[dev] = true
+			end
+		end
+
+		local kept = {}
+		for _, dev in ipairs(current) do
+			if desired_lan_devices[dev] then
+				-- 当前确实从 br-lan 摘除，纳入以后解除绑定时的恢复清单。
+				detached[dev] = true
+			else
+				kept[#kept + 1] = dev
+			end
+		end
+		u:set_list("network", br_lan_section, "ports", kept)
+	else
+		-- br-lan 暂时不存在时无法恢复，保留所有权记录供下次保存重试。
+		for _, dev in ipairs(old_detached) do detached[dev] = true end
+	end
 	local pu, mcast_conflict = uci.cursor(), false
 	pu:foreach("pon", "multicast_vlan", function(s)
 		if s.xpon_managed ~= "1" and mvids[tonumber(s.vlan_id or "")] then mcast_conflict = true end
@@ -1547,8 +1613,7 @@ local function save_services(fv)
 			local brsec, brname = "xpon_bridge_" .. row.key, "bx-" .. row.key
 			u:section("network", "device", brsec, { type="bridge", name=brname, xpon_managed="1", xpon_service=row.key })
 			local list = { vlan_dev }
-			local pmap = { lan1="eth0.8", lan2="eth0.7", lan3="eth0.5", lan4="eth0.4" }
-			if row.lan_port ~= "none" then list[#list + 1] = pmap[row.lan_port] end
+			if row.enable == "1" and row.lan_port ~= "none" then list[#list + 1] = lan_port_devices[row.lan_port] end
 			u:set_list("network", brsec, "ports", list); ifdev = brname
 		end
 		local opts = { device=ifdev, proto=row.proto, auto=row.enable, mtu=row.mtu, xpon_managed="1", xpon_service=row.key }
@@ -1567,6 +1632,18 @@ local function save_services(fv)
 		if #dns > 0 then u:set("network", iface, "peerdns", "0"); u:set_list("network", iface, "dns", dns) end
 	end
 	u:save("network"); u:commit("network")
+	ensure_section(xu, "xpon", "lan_binding", "lan_binding")
+	local detached_list = {}
+	for _, dev in ipairs({ lan_port_devices.lan1, lan_port_devices.lan2,
+		lan_port_devices.lan3, lan_port_devices.lan4 }) do
+		if detached[dev] then detached_list[#detached_list + 1] = dev end
+	end
+	if #detached_list > 0 then
+		xu:set_list("xpon", "lan_binding", "detached_ports", detached_list)
+	else
+		xu:delete("xpon", "lan_binding", "detached_ports")
+	end
+	xu:save("xpon"); xu:commit("xpon")
 	-- 将路由业务加入 firewall wan zone。用独立清单记录本插件拥有的列表项，
 	-- 更新时只替换这些项，并顺带清除旧版本遗留的 xpon_* 接口名。
 	local fu, wan_zone = uci.cursor(), nil
@@ -1576,7 +1653,6 @@ local function save_services(fv)
 			if type(v) == "table" then return v end
 			local out = {}; for x in tostring(v or ""):gmatch("%S+") do out[#out + 1] = x end; return out
 		end
-		local xu = uci.cursor()
 		local old_managed, drop, merged, have = as_list(xu:get("xpon", "firewall", "wan_networks")), {}, {}, {}
 		for _, n in ipairs(old_managed) do drop[n] = true end
 		for _, n in ipairs(as_list(fu:get("firewall", wan_zone, "network"))) do
@@ -1895,7 +1971,7 @@ function action_save()
 	if page == "auth" then
 		sys.call("( /usr/bin/xpon-apply.sh auth; /usr/bin/xpon-apply.sh mac ) >/tmp/xpon-auth-apply.log 2>&1 </dev/null &")
 	elseif page == "services" then
-		sys.call("( /etc/init.d/network reload; /etc/init.d/firewall reload; sleep 2; /usr/bin/pon-multicast apply-all ) >/tmp/pon-services.log 2>&1 </dev/null &")
+		sys.call("( /etc/init.d/network reload; /etc/init.d/firewall reload; /usr/bin/xpon-bind-lan.sh all; /usr/bin/pon-multicast apply-all ) >/tmp/pon-services.log 2>&1 </dev/null &")
 	end
 
 	http.redirect(xpon_url(page, "saved=1"))
