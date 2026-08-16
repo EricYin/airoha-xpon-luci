@@ -227,17 +227,38 @@ apply_network() {
 }
 
 apply_mac() {
-	# MPCP/OMCI 注册身份来自 U-Boot ethaddr；pon 接口地址只同步运行态。
-	# 显式配置留空时恢复 DSD wan_mac，GPON 和 EPON 共用此路径。
-	local pmac ba ba_raw newba old_eth read_eth read_ba read_ba_eth
+	# pon 是业务侧 Ethernet 接口；GPON/XGPON/XGSPON 的 PLOAM/OMCI
+	# 注册身份来自 SN/Registration ID，而不是 Ethernet MAC。
+	# EPON 的 MPCP ONU MAC 则由驱动启动时通过 get_ethaddr() 取得。
+	local mode pmac ba ba_raw newba old_eth read_eth read_ba read_ba_eth
 	local backup_dir backup_stamp backup_path backup_tmp
+	mode=$(uci_get network.xpon_auth.pon_mode)
+	[ "$mode" = EPON ] || mode=$(uci_get xpon.device.pon_mode)
+	[ "$mode" = EPON ] || mode=GPON
 	pmac=$(uci_get xpon.device.pon_mac)
 	[ -n "$pmac" ] || pmac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
 	case "$pmac" in
 		[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) : ;;
-		*) echo "PON MAC 无效，且未取得有效 DSD wan_mac" >&2; return 1 ;;
+		*)
+			[ "$mode" = EPON ] && {
+				echo "EPON 注册 MAC 无效，且未取得有效 DSD wan_mac" >&2
+				return 1
+			}
+			logger -t xpon "GPON 业务接口 MAC 未配置且 DSD wan_mac 无效，保持 pon 当前地址"
+			return 0
+			;;
 	esac
 	pmac=$(printf '%s' "$pmac" | tr 'a-f' 'A-F')
+
+	if [ "$mode" != EPON ]; then
+		ifconfig pon hw ether "$pmac" 2>/dev/null || {
+			echo "设置 pon 业务接口 MAC 失败" >&2
+			return 1
+		}
+		logger -t xpon "GPON 业务接口 MAC 已设置：pon=$pmac；未修改 U-Boot ethaddr"
+		return 0
+	fi
+
 	command -v fw_setenv >/dev/null 2>&1 && command -v fw_printenv >/dev/null 2>&1 || {
 		echo "fw_setenv/fw_printenv 不可用（缺 uboot-envtools 或 fw_env.config）" >&2
 		return 1
@@ -294,7 +315,7 @@ apply_mac() {
 	}
 
 	ifconfig pon hw ether "$pmac" 2>/dev/null || true
-	logger -t xpon "PON 注册 MAC env 写入并回读成功：ethaddr=$pmac backup=$backup_path"
+	logger -t xpon "EPON MPCP 注册 MAC env 写入并回读成功：ethaddr=$pmac backup=$backup_path"
 }
 
 apply_leds() {

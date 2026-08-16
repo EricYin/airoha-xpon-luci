@@ -400,7 +400,6 @@ function auth_values()
 	v.onu_version       = uget("network", "xpon_auth", "onu_version") or uget("xpon", "device", "onu_version") or ""
 	v.omcc_version      = uget("network", "xpon_auth", "omcc_version") or uget("xpon", "device", "omcc_version") or ""
 	v.omci_spec_ver     = uget("xpon", "device", "omci_spec_ver") or ""
-	v.pon_mac           = uget("xpon", "device", "pon_mac") or ""
 	v.epon_oui          = uget("xpon", "device", "epon_oui") or ""
 	v.epon_ven_info     = uget("xpon", "device", "epon_ven_info") or ""
 	-- 运行时读回（只读展示）：omcicfgCmd get 是 OMCI 层实际生效值，
@@ -414,6 +413,10 @@ function auth_values()
 		return out:match("[=:]%s*(.-)%s*\n") or ""
 	end
 	local is_epon = v.pon_mode == "EPON"
+	local function runtime_mac(s)
+		local m = (s or ""):match("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+		return m and m:upper() or ""
+	end
 	local rt = {
 		loid         = is_epon and oam_get("loid0") or omci_get("loid"),
 		sn           = omci_get("sn"),
@@ -426,9 +429,20 @@ function auth_values()
 		epon_ven_info = is_epon and oam_get("localVenInfo"):gsub("^0[xX]", ""):upper() or "",
 	}
 	local pon_ifconfig = sh("ifconfig pon 2>/dev/null")
-	rt.pon_mac = sh("cat /sys/class/net/pon/address 2>/dev/null"):match("([0-9A-Fa-f:]+)")
+	rt.pon_mac = runtime_mac(sh("cat /sys/class/net/pon/address 2>/dev/null"):match("([0-9A-Fa-f:]+)")
 		or pon_ifconfig:match("HWaddr%s+([0-9A-Fa-f:]+)")
-		or pon_ifconfig:match("ether%s+([0-9A-Fa-f:]+)") or ""
+		or pon_ifconfig:match("ether%s+([0-9A-Fa-f:]+)") or "")
+	-- ponmgr 的 devMac 通过 XMCS IO_IOG_ONU_MAC 调用 getPonMacfromflash()；
+	-- ARMv8 平台最终仍读取本次启动 early_param("ethaddr") 的值。它是
+	-- EPON 驱动生成 LLID 0..N 注册 MAC 的基准值，不是 pon netdev 地址，
+	-- 也不是 EPON_ADDR_REG_LOW/HIGH 寄存器的直接读回。
+	rt.epon_mac = is_epon and runtime_mac(sh("timeout 2 /userfs/bin/ponmgr epon get devMac 2>/dev/null")) or ""
+	if rt.epon_mac == "" then
+		rt.epon_mac = runtime_mac(sh("awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' /proc/cmdline 2>/dev/null"))
+	end
+	if rt.epon_mac == "" then
+		rt.epon_mac = runtime_mac(sh("fw_printenv -n ethaddr 2>/dev/null"))
+	end
 	-- 打开页面默认读取系统现有值：UCI 未显式保存（或保存值为空）时，
 	-- 表单回退到 OMCI/驱动实际生效值（rt）——用户看到即现状，改完保存才写入 UCI。
 	-- 密码类不回显（留空 = 保持原值）。
@@ -453,10 +467,18 @@ function auth_values()
 	v.onu_version   = identity_fb("onu_version", rt.onu_version, "")
 	v.omcc_version  = identity_fb("omcc_version", rt.omcc_version, "")
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
-	-- 输入框只展示显式覆盖值；未覆盖时保持空白并在保存时读取 DSD。
-	-- 不能回填当前运行态地址，否则旧 U-Boot 占位 MAC 会被再次固化。
 	local dsd_mac = dsd_wan_mac()
-	v.pon_mac       = (uget("xpon", "device", "pon_mac") or ""):upper()
+	local saved_pon_mac = runtime_mac(uget("xpon", "device", "pon_mac") or "")
+	-- EPON 回显本次启动时驱动采用的 ONU/LLID 注册基准 MAC；GPON 系列
+	-- 没有以 Ethernet MAC 参与 PLOAM 注册，因此回显 pon 业务接口 MAC。
+	if is_epon then
+		v.pon_mac = rt.epon_mac ~= "" and rt.epon_mac
+			or (saved_pon_mac ~= "" and saved_pon_mac
+			or (rt.pon_mac ~= "" and rt.pon_mac or dsd_mac))
+	else
+		v.pon_mac = rt.pon_mac ~= "" and rt.pon_mac
+			or (saved_pon_mac ~= "" and saved_pon_mac or dsd_mac)
+	end
 	if v.loid == "" and rt.loid ~= "" then v.loid = rt.loid end
 	if (v.sn == "" or v.sn == "NoNumber") and rt.sn ~= "" then v.sn = rt.sn end
 	v.pon_mac_default = dsd_mac
@@ -1138,6 +1160,8 @@ local function save_auth(fv)
 	local sn = (fv("sn") or ""):gsub("%s+", ""):upper()
 	if sn == "NONUMBER" then sn = "" end
 	local vendor_id = (#sn == 12) and sn:sub(1, 4) or ""
+	-- 空值表示恢复 DSD wan_mac。GPON 仅应用到 pon 业务接口；
+	-- EPON 还会把最终值同步为 U-Boot ethaddr/bootargs 中的 MPCP ONU MAC。
 	local pon_mac = (fv("pon_mac") or ""):gsub("%s+", ""):upper()
 	local effective_pon_mac = pon_mac ~= "" and pon_mac or dsd_wan_mac()
 	-- EPON OUI = 最终 PON MAC 前 3 字节，留空使用 DSD 时也保持联动。
@@ -1602,7 +1626,7 @@ function action_save()
 			err = "loid"
 		elseif pmode == "EPON" and #loid == 0 then
 			err = "loid"
-		elseif not ponmac_ok(effective_pon_mac) then
+		elseif pmode == "EPON" and not ponmac_ok(effective_pon_mac) then
 			err = "pon_mac"
 		elseif atg == "loid" and #loid == 0 then
 			err = "loid"
@@ -1646,7 +1670,7 @@ function action_save()
 					else
 						http.prepare_content("text/html; charset=utf-8")
 						if schedule_reboot(8) then
-							http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>认证参数及注册 MAC 写入并回读成功</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
+						http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>认证参数及 PON MAC 已应用</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
 							return
 						end
 						err = "reboot_schedule"
@@ -2308,7 +2332,7 @@ local function collect_status(include_details)
 	local auth_out = is_epon and pon_info or sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
 	local auth_raw = is_epon and (pon_info:match("Auth Status:%s*([^\n]+)") or "")
 		or (auth_out:match("authStat%s*=%s*(%d+)") or "")
-	-- OLT 标识：/tmp/ponstatus/olt_info（axon_platform_manager 写 ME131 OLT-G）
+	-- OLT 标识：/tmp/ponstatus/olt_info（OMCI ME131 OLT-G 运行信息）
 	local olt_out    = sh("cat /tmp/ponstatus/olt_info 2>/dev/null")
 	local olt_vendor = olt_out:match("oltVendorId%s*=%s*([%w]+)") or ""
 	-- %s 会跨越换行；equipmentId 为空时不能误把下一行的键名当设备型号。

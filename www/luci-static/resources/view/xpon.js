@@ -97,8 +97,13 @@ function xponAuthCheck(form) {
 	}
 	var enteredMac = form.pon_mac.value.trim();
 	var effectiveMac = enteredMac || form.pon_mac.getAttribute('data-default') || '';
-	if (!/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(effectiveMac)) {
-		alert('请填写有效 PON MAC，或确保设备已读取到有效的 dsd wan_mac');
+	var macPattern = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
+	if (enteredMac && !macPattern.test(enteredMac)) {
+		alert('请填写有效 PON MAC');
+		return false;
+	}
+	if (epon && !macPattern.test(effectiveMac)) {
+		alert('EPON 需要有效注册 MAC；请填写 PON MAC，或确保设备已读取到有效的 dsd wan_mac');
 		return false;
 	}
 	if ((auth === 'SN' || auth === 'REGID') && form.sn_password.value.trim().length > 0) {
