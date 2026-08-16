@@ -1,4 +1,6 @@
 xpon-luci 2.7 2026-08-16
+epon: 同 PID 守护扩展到 ctcOui/loidPasswd0/ONUSN，漂移时仅轻量修复变化项；新 PID 才完整重放
+auth: EPON SN 增加显式的 PON MAC 末字节 +0x08 候选按钮，仅填表且提示必须核对原装 ONU
 epon: OMCI sn/equipmentId/版本重启恢复 AXON/BVMN 属出厂 GPON 链；EPON 页面停止读取并隐藏这些非认证字段
 epon: LOID-only 在首次应用和守护重放中都显式下发空 loidPasswd0，并对空值执行真实回读校验
 epon: 增加 OAM 身份守护；按 epon_oam PID 变化自动重放，且每 30 秒只读校验 ONUSN，漂移时才修复

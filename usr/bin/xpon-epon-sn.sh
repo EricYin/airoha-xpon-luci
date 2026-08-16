@@ -48,6 +48,77 @@ write_hex() {
 	done
 }
 
+oam_value() {
+	/userfs/bin/oamcfgCmd get "$1" 2>/dev/null |
+		sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1
+}
+
+normalize_oui() {
+	printf '%s' "$1" | sed 's/^0[xX]//' | tr 'a-f' 'A-F'
+}
+
+repair_runtime_drift() {
+	repaired=
+	failed=0
+
+	desired_ctc=$(uci -q get xpon.device.epon_ctc_oui)
+	desired_ctc=${desired_ctc:-111111}
+	have_ctc=$(oam_value ctcOui)
+	if [ "$(normalize_oui "$have_ctc")" != "$(normalize_oui "$desired_ctc")" ]; then
+		if /userfs/bin/oamcfgCmd set ctcOui "$desired_ctc" >/dev/null 2>&1 &&
+		   [ "$(normalize_oui "$(oam_value ctcOui)")" = "$(normalize_oui "$desired_ctc")" ]; then
+			repaired="$repaired ctcOui"
+		else
+			failed=1
+		fi
+	fi
+
+	desired_loid=$(uci -q get xpon.device.loid)
+	if [ -n "$desired_loid" ]; then
+		desired_password=$(uci -q get xpon.device.loid_password)
+		[ "$desired_password" = '""' ] && desired_password=
+		have_password=$(oam_value loidPasswd0)
+		if [ "$have_password" != "$desired_password" ]; then
+			if /userfs/bin/oamcfgCmd set loidPasswd0 "$desired_password" >/dev/null 2>&1 &&
+			   [ "$(oam_value loidPasswd0)" = "$desired_password" ]; then
+				repaired="$repaired loidPasswd0"
+			else
+				failed=1
+			fi
+		fi
+	fi
+
+	desired_serial=$(uci -q get xpon.device.epon_serial)
+	if [ -n "$desired_serial" ]; then
+		desired_hex=$(normalize_mac "$desired_serial")
+		case "$desired_hex" in
+			????????????) case "$desired_hex" in *[!0-9A-F]*) desired_hex= ;; esac ;;
+			*) desired_hex= ;;
+		esac
+		if [ -n "$desired_hex" ]; then
+			have_serial=$("$0" get 2>/dev/null)
+			if [ "$(normalize_mac "$have_serial")" != "$desired_hex" ]; then
+				if "$0" set "$desired_serial" >/dev/null 2>&1; then
+					repaired="$repaired ONUSN"
+				else
+					failed=1
+				fi
+			fi
+		fi
+	fi
+
+	if [ "$failed" -ne 0 ]; then
+		drift_failures=$((drift_failures + 1))
+		if [ "$drift_failures" -eq 1 ] || [ $((drift_failures % 20)) -eq 0 ]; then
+			logger -t xpon "EPON OAM 运行态漂移修复失败，详见当前 ctcOui/loidPasswd0/ONUSN 回读"
+		fi
+		return 1
+	fi
+	drift_failures=0
+	[ -z "$repaired" ] || logger -t xpon "已轻量修复 EPON OAM 运行态漂移：${repaired# }"
+	return 0
+}
+
 watch_identity() {
 	interval=${1:-5}
 	case "$interval" in ''|*[!0-9]*) interval=5 ;; esac
@@ -67,6 +138,7 @@ watch_identity() {
 	last_pid=
 	check_elapsed=30
 	replay_failures=0
+	drift_failures=0
 	while :; do
 		sleep "$interval"
 		mode=$(cat /proc/tc3162/sys_xpon_mode 2>/dev/null)
@@ -91,25 +163,12 @@ watch_identity() {
 			continue
 		fi
 
-		# A same-PID drift is unusual, but some vendor control paths reinitialize
-		# the BSS object in place. Check infrequently and write only on mismatch.
+		# netifd/vendor control paths can overwrite shared OAM fields without
+		# replacing the process. Read infrequently and repair only changed fields.
 		check_elapsed=$((check_elapsed + interval))
 		[ "$check_elapsed" -ge 30 ] || continue
 		check_elapsed=0
-		desired=$(uci -q get xpon.device.epon_serial)
-		[ -n "$desired" ] || continue
-		desired_hex=$(normalize_mac "$desired")
-		case "$desired_hex" in
-			????????????) case "$desired_hex" in *[!0-9A-F]*) continue ;; esac ;;
-			*) continue ;;
-		esac
-		have=$("$0" get 2>/dev/null) || continue
-		[ "$(normalize_mac "$have")" = "$desired_hex" ] && continue
-		if /usr/bin/xpon-auth-native.sh >/dev/null 2>&1; then
-			logger -t xpon "检测到 CTC ONUSN 漂移，已重放完整 EPON OAM 身份"
-		else
-			logger -t xpon "CTC ONUSN 漂移修复失败，详见 /tmp/xpon-auth-native.log"
-		fi
+		repair_runtime_drift
 	done
 }
 

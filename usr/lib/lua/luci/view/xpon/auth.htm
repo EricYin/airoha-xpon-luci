@@ -124,7 +124,8 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="epon_serial">EPON 序列号（CTC ONUSN）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_serial" name="epon_serial" class="cbi-input-text" maxlength="17" value="<%=v.epon_serial%>" placeholder="如 28:01:1C:B5:44:0B" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">CTC OAM <code>ONUSN</code> 复合身份中的 6 字节 ONU ID，与 MPCP 注册 MAC 是两个字段。留空保持固件默认；当前 OAM 应答值：<code><%=esc(rt.epon_serial ~= "" and rt.epon_serial or "（未读取/不支持）")%></code></div>
+				<button type="button" class="cbi-button cbi-button-neutral" onclick="xponDeriveEponSerial()" style="display:block;margin-top:6px;white-space:normal;">按 PON MAC +0x08 生成候选</button>
+				<div class="cbi-value-description">CTC OAM <code>ONUSN</code> 复合身份中的 6 字节 ONU ID，与 MPCP 注册 MAC 是两个字段。候选按钮只填充表单，不会自动保存；“末字节 +0x08”仅为本次设备实测规律，必须与原装 ONU 或抓包核对。留空保持固件默认；当前 OAM 应答值：<code><%=esc(rt.epon_serial ~= "" and rt.epon_serial or "（未读取/不支持）")%></code></div>
 			</div>
 		</div>
 
