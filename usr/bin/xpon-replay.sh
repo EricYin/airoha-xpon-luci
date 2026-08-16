@@ -36,7 +36,7 @@ sleep 2
 if [ "$mode" = "EPON" ]; then
 	# apply auth 会先重启 epon_oam，再对新进程重放并回读全部 OAM 身份。
 	if ! /usr/bin/xpon-apply.sh auth; then
-		logger -t xpon "replay: EPON OAM 重启后身份重放失败，详见 /tmp/xpon-auth-native.log"
+		logger -t xpon "replay: EPON OAM 重启后身份（含 CTC ONUSN）重放失败，详见 /tmp/xpon-auth-native.log"
 		exit 1
 	fi
 else
@@ -52,4 +52,4 @@ fi
 /usr/bin/xpon-mvlan.sh
 /usr/bin/pon-multicast apply-all
 /usr/bin/xpon-mvlan-snap.sh >/dev/null 2>&1 &
-logger -t xpon "replay: OMCI 就绪后认证与设备信息已重放"
+logger -t xpon "replay: 认证引擎就绪后身份与设备信息已重放"

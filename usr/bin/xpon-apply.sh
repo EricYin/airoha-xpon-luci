@@ -257,7 +257,7 @@ apply_auth() {
 		killall ponmgr_cfg >/dev/null 2>&1
 		$PONMGR &
 		$EPON_OAM &
-		# epon_oam 初始化会把 ctcOui/onuVenID 等运行态恢复为固件默认值。
+			# epon_oam 初始化会把 ctcOui/onuVenID/CTC ONUSN 等运行态恢复为固件默认值。
 		# 必须等待新进程可读后再做最终身份重放，不能在 kill 之前写完就退出。
 		tries=0
 		while [ "$tries" -lt 20 ]; do

@@ -453,6 +453,7 @@ function auth_values()
 	v.epon_ctc_oui      = uget("xpon", "device", "epon_ctc_oui") or ""
 	v.epon_ven_info     = uget("xpon", "device", "epon_ven_info") or ""
 	v.epon_onu_vendor_id = uget("xpon", "device", "epon_onu_vendor_id") or ""
+	v.epon_serial       = uget("xpon", "device", "epon_serial") or ""
 	-- 运行时读回（只读展示）：omcicfgCmd get 是 OMCI 层实际生效值，
 	-- 输出格式 "field = value" 或 "ONU SN: value"（读不到 = 空串）
 	local function omci_get(field)
@@ -480,6 +481,7 @@ function auth_values()
 		epon_ctc_oui = is_epon and oam_get("ctcOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ven_info = is_epon and oam_get("localVenInfo"):gsub("^0[xX]", ""):upper() or "",
 		epon_onu_vendor_id = is_epon and oam_get("onuVenID") or "",
+		epon_serial = is_epon and runtime_mac(sh("/usr/bin/xpon-epon-sn.sh get 2>/dev/null")) or "",
 	}
 	local pon_ifconfig = sh("ifconfig pon 2>/dev/null")
 	rt.pon_mac = runtime_mac(sh("cat /sys/class/net/pon/address 2>/dev/null"):match("([0-9A-Fa-f:]+)")
@@ -531,6 +533,7 @@ function auth_values()
 		if migrated_vendor == "" then migrated_vendor = hex_ascii4(v.epon_ven_info) end
 		v.epon_onu_vendor_id = migrated_vendor ~= "" and migrated_vendor or rt.epon_onu_vendor_id
 	end
+	if v.epon_serial == "" then v.epon_serial = rt.epon_serial end
 	local dsd_mac = dsd_wan_mac()
 	local saved_pon_mac = runtime_mac(uget("xpon", "device", "pon_mac") or "")
 	-- 输入框是持久配置，已保存时必须优先回显，避免启动重放尚未完成时
@@ -1258,6 +1261,7 @@ local function save_auth(fv)
 	local ectc = (fv("epon_ctc_oui") or ""):gsub("%s+", ""):upper()
 	if ectc == "" then ectc = eoui end
 	local eonu_vendor = fv("epon_onu_vendor_id") or ""
+	local epon_serial = (fv("epon_serial") or ""):gsub("%s+", ""):upper()
 	local even = (fv("epon_ven_info") or ""):gsub("%s+", ""):upper()
 	if eonu_vendor == "" then
 		eonu_vendor = vendor_id ~= "" and vendor_id or hex_ascii4(even)
@@ -1365,6 +1369,11 @@ local function save_auth(fv)
 	else
 		u:delete("xpon", "device", "epon_onu_vendor_id")
 	end
+	if epon_serial ~= "" then
+		u:set("xpon", "device", "epon_serial", epon_serial)
+	else
+		u:delete("xpon", "device", "epon_serial")
+	end
 
 	u:save("network")
 	local network_commit = u:commit("network")
@@ -1419,6 +1428,9 @@ local function save_auth(fv)
 		if check:get("xpon", "device", "epon_ctc_oui") ~= ectc then return nil, "persist_epon_ctc_oui" end
 		if (check:get("xpon", "device", "epon_onu_vendor_id") or "") ~= eonu_vendor then
 			return nil, "persist_epon_onu_vendor_id"
+		end
+		if (check:get("xpon", "device", "epon_serial") or "") ~= epon_serial then
+			return nil, "persist_epon_serial"
 		end
 	end
 	return true
@@ -1730,6 +1742,7 @@ function action_save()
 		local ectc = formvalue("epon_ctc_oui") or ""
 		local even = formvalue("epon_ven_info") or ""
 		local eonu_vendor = formvalue("epon_onu_vendor_id") or ""
+		local epon_serial = (formvalue("epon_serial") or ""):gsub("%s+", ""):upper()
 		if onu_low ~= "1" and onu_low ~= "2" then
 			err = "onu_low"
 		elseif pmode ~= "EPON" and (#sn ~= 12 or not sn:sub(1, 4):match("^[A-Za-z0-9]+$") or not sn:sub(5, 12):match("^[0-9a-fA-F]+$")) then
@@ -1746,6 +1759,8 @@ function action_save()
 			err = "epon_ven_info"
 		elseif not ascii4_optional(eonu_vendor) then
 			err = "epon_onu_vendor_id"
+		elseif #epon_serial > 0 and not ponmac_ok(epon_serial) then
+			err = "epon_serial"
 		elseif #pon_mac > 0 and not ponmac_ok(pon_mac) then
 			err = "pon_mac"
 		elseif #loid > 24 then

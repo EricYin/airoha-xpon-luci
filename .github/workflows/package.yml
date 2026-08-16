@@ -25,6 +25,8 @@ jobs:
           test -d www
           bash -n usr/bin/xpon-apply.sh
           bash -n usr/bin/xpon-auth-native.sh
+          bash -n usr/bin/xpon-epon-sn.sh
+          bash -n usr/bin/xpon-replay.sh
 
       - name: Build archive
         id: build

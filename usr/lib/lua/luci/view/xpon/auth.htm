@@ -6,13 +6,13 @@ local function esc(s)
 	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
 %>
-<script type="text/javascript" src="<%=resource%>/view/xpon.js?v=20260816-ponmac-mode"></script>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js?v=20260816-epon-onusn"></script>
 
 <h2 name="content">PON设置 — 认证 Auth</h2>
 <br />
 
 <% if saved then %>
-	<div class="alert-message">已保存并应用：认证参数已下发，OMCI 已重启。若未上线请核对 LOID/SN 是否与装维工单一致。</div>
+	<div class="alert-message">已保存并应用：认证参数已下发并重启对应认证引擎。若未上线请核对 LOID、注册 MAC、EPON ONUSN 或 GPON SN。</div>
 <% end %>
 <% if err and tostring(err):match("^native_write_") then %>
 	<div class="alert-message error">配置已保存，但设备命令下发或回读失败（<b><%=err%></b>），因此未重启。请通过 SSH 查看 <code>/tmp/xpon-auth-native.log</code>；修正后重新保存。</div>
@@ -23,7 +23,7 @@ end
 <% elseif err == "reboot_schedule" then %>
 	<div class="alert-message error">设备参数已下发并回读成功，但未能创建重启任务。请手动重启设备后核对当前生效值。</div>
 <% elseif err then %>
-	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；PON SN 为 4 位厂商代码 + 8 位 hex；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；EPON OUI 为 6 位 hex、ONU Vendor ID 为 4 位可打印 ASCII；EPON 注册 MAC 留空时必须能读取有效 dsd wan_mac）。</div>
+	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；PON SN 为 4 位厂商代码 + 8 位 hex；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；EPON OUI 为 6 位 hex、ONU Vendor ID 为 4 位可打印 ASCII、EPON 序列号为 6 字节 MAC 格式；EPON 注册 MAC 留空时必须能读取有效 dsd wan_mac）。</div>
 <% end %>
 
 <form class="cbi-map" method="post" action="save" onsubmit="return xponAuthCheck(this)" id="authform">
@@ -117,6 +117,14 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<div class="cbi-value-field">
 				<input type="text" id="epon_onu_vendor_id" name="epon_onu_vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.epon_onu_vendor_id%>" placeholder="例如 HWTC" pattern="[\x20-\x7E]{4}" />
 				<div class="cbi-value-description">OAM <code>onuVenID</code>，固定 4 字节可打印 ASCII。当前 OAM 生效：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title" for="epon_serial">EPON 序列号（CTC ONUSN）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="epon_serial" name="epon_serial" class="cbi-input-text" maxlength="17" value="<%=v.epon_serial%>" placeholder="如 28:01:1C:B5:44:0B" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
+				<div class="cbi-value-description">CTC OAM <code>ONUSN</code> 复合身份中的 6 字节 ONU ID，与 MPCP 注册 MAC 是两个字段。留空保持固件默认；当前 OAM 应答值：<code><%=esc(rt.epon_serial ~= "" and rt.epon_serial or "（未读取/不支持）")%></code></div>
 			</div>
 		</div>
 

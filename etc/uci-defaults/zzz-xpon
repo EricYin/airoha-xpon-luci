@@ -35,6 +35,7 @@ config auth 'device'
 	option sn_regid_password ''
 	option epon_oui ''
 	option epon_ven_info ''
+	option epon_serial ''
 
 config service 'tr069'
 	option enable '0'
@@ -121,6 +122,7 @@ uci -q get xpon.device.xpon_sn_auth_type >/dev/null || uci set xpon.device.xpon_
 uci -q get xpon.device.sn_regid_password >/dev/null || uci set xpon.device.sn_regid_password=''
 uci -q get xpon.device.epon_oui >/dev/null || uci set xpon.device.epon_oui=''
 uci -q get xpon.device.epon_ven_info >/dev/null || uci set xpon.device.epon_ven_info=''
+uci -q get xpon.device.epon_serial >/dev/null || uci set xpon.device.epon_serial=''
 uci commit xpon
 
 uci -q get pon.multicast >/dev/null || uci set pon.multicast='multicast'

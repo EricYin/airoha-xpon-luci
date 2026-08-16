@@ -1,4 +1,5 @@
-xpon-luci 2.6 2026-08-16
+xpon-luci 2.7 2026-08-16
+epon: 增加 CTC ONUSN 复合身份中的 6 字节 ONU ID 独立配置；仅对已校验的 epon_oam 写入并回读，和 MPCP MAC 分离
 epon: 持久保存并重放 localOui/ctcOui/localVenInfo/onuVenID；最终写入改到 epon_oam 重启之后，防止恢复 111111/MTKc
 boot: 修正原厂 S00xponconfig 的 gponauth 变量错误；启动主路径直接采用持久认证和 PON MAC，S11 仅作旧固件兜底
 auth: PON SN/Vendor ID 提交后同时回读 network 与 xpon 持久源；PON MAC 输入框优先显示已保存配置，运行值独立展示
