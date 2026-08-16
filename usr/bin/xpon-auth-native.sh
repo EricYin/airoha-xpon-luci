@@ -35,7 +35,7 @@ oam_read() {
 verify() {
 	attr=$1
 	want=$2
-	[ -n "$want" ] || return 0
+	[ -n "$want" ] || [ "$secret" = "1" ] || return 0
 	have=$(omci_read "$attr")
 	cmp_have=$have
 	cmp_want=$want
@@ -173,7 +173,7 @@ if [ "$mode" = "EPON" ]; then
 	[ -x "$OAM" ] || { echo "oamcfgCmd 不存在或不可执行" >> "$LOG"; exit 127; }
 	run "$OAM" set mode 2
 	[ -n "$loid" ] && run "$OAM" set loid0 "$loid"
-	[ -n "$loidpw" ] && run_secret "oamcfgCmd set loidPasswd0" "$OAM" set loidPasswd0 "$loidpw"
+	[ -n "$loid" ] && run_secret "oamcfgCmd set loidPasswd0" "$OAM" set loidPasswd0 "$loidpw"
 	[ -n "$epon_oui" ] && run "$OAM" set localOui "$epon_oui"
 	[ -n "$epon_ctc_oui" ] && run "$OAM" set ctcOui "$epon_ctc_oui"
 	[ -n "$epon_ven" ] && run "$OAM" set localVenInfo "$epon_ven"

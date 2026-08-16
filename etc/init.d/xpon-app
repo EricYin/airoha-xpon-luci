@@ -58,10 +58,16 @@ start() {
 	/usr/bin/xpon-apply.sh leds
 	# vendorId/equipmentId/onuVersion 等只存在共享内存，必须等 OMCI 启动后重放。
 	/usr/bin/xpon-replay.sh >/dev/null 2>&1 &
+	# netifd/vendor control paths may restart epon_oam again after the initial
+	# replay. Track process changes and restore the complete OAM identity.
+	/usr/bin/xpon-epon-sn.sh watch 5 >/dev/null 2>&1 &
 	[ "$(uci -q get xpon.fallback.enable)" = "1" ] && /usr/bin/xpon-fallback.sh &
 }
 
 stop() {
+	watch_pid=$(cat /var/run/xpon-epon-sn-watch.pid 2>/dev/null)
+	[ -n "$watch_pid" ] && kill "$watch_pid" 2>/dev/null
+	rm -f /var/run/xpon-epon-sn-watch.pid
 	killall xpon-fallback.sh 2>/dev/null
 	killall xpon-fallback 2>/dev/null
 }

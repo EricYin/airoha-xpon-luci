@@ -235,7 +235,7 @@ apply_auth() {
 		# XEPON 需“模式”页切到 42/41/32/31 且 OLT 为 10G-EPON 口，实验性。
 		$OAM set mode 2 >/dev/null 2>&1
 		[ -n "$loid" ] && $OAM set loid0 "$loid" >/dev/null 2>&1
-		[ -n "$loidpw" ] && $OAM set loidPasswd0 "$loidpw" >/dev/null 2>&1
+		[ -n "$loid" ] && $OAM set loidPasswd0 "$loidpw" >/dev/null 2>&1
 		# OAM 身份均为运行态；这里先写只是兼容旧引擎，重启后的新进程
 		# 还必须由 xpon-auth-native.sh 再写一次并逐项回读。
 		epon_oui=$(uci_get xpon.device.epon_oui)

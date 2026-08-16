@@ -1,4 +1,6 @@
 xpon-luci 2.7 2026-08-16
+epon: LOID-only 在首次应用和守护重放中都显式下发空 loidPasswd0，并对空值执行真实回读校验
+epon: 增加 OAM 身份守护；按 epon_oam PID 变化自动重放，且每 30 秒只读校验 ONUSN，漂移时才修复
 epon: ctcOui 与 localOui 解耦，默认及空值回退改为抓包验证的 111111；迁移旧版自动复制值并保留手动覆盖
 status: EPON 自动轮询不再调用会段错误/污染共享内存的 ponmgr epon 查询；MPCP 改读状态文件、/proc 与内核日志
 epon: 增加 CTC ONUSN 复合身份中的 6 字节 ONU ID 独立配置；仅对已校验的 epon_oam 写入并回读，和 MPCP MAC 分离
