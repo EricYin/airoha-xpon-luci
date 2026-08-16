@@ -1,6 +1,7 @@
 xpon-luci 2.6 2026-08-16
 auth: PON MAC 输入框回读当前值；GPON 取 pon 业务接口，EPON 取驱动的启动 ethaddr 注册基准并同步为 MPCP ONU MAC
 services: PPPoE 使用 pppoe-pon<VID> 短接口名，并在启动时迁移旧配置，避免超过 Linux 15 字符上限后 netifd 永久 pending
+boot: 禁用原厂 S99uenv_update 的 onu_type 强制回写，避免 PON 模式被恢复及循环重启
 mode: UCI 缺少 onu_type 时回退读取 U-Boot 目标值，同步修复 bootargs 旧模式及重复键名前缀
 auth: LOID 空密码在 OMCI 就绪后显式下发并回读，覆盖原厂 netifd 注入的 ECONET
 multicast: IGMP/MLD 代理新增 UNI1-4 端口绑定；SDK port func=2，重放不再覆盖为 func=1

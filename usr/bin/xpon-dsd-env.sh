@@ -1,7 +1,5 @@
 #!/bin/sh
 # Export the plain-text DSD factory partition as a sourceable shell file.
-# axon_platform_manager normally does this during preinit, but this firmware
-# image only contains axon_platform_manager.bak.
 
 DSD=/usr/sbin/gtk_dsd
 OUT=/tmp/dsd.env

@@ -131,6 +131,9 @@ uci -q get pon.multicast.proxy_port >/dev/null || uci set pon.multicast.proxy_po
 uci commit pon
 
 # 专用 init 脚本持久重放驱动组播配置；不修改 rc.local，避免重复执行。
+# 原厂 S99uenv_update 会修改 env 后重启。保留 init 文件供 S96bootloader
+# 检查，无条件移除自动启动链接，避免不同版本的脚本绕过内容匹配。
+rm -f /etc/rc.d/S99uenv_update /etc/rc.d/K99uenv_update
 [ -x /etc/init.d/pon-services ] && /etc/init.d/pon-services enable
 [ -x /etc/init.d/xpon-app ] && /etc/init.d/xpon-app enable
 

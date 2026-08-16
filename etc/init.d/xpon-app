@@ -7,6 +7,16 @@
 START=11
 STOP=89
 
+disable_factory_uenv_autostart() {
+	# 保留 init 文件供 S96bootloader 的存在性检查，但绝不允许启动时修改 env
+	# 或重启。无条件删除链接，兼容已被修改而不再含 fw_setenv onu_type 的版本。
+	if [ -e /etc/rc.d/S99uenv_update ] || [ -L /etc/rc.d/S99uenv_update ] ||
+	   [ -e /etc/rc.d/K99uenv_update ] || [ -L /etc/rc.d/K99uenv_update ]; then
+		rm -f /etc/rc.d/S99uenv_update /etc/rc.d/K99uenv_update
+		logger -t xpon "已禁用原厂 uenv_update 自动启动，避免 env 回写重启循环"
+	fi
+}
+
 normalize_pppoe_names() {
 	local meta iface vid expected current changed=0
 
@@ -32,10 +42,11 @@ normalize_pppoe_names() {
 }
 
 start() {
+	disable_factory_uenv_autostart
 	[ -f /etc/config/xpon ] || [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon
 	[ -f /etc/config/xpon ] || return 0
 	normalize_pppoe_names
-	# preinit 的 axon_platform_manager 缺失时补建 DSD 环境。
+	# preinit 未能读取 DSD 时再补建一次。
 	[ -s /tmp/dsd.env ] || /usr/bin/xpon-dsd-env.sh
 	# 先抵消 S00xponconfig 的认证覆盖，确保 S20network 读取持久认证值。
 	/usr/bin/xpon-apply.sh restore-auth
