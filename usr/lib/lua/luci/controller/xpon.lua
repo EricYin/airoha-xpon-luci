@@ -82,6 +82,13 @@ local pon_tech_bits = {
 }
 local pon_tech_by_bits = {}
 for _id, _bits in pairs(pon_tech_bits) do pon_tech_by_bits[_bits] = _id end
+local pon_tech_short_names = {
+	GPON = "GPON",
+	XGPON = "XGPON",
+	XGSPON = "XGSPON",
+	EPON_10G_1G = "10G/1G-EPON",
+	EPON_10G_10G = "10G/10G-EPON",
+}
 
 -- 组合 onu_type = (技术 bits << 4) | ONU 类型（1=SFU 2=HGU）
 local function onu_type_hex(tech, low)
@@ -119,7 +126,7 @@ local pon_mode_names = {
 local function decode_onu(hex)
 	local b = tonumber(hex, 16)
 	if not b then
-		return { form = "未知", form_cn = "未知", tech = "?", tech_cn = "未知" }
+		return { form = "未知", form_cn = "未知", tech = "?", tech_cn = "未知", label = "未知" }
 	end
 	local low = b % 16
 	local form = (low == 2 and "HGU") or (low == 1 and "SFU") or "未知"
@@ -129,11 +136,13 @@ local function decode_onu(hex)
 	for _, t in ipairs(pon_techs) do
 		if t.id == tid then tech_cn = t.name end
 	end
-	return { form = form, form_cn = form_cn, tech = tid or "?", tech_cn = tech_cn }
+	local tech_short = pon_tech_short_names[tid] or "未知"
+	local label = (form ~= "未知" and tech_short ~= "未知") and (form .. " / " .. tech_short) or "未知"
+	return { form = form, form_cn = form_cn, tech = tid or "?", tech_cn = tech_cn, label = label }
 end
 
 function index()
-	entry({"admin", "xpon"}, firstchild(), "PON设置", 39).dependent = false
+	entry({"admin", "xpon"}, firstchild(), "PON", 39).dependent = false
 	entry({"admin", "xpon", "auth"}, call("action_auth"), "认证", 1)
 	-- 业务 Services 页默认不内置（模板 services.htm 保留在包内，
 	-- 需要时取消下面这行注释即可单独挂出）
@@ -297,20 +306,46 @@ local function parse_gem_queue(text)
 	return rows, table.concat(raw, "\n")
 end
 
--- ponmgr GEM 口表：`%d  Unicast GEM Port:%d, TCONT:%d, MAC If:%s, ...`
+-- ponmgr GEM 口表。新版输出把 MAC If / Loopback / Encryption 分成多行，
+-- 旧版也可能挤在同一行，因此按条目状态增量解析。
 -- （G.988 ME 268 GEM port network CTP 的驱动视图）
 local function parse_ponmgr_gem(text)
-	local rows = {}
+	local rows, current = {}, nil
 	for l in (text .. "\n"):gmatch("([^\n]+)") do
-		local kind, gp, tcont, macif =
-			l:match("(%a+) GEM Port:%s*(%d+), TCONT:%s*(%d+), MAC If:(%S+),")
-			or l:match("GEM Port:%s*(%d+), TCONT:%s*(%d+), MAC If:(%S+),")
+		local kind, gp, tcont = l:match("(%a+) GEM Port:%s*(%d+), TCONT:%s*(%d+)")
 		if gp then
-			rows[#rows + 1] = { gem = gp, tcont = tcont, macif = macif, kind = kind or "" }
+			current = { gem = gp, tcont = tcont, macif = "", kind = kind or "", loopback = "", encryption = "" }
+			rows[#rows + 1] = current
+		end
+		if current then
+			current.macif = l:match("MAC If:%s*([^,%s]+)") or current.macif
+			current.loopback = l:match("Loopback:%s*([^,]+)") or current.loopback
+			current.encryption = l:match("Encryption:%s*(%S+)") or current.encryption
 		end
 	end
 	table.sort(rows, function(a, b) return tonumber(a.gem) < tonumber(b.gem) end)
 	return rows
+end
+
+-- ponmgr TCONT 表：索引对应硬件 channel，Alloc-ID 对应 G.988 ME262。
+local function parse_ponmgr_tcont(text)
+	local rows = {}
+	for l in (text .. "\n"):gmatch("([^\n]+)") do
+		local idx, alloc, channel = l:match("^%s*(%d+)%s+ALLOC ID:%s*(%d+), Channel:%s*(%d+)")
+		if idx then rows[#rows + 1] = { index = idx, alloc = alloc, channel = channel } end
+	end
+	table.sort(rows, function(a, b) return tonumber(a.index) < tonumber(b.index) end)
+	return rows
+end
+
+local function command_dump(defs)
+	local out = {}
+	for _, d in ipairs(defs) do
+		out[#out + 1] = "==== " .. d[1] .. " ===="
+		local body = sh("timeout 3 " .. d[2])
+		out[#out + 1] = body ~= "" and body or "（无输出）"
+	end
+	return table.concat(out, "\n")
 end
 
 ------------------------------------------------------------------------
@@ -369,9 +404,11 @@ function auth_values()
 		local s
 		if private_saved then
 			s = uget("xpon", "device", field)
+			if field == "loid_password" and s == '""' then s = "" end
 			if s ~= nil and s ~= "" then return s end
 		end
 		s = uget("network", "xpon_auth", field)
+		if field == "loid_password" and s == '""' then s = "" end
 		if s ~= nil and s ~= "" then return s end
 		return dflt
 	end
@@ -469,16 +506,18 @@ function auth_values()
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
 	local dsd_mac = dsd_wan_mac()
 	local saved_pon_mac = runtime_mac(uget("xpon", "device", "pon_mac") or "")
-	-- EPON 回显本次启动时驱动采用的 ONU/LLID 注册基准 MAC；GPON 系列
-	-- 没有以 Ethernet MAC 参与 PLOAM 注册，因此回显 pon 业务接口 MAC。
-	if is_epon then
+	-- 输入框是持久配置，已保存时必须优先回显，避免启动重放尚未完成时
+	-- 被临时运行值覆盖，看起来像“重启后丢失”。实际运行值在下方单独展示。
+	if saved_pon_mac ~= "" then
+		v.pon_mac = saved_pon_mac
+	elseif is_epon then
 		v.pon_mac = rt.epon_mac ~= "" and rt.epon_mac
-			or (saved_pon_mac ~= "" and saved_pon_mac
-			or (rt.pon_mac ~= "" and rt.pon_mac or dsd_mac))
+			or (rt.pon_mac ~= "" and rt.pon_mac or dsd_mac)
 	else
 		v.pon_mac = rt.pon_mac ~= "" and rt.pon_mac
-			or (saved_pon_mac ~= "" and saved_pon_mac or dsd_mac)
+			or dsd_mac
 	end
+	v.pon_mac_saved = saved_pon_mac
 	if v.loid == "" and rt.loid ~= "" then v.loid = rt.loid end
 	if (v.sn == "" or v.sn == "NoNumber") and rt.sn ~= "" then v.sn = rt.sn end
 	v.pon_mac_default = dsd_mac
@@ -491,8 +530,8 @@ function auth_values()
 	v.pon_techs         = pon_techs
 	local pmv = ponmode_values()
 	v.onu_low           = pmv.cur_low
-	v.onu_type_run      = pmv.cmdline
-	v.onu_type_env      = pmv.env
+	v.onu_mode_run      = pmv.run_dec.label
+	v.onu_mode_next     = pmv.env_dec.label
 	v.onu_type_pending  = pmv.pending
 	return v
 end
@@ -522,7 +561,7 @@ local function service_values()
 				enable=s.enable ~= "0" and "1" or "0", service_type=s.service_type or "internet",
 				mode=s.mode or s.payload or "routed", proto=s.proto or (owner and owner.proto) or "dhcp", mtu=s.mtu or (owner and owner.mtu) or "1500",
 				username=s.username or (owner and owner.username) or "", ipaddr=s.ipaddr or (owner and owner.ipaddr) or "", netmask=s.netmask or (owner and owner.netmask) or "",
-				password_set = ((s.password and s.password ~= "") or (owner and owner.password and owner.password ~= "")) and true or nil,
+				password_set=((s.password and s.password ~= "") or (owner and owner.password and owner.password ~= "")) and true or nil,
 				gateway=s.gateway or (owner and owner.gateway) or "", dns1=s.dns1 or "", dns2=s.dns2 or "",
 				lan_port=s.lan_port or "none", mcast_vlan=s.mcast_vlan or "",
 				interface=iface, external_owner=owner and owner.xpon_managed ~= "1" and owner[".name"] or nil,
@@ -731,26 +770,27 @@ function ponmode_values()
 	local cur_hex = (cmdline_val ~= "") and cmdline_val or env_num
 	local cur_bits = tonumber(cur_hex, 16)
 	local cur_tech = (cur_bits and pon_tech_by_bits[math.floor(cur_bits / 16)]) or nil
-	local cur_low = (cur_bits and (cur_bits % 16)) or 1
+	-- ONU 形态只看 onu_type 最后一位：1=SFU、2=HGU。
+	local cur_low = cur_hex:match("([12])$") or "1"
 
-	-- PON 技术以“认证”页为准；未设置时按当前模式推导
-	local tech = uget("network", "xpon_auth", "pon_tech") or uget("xpon", "device", "pon_tech") or ""
-	if not pon_tech_bits[tech] then tech = cur_tech or "XGPON" end
-	local tech_mismatch = (cur_tech ~= nil and tech ~= cur_tech)
+	-- PON 技术以当前 cmdline/env 为准，UCI 仅保存认证参数，不能驱动模式。
+	local tech = cur_tech or "XGPON"
+	local saved_tech = uget("network", "xpon_auth", "pon_tech") or uget("xpon", "device", "pon_tech") or ""
+	local tech_mismatch = (cur_tech ~= nil and pon_tech_bits[saved_tech] ~= nil and saved_tech ~= cur_tech)
 	local tech_name = tech
 	for _, t in ipairs(pon_techs) do
 		if t.id == tech then tech_name = t.name end
 	end
 
-	-- 本页只选 SFU/HGU，技术来自认证页，自动组合 onu_type
+	-- 本页只选 SFU/HGU，始终保留 env 中的 PON 技术高半字节。
 	local forms = {
-		{ low = "2", name = "HGU（家庭网关）", desc = "国内运营商默认：LAN 桥接 + VEIP + IPTV 组播完整" },
-		{ low = "1", name = "SFU（桥形态）", desc = "纯桥/实验：无 VEIP 与 LAN 侧组播引擎" },
+		{ low = "2", short = "HGU", name = "HGU（家庭网关）", desc = "国内运营商默认：LAN 桥接 + VEIP + IPTV 组播完整" },
+		{ low = "1", short = "SFU", name = "SFU（桥形态）", desc = "纯桥/实验：无 VEIP 与 LAN 侧组播引擎" },
 	}
 	local opts = {}
 	for _, f in ipairs(forms) do
 		opts[#opts + 1] = {
-			low = f.low, name = f.name, desc = f.desc,
+			low = f.low, short = f.short, name = f.name, desc = f.desc,
 			hex = onu_type_hex(tech, f.low),
 		}
 	end
@@ -891,13 +931,16 @@ function ponmode_values()
 		sys_mode_name = pon_mode_names[tonumber(sys_mode)] or "未知",
 		pon_tech      = tech,
 		pon_tech_name = tech_name,
+		pon_tech_short = pon_tech_short_names[tech] or "未知",
+		saved_tech_short = pon_tech_short_names[saved_tech] or "未知",
+		run_tech_short = pon_tech_short_names[cur_tech] or "未知",
 		tech_mismatch = tech_mismatch,
 		run_tech      = cur_tech,
 		run_hex       = cur_hex,
 		run_dec       = decode_onu(cur_hex),
 		env_dec       = decode_onu(env_num),
 		forms         = opts,
-		cur_low       = tostring(cur_low),
+		cur_low       = cur_low,
 		sys_modes     = sys_modes,
 		ko            = sh("lsmod 2>/dev/null | awk '$1 ~ /^xpon/ {print $1}' | tr '\\n' ' '"),
 		bbf_gpon      = sh("if [ -e /proc/gpon/bbf247Flag ]; then cat /proc/gpon/bbf247Flag; fi"),
@@ -1052,14 +1095,19 @@ local function save_onu_mode()
 		http.redirect(xpon_url("mode", "err=low"))
 		return true
 	end
-	-- PON 技术以“认证”页为准；缺省按当前 cmdline 推导
-	local tech = uget("network", "xpon_auth", "pon_tech") or uget("xpon", "device", "pon_tech") or ""
-	if not pon_tech_bits[tech] then
-		local cur = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1"):match("=(.*)$")
-		local bits = tonumber(cur or "", 16)
-		tech = (bits and pon_tech_by_bits[math.floor(bits / 16)]) or "XGPON"
+	-- 只允许改低半字节；PON 技术高半字节必须从 cmdline/env 读取并保留。
+	local cur = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1"):match("=(.*)$")
+	if not cur or cur == "" then
+		cur = sh("fw_printenv -n onu_type 2>/dev/null")
+	end
+	local bits = tonumber(cur or "", 16)
+	local tech = bits and pon_tech_by_bits[math.floor(bits / 16)] or nil
+	if not tech then
+		http.redirect(xpon_url("mode", "err=env"))
+		return true
 	end
 	local val = onu_type_hex(tech, low)
+	local target_label = decode_onu(val).label
 	local rc = sys.call("/usr/bin/xpon-apply.sh ponmode %s >/dev/null 2>&1" % { val })
 	if rc ~= 0 then
 		http.redirect(xpon_url("mode", "err=apply"))
@@ -1067,7 +1115,7 @@ local function save_onu_mode()
 	end
 	if formvalue("apply") == "reboot" then
 		http.prepare_content("text/html; charset=utf-8")
-		http.write("<html><body><h3>onu_type=" .. val .. " 已写入 U-Boot env，正在重启…</h3><p>约 1 分钟后重新登录。若无法注册，按复位键进 U-Boot 用 <code>setenv onu_type 61; saveenv; reset</code> 恢复。</p></body></html>")
+		http.write("<html><body><h3>下次启动模式：" .. target_label .. "，正在重启…</h3><p>约 1 分钟后重新登录。</p></body></html>")
 		sys.call("(sleep 2; reboot) >/dev/null 2>&1 </dev/null &")
 		return true
 	end
@@ -1152,6 +1200,7 @@ local function save_auth(fv)
 	local submitted_loid_password = fv("loid_password") or ""
 	local stored_loid_password = u:get("xpon", "device", "loid_password")
 		or u:get("network", "xpon_auth", "loid_password") or ""
+	if stored_loid_password == '""' then stored_loid_password = "" end
 	local loid_password = submitted_loid_password ~= "" and submitted_loid_password
 		or (fv("loid_password_clear") == "1" and "" or stored_loid_password)
 	-- EPON/XEPON 用 auth_type_e（TYPE_EPON_AUTH），EPON 只支持 LOID 认证，必须大写
@@ -1196,8 +1245,8 @@ local function save_auth(fv)
 		u:delete("network", "xpon_auth", "auth_type_e")
 	end
 	if fv("loid") and fv("loid") ~= "" then u:set("network", "xpon_auth", "loid", fv("loid")) end
-	-- libuci 会把空字符串保存为“选项不存在”；设备重放脚本将其解释为
-	-- LOID-only，并在 OMCI 就绪后显式清空原厂 netifd 注入的 ECONET。
+	-- libuci 会把空字符串保存为“选项不存在”；启动恢复会在 network 镜像中
+	-- 编码为 shell 空参数，使 netifd 首次下发就是 LOID-only。
 	u:set("network", "xpon_auth", "loid_password", loid_password)
 	if sn ~= "" then u:set("network", "xpon_auth", "def_sn", sn); u:set("network", "xpon_auth", "sn", sn) end
 	u:set("network", "xpon_auth", "xpon_sn_auth_type", snf)
@@ -1287,6 +1336,19 @@ local function save_auth(fv)
 	local check = uci_native.cursor()
 	local equipment = fv("equipment_id") or ""
 	local onu_version = fv("onu_version") or ""
+	if sn ~= "" then
+		if check:get("network", "xpon_auth", "sn") ~= sn
+			or check:get("network", "xpon_auth", "def_sn") ~= sn then
+			return nil, "persist_network_sn"
+		end
+		if check:get("xpon", "device", "sn") ~= sn
+			or check:get("xpon", "device", "def_sn") ~= sn then
+			return nil, "persist_device_sn"
+		end
+	end
+	if vendor_id ~= "" and check:get("xpon", "device", "vendor_id") ~= vendor_id then
+		return nil, "persist_vendor_id"
+	end
 	if equipment ~= "" and check:get("network", "xpon_auth", "equipment_id") ~= equipment then
 		return nil, "persist_equipment_id"
 	end
@@ -1654,26 +1716,41 @@ function action_save()
 			end
 		end
 		if not err then
+			-- 必须在写入下次启动模式之前记录当前引擎。跨 GPON/EPON 切换时，
+			-- 当前进程仍是旧引擎，不能把新配置下发给它；开机恢复会按新模式下发。
+			local run_tech = ponmode_values().run_tech
+			local same_engine = pon_tech_bits[run_tech] ~= nil and
+				pon_engine_for(run_tech) == pmode
 			local saved_ok, save_err = save_auth(formvalue)
 			if not saved_ok then
 				err = save_err or "persist_auth"
 			else
 				local onu_val = onu_type_hex(ptech, onu_low)
-				local u = uci.cursor(); u:set("xpon","device","onu_type",onu_val); u:save("xpon"); u:commit("xpon")
-				local mac_rc = sys.call("/usr/bin/xpon-apply.sh mac")
-				if mac_rc ~= 0 then
-					err = "ponmac_write_" .. tostring(mac_rc)
+				-- ONU 形态/PON 技术只保存在 U-Boot env；这是用户明确保存时
+				-- 唯一允许写 onu_type/bootargs 的入口，启动重放只读 env。
+				local mode_rc = sys.call("/usr/bin/xpon-apply.sh ponmode " .. onu_val)
+				if mode_rc ~= 0 then
+					err = "ponmode_write_" .. tostring(mode_rc)
 				else
-					local rc = sys.call("/usr/bin/xpon-auth-native.sh")
-					if rc ~= 0 then
-						err = "native_write_" .. tostring(rc)
+					-- GPON 只同步 pon 业务接口地址；EPON 还必须同步并回读
+					-- ethaddr/bootargs，供驱动在下次启动时设置 MPCP ONU MAC。
+					local mac_rc = sys.call("/usr/bin/xpon-apply.sh mac")
+					if mac_rc ~= 0 then
+						err = "ponmac_write_" .. tostring(mac_rc)
 					else
-						http.prepare_content("text/html; charset=utf-8")
-						if schedule_reboot(8) then
-						http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>认证参数及 PON MAC 已应用</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
-							return
+						local rc = same_engine and sys.call("/usr/bin/xpon-auth-native.sh") or 0
+						if rc ~= 0 then
+							err = "native_write_" .. tostring(rc)
+						else
+							http.prepare_content("text/html; charset=utf-8")
+							if schedule_reboot(8) then
+								local result = same_engine and "认证参数及 PON MAC 已应用"
+									or "认证参数及 PON MAC 已保存，将在新 PON 模式启动时生效"
+								http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>" .. result .. "</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
+								return
+							end
+							err = "reboot_schedule"
 						end
-						err = "reboot_schedule"
 					end
 				end
 			end
@@ -1987,7 +2064,7 @@ local function build_gem_vlan_analysis(opt)
 		conclusion = {
 			level = "manual",
 			title = "尚未读取到 OMCI 业务规则",
-			text = "GEM 上行表、ME84 和 ME171 当前为空。可能是 ONU 尚未进入 O5、OLT 尚未下发，或 OMCI 守护未就绪；请稍后刷新，勿在状态不明时写入规则。",
+			text = "GEM 上行表、ME84 和 ME171 当前为空。可能是 ONU 尚未进入 O5、OLT 尚未下发，或 OMCI 守护未就绪。",
 		}
 	end
 	local svc_parts = {}
@@ -2037,8 +2114,84 @@ function action_provision()
 			}
 		end
 	end
-	local gem_entries = parse_ponmgr_gem(sh("/userfs/bin/ponmgr gpon get gemport 2>&1"))
-	local omci_me_dump = sh("for m in 84 171 268; do echo \"==== ME $m（G.988 §9.3） ====\"; timeout 2 /usr/sbin/gmtk_omci_dbg me $m 2>&1; done")
+	local tcont_text = sh("timeout 3 /userfs/bin/ponmgr gpon get tcont")
+	local tcont_entries = parse_ponmgr_tcont(tcont_text)
+	local gem_entries = parse_ponmgr_gem(sh("timeout 3 /userfs/bin/ponmgr gpon get gemport"))
+
+	local me_groups = {
+		{ title = "身份与 MIB 同步（ME2 / ME131 / ME256）", mes = {
+			{ 2, "ONU Data / MIB Data Sync" }, { 131, "OLT-G" }, { 256, "ONU2-G" },
+		} },
+		{ title = "TCONT、GEM 与 QoS（ME262 / ME268 / ME130 / ME277）", mes = {
+			{ 262, "T-CONT" }, { 268, "GEM Port Network CTP" },
+			{ 130, "802.1p Mapper Service Profile" }, { 277, "Priority Queue" },
+		} },
+		{ title = "桥接、UNI 与 VLAN（ME11 / ME45 / ME47 / ME84 / ME171 / ME329）", mes = {
+			{ 11, "PPTP Ethernet UNI" }, { 45, "MAC Bridge Service Profile" },
+			{ 47, "MAC Bridge Port Configuration Data" }, { 84, "VLAN Tagging Filter Data" },
+			{ 171, "Extended VLAN Tagging Operation Configuration Data" },
+			{ 329, "Virtual Ethernet Interface Point" },
+		} },
+		{ title = "组播（ME281 / ME309 / ME310 / ME311）", mes = {
+			{ 281, "Multicast GEM Interworking TP" }, { 309, "Multicast Operations Profile" },
+			{ 310, "Multicast Subscriber Config Info" }, { 311, "Multicast Subscriber Monitor" },
+		} },
+	}
+	local omci_me_groups = {}
+	for _, group in ipairs(me_groups) do
+		local defs = {}
+		for _, me in ipairs(group.mes) do
+			defs[#defs + 1] = {
+				"ME" .. me[1] .. " " .. me[2],
+				"/usr/sbin/gmtk_omci_dbg me " .. me[1],
+			}
+		end
+		omci_me_groups[#omci_me_groups + 1] = { title = group.title, dump = command_dump(defs) }
+	end
+
+	local ponmgr_groups = {
+		{ title = "注册、OMCC 与密钥", dump = command_dump({
+			{ "ponmgr gpon get info", "/userfs/bin/ponmgr gpon get info" },
+			{ "ponmgr gpon get omcc", "/userfs/bin/ponmgr gpon get omcc" },
+			{ "ponmgr gpon get sys_link_cfg", "/userfs/bin/ponmgr gpon get sys_link_cfg" },
+			{ "ponmgr gpon get onlineDuration", "/userfs/bin/ponmgr gpon get onlineDuration" },
+			{ "ponmgr gpon get PloamGtcInfo", "/userfs/bin/ponmgr gpon get PloamGtcInfo" },
+			{ "ponmgr gpon get key_info", "/userfs/bin/ponmgr gpon get key_info" },
+		}) },
+		{ title = "TCONT、GEM 与 WAN 计数", dump = command_dump({
+			{ "ponmgr gpon get tcont", "/userfs/bin/ponmgr gpon get tcont" },
+			{ "ponmgr gpon get gemport", "/userfs/bin/ponmgr gpon get gemport" },
+			{ "ponmgr gpon get AllTcontTxCnt", "/userfs/bin/ponmgr gpon get AllTcontTxCnt" },
+			{ "ponmgr gpon get WanCnt", "/userfs/bin/ponmgr gpon get WanCnt" },
+		}) },
+		{ title = "FEC、光模块与时序", dump = command_dump({
+			{ "ponmgr gpon get fec_status", "/userfs/bin/ponmgr gpon get fec_status" },
+			{ "ponmgr gpon get fecCnt", "/userfs/bin/ponmgr gpon get fecCnt" },
+			{ "ponmgr gpon get rx_fec_cfg", "/userfs/bin/ponmgr gpon get rx_fec_cfg" },
+			{ "ponmgr gpon get phyTransParams", "/userfs/bin/ponmgr gpon get phyTransParams" },
+			{ "ponmgr gpon get DrvPowerLevel", "/userfs/bin/ponmgr gpon get DrvPowerLevel" },
+			{ "ponmgr gpon get rsp_time", "/userfs/bin/ponmgr gpon get rsp_time" },
+			{ "ponmgr gpon get eqd_off", "/userfs/bin/ponmgr gpon get eqd_off" },
+			{ "ponmgr gpon get spf", "/userfs/bin/ponmgr gpon get spf" },
+			{ "ponmgr gpon get tod_info", "/userfs/bin/ponmgr gpon get tod_info" },
+		}) },
+	}
+
+	local counter_defs = {}
+	for _, t in ipairs(tcont_entries) do
+		counter_defs[#counter_defs + 1] = {
+			"TCONT index " .. t.index .. " / Alloc-ID " .. t.alloc,
+			"/userfs/bin/ponmgr gpon get TcontCnt " .. t.index,
+		}
+	end
+	for _, g in ipairs(gem_entries) do
+		counter_defs[#counter_defs + 1] = {
+			"GEM Port " .. g.gem,
+			"/userfs/bin/ponmgr gpon get GemCnt " .. g.gem,
+		}
+	end
+	local channel_counters = #counter_defs > 0 and command_dump(counter_defs)
+		or "当前没有可查询的 TCONT/GEM 实例。"
 	local gem_down_text = klog_show("/userfs/bin/gponmapcmd showDownRule")
 	local down_total, gem_down_rows = parse_gem_down(gem_down_text)
 	local gem_queue_text = klog_show("/userfs/bin/gponmapcmd showQueueRule")
@@ -2055,8 +2208,11 @@ function action_provision()
 		gem_queue_rows = gem_queue_rows,
 		me84_rows = me84_rows,
 		me171_rows = me171_rows,
+		tcont_entries = tcont_entries,
 		gem_entries = gem_entries,
-		omci_me_dump = omci_me_dump,
+		omci_me_groups = omci_me_groups,
+		ponmgr_groups = ponmgr_groups,
+		channel_counters = channel_counters,
 		analysis = analysis,
 		services = service_values(),
 		gem_up_raw = gem_up_text,
@@ -2077,26 +2233,6 @@ local function onu_state_name(state_id)
 		["O9"] = "O9 紧急停止 Emergency-Stop（NGPON2）",
 	}
 	return names[state_id] or (state_id and ("O" .. state_id)) or ""
-end
-
--- EPON：/tmp/epon_reg_auth_status 原厂进程不写，由本控制器按需生成。
--- 从 ponmgr epon get llid_info 读取 LLID：有效 LLID 即视为已注册并认证。
-local function ensure_epon_status_file()
-	local mode = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
-	local n = tonumber(mode)
-	if not (n == 2 or n == 3 or n == 4 or n == 5 or n == 12) then return end
-	local llid_info = sh("/userfs/bin/ponmgr epon get llid_info 2>&1")
-	local llid = tonumber(llid_info:match("LLID%s*=%s*(%d+)"))
-	local oui_out = sh("/userfs/bin/oamcfgCmd get localOui 2>&1")
-	local ven_out = sh("/userfs/bin/oamcfgCmd get localVenInfo 2>&1")
-	local loid_out = sh("/userfs/bin/oamcfgCmd get loid0 2>&1")
-	local body = "Auth Status: \n"
-	if llid and llid > 0 and llid < 32768 then
-		body = "Auth Status: REG_AND_AUTH\nLLID: " .. llid .. "\n" .. llid_info
-			.. "\nOUI: " .. oui_out .. "\nVendor Info: " .. ven_out .. "\nLOID: " .. loid_out .. "\n"
-	end
-	local f = io.open("/tmp/epon_reg_auth_status", "w")
-	if f then f:write(body) f:close() end
 end
 
 ------------------------------------------------------------------------
@@ -2187,10 +2323,14 @@ local function collect_status(include_details)
 	local is_epon = sys_mode_num == 2 or sys_mode_num == 3 or sys_mode_num == 4
 		or sys_mode_num == 5 or sys_mode_num == 12
 	local pon_family = is_epon and "epon" or "gpon"
+	local epon_llid_out, epon_auth_out, epon_status_file, epon_oam_log = "", "", "", ""
 	local pon_info
 	if is_epon then
-		ensure_epon_status_file()
-		pon_info = sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
+		epon_llid_out = sh("/userfs/bin/ponmgr epon get llid_info 2>&1")
+		epon_auth_out = sh("/userfs/bin/oamcfgCmd get authStatus 2>&1")
+		epon_status_file = sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
+		epon_oam_log = sh("tail -120 /tmp/oam_debug 2>/dev/null")
+		pon_info = epon_llid_out
 	else
 		pon_info = sh("/userfs/bin/ponmgr gpon get info 2>&1")
 	end
@@ -2301,36 +2441,61 @@ local function collect_status(include_details)
 		}) or { rows = {}, note = "" }
 	local gem_vlan = { rows = analysis.rows, note = analysis.note }
 
-	-- ONU State：优先使用 ponmgr/EPON 认证状态文件的正式运行状态，
-	-- 再回退内核日志；全部不可读时才根据 OMCC alloc 推断。
+	-- EPON 的 MPCP 注册和 OAM 认证是两个独立状态。llid_info 只证明
+	-- 驱动已有有效 LLID；authStatus 才是 OAM 认证结果，不能互相推断。
+	local epon_llid_lower = epon_llid_out:lower()
+	local epon_entry_num = tonumber(epon_llid_lower:match("entry%s*num%s*[:=]%s*(%d+)")
+		or epon_llid_lower:match("entries%s*[:=]%s*(%d+)")
+		or epon_llid_lower:match("number%s*[:=]%s*(%d+)"))
+	local epon_llid_token = epon_llid_lower:match("llid%s*[:=]%s*([%w]+)")
+	local epon_llid
+	if epon_llid_token then
+		if epon_llid_token:match("^0x%x+$") then
+			epon_llid = tonumber(epon_llid_token:sub(3), 16)
+		else
+			epon_llid = tonumber(epon_llid_token)
+		end
+	end
+	local epon_registered = is_epon and ((epon_entry_num and epon_entry_num > 0)
+		or (epon_llid ~= nil and epon_llid_out ~= "")) or false
+	local epon_auth_status = tonumber(epon_auth_out:match("[Aa]uth[Ss]tatus%s*=%s*(%d+)"))
+	local epon_auth_evidence = (epon_status_file .. "\n" .. epon_oam_log):upper()
+	-- 当前共享内存 authStatus 优先；只有命令不可读时，才回退文件/日志，
+	-- 避免旧日志中的成功或失败记录覆盖当前状态。
+	local epon_oam_authenticated = epon_auth_status == 1
+		or (epon_auth_status == nil and (epon_auth_evidence:match("REG_AND_AUTH") ~= nil
+			or epon_auth_evidence:match("AUTH SUCCESS") ~= nil))
+	local epon_oam_rejected = epon_auth_status == nil
+		and (epon_auth_evidence:match("REG_BUT_NOT_AUTH") ~= nil
+			or epon_auth_evidence:match("AUTH FAILURE") ~= nil)
+
+	-- GPON ONU State：优先使用 ponmgr，再回退内核日志；全部不可读时
+	-- 才根据 OMCC alloc 推断。EPON 不套用 GPON 的 O1-O7 状态机。
 	local state_id
-	if is_epon then
-		local epon_auth = pon_info:match("Auth Status:%s*([^\n]+)")
-		if epon_auth == "REG_AND_AUTH" then state_id = "5" end
-	else
+	if not is_epon then
 		state_id = pon_info:match("ONU State:%s*O(%d+)")
 	end
 	local last_pt = ""
 	local pt_src = "ponmgr"
-	if not state_id then
+	if not is_epon and not state_id then
 		last_pt = sh("dmesg 2>/dev/null | grep -o 'ponTime:O[0-9]*' | tail -1")
 		pt_src = "dmesg"
 	end
-	if not state_id and last_pt == "" then
+	if not is_epon and not state_id and last_pt == "" then
 		last_pt = sh("logread 2>/dev/null | grep -o 'ponTime:O[0-9]*' | tail -1")
 		pt_src  = "logread"
 	end
-	if not state_id then state_id = last_pt:match("O(%d+)$") end
+	if not is_epon and not state_id then state_id = last_pt:match("O(%d+)$") end
 	local state_inf  = false
-	if not state_id and alloc_id and alloc_id ~= "1023" then
+	if not is_epon and not state_id and alloc_id and alloc_id ~= "1023" then
 		state_id = "5"
 		state_inf = true
 	end
 	local pt_tail = sh("dmesg 2>/dev/null | grep ponTime | tail -8")
 	if pt_tail == "" then pt_tail = sh("logread 2>/dev/null | grep ponTime | tail -8") end
 
-	local auth_out = is_epon and pon_info or sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
-	local auth_raw = is_epon and (pon_info:match("Auth Status:%s*([^\n]+)") or "")
+	local auth_out = is_epon and epon_auth_out or sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
+	local auth_raw = is_epon and (epon_auth_status ~= nil and tostring(epon_auth_status) or "")
 		or (auth_out:match("authStat%s*=%s*(%d+)") or "")
 	-- OLT 标识：/tmp/ponstatus/olt_info（OMCI ME131 OLT-G 运行信息）
 	local olt_out    = sh("cat /tmp/ponstatus/olt_info 2>/dev/null")
@@ -2352,55 +2517,57 @@ local function collect_status(include_details)
 	local onu_env_dec = decode_onu(onu_env)
 	local onu_cmd_dec = decode_onu(onu_cmd)
 
-	local epon_llid = is_epon and pon_info:match("LLID:%s*(%d+)") or nil
 	local state_label
-	local level = "info"
 	if is_epon then
-		if auth_raw == "REG_AND_AUTH" then
-			state_label = "已注册并认证（MPCP LLID=" .. (epon_llid or "?") .. " / OAM REG_AND_AUTH）"
-			level = "ok"
-		elseif auth_raw == "REG_BUT_NOT_AUTH" then
-			state_label = "已注册（MPCP LLID=" .. (epon_llid or "?") .. "），OAM 认证未完成（REG_BUT_NOT_AUTH）"
-			level = "warn"
-		elseif epon_llid then
-			state_label = "已注册（MPCP LLID=" .. epon_llid .. "），OAM 认证进行中"
-			level = "warn"
+		if epon_registered then
+			state_label = "已注册（MPCP" .. (epon_llid ~= nil and ("，LLID=" .. epon_llid) or "") .. "）"
 		else
-			state_label = "未注册（MPCP 发现中，LLID 未分配）"
-			level = "err"
+			state_label = "未检测到有效 LLID（MPCP 发现/注册中）"
 		end
 	else
 		state_label = onu_state_name(state_id)
-		if state_inf then
-			state_label = "O5 运行（推断：OMCC alloc=" .. alloc_id .. " 已分配，dmesg 不可读）"
-		end
-		if state_id == "5" then
-			level = (alloc_id and alloc_id ~= "1023") and "ok" or "warn"
-		elseif state_id then
-			level = "err"
-		end
 	end
-	local auth_label
-	if is_epon and auth_raw == "REG_AND_AUTH" then
-		auth_label = "已注册并认证（REG_AND_AUTH）"
-	elseif is_epon and auth_raw == "REG_BUT_NOT_AUTH" then
-		auth_label = "已注册但未认证（REG_BUT_NOT_AUTH）"
+	if not is_epon and state_inf then
+		state_label = "O5 运行（推断：OMCC alloc=" .. alloc_id .. " 已分配，dmesg 不可读）"
+	end
+	local level = is_epon and (epon_registered and "ok" or "err") or "info"
+	if not is_epon and state_id == "5" then
+		level = (alloc_id and alloc_id ~= "1023") and "ok" or "warn"
+	elseif not is_epon and state_id then
+		level = "err"
+	end
+	local auth_label, auth_level
+	if is_epon and epon_oam_authenticated then
+		auth_label = "已认证" .. (epon_auth_status ~= nil and ("（authStatus=" .. epon_auth_status .. "）") or "（OAM 日志确认）")
+		auth_level = "ok"
+	elseif is_epon and not epon_registered then
+		auth_label = "尚未开始（需先完成 MPCP 注册）"
+		auth_level = "info"
+	elseif is_epon and epon_oam_rejected then
+		auth_label = "认证失败或未通过（OAM 明确返回失败）"
+		auth_level = "err"
+	elseif is_epon and epon_auth_status == 0 then
+		auth_label = "未确认认证（authStatus=0；部分 OLT 仅要求 MPCP 注册）"
+		auth_level = "warn"
+	elseif is_epon then
+		auth_label = "状态未知（设备未返回可识别的 OAM 认证值）"
+		auth_level = "info"
 	elseif auth_raw == "1" then
 		auth_label = "已认证（authStat=1）"
+		auth_level = "ok"
 	elseif auth_raw == "0" then
 		auth_label = "未认证（authStat=0）"
+		auth_level = "warn"
 	else
 		auth_label = (auth_raw ~= "" and ("authStat=" .. auth_raw)) or "获取失败"
+		auth_level = "info"
 	end
 
 	local summary = {
-		{ label = is_epon and "ONU 状态（MPCP/OAM）" or "ONU 状态", value = state_label, level = level, group = "reg", wide = true },
-		{ label = is_epon and "OAM 认证" or "OMCI 认证", value = auth_label,
-		  level = (auth_raw == "1" or auth_raw == "REG_AND_AUTH") and "ok"
-			or (auth_raw == "0" or auth_raw == "REG_BUT_NOT_AUTH") and "warn"
-			or "info", group = "reg" },
-		{ label = "OLT 设备", value = (olt_label ~= "" and olt_label)
-			or (is_epon and "EPON/OAM 模式不查询 ME131") or "N/A（未收到 ME131 OLT-G）",
+		{ label = is_epon and "MPCP 注册" or "ONU 状态", value = state_label, level = level, group = "reg", wide = true },
+		{ label = is_epon and "OAM 认证" or "OMCI 认证", value = auth_label, level = auth_level, group = "reg" },
+		{ label = "OLT 设备", value = is_epon and "EPON/OAM 模式不查询 OMCI ME131"
+			or ((olt_label ~= "" and olt_label) or "N/A（未收到 ME131 OLT-G）"),
 		  level = (olt_vendor ~= "") and "ok" or "info", group = "reg" },
 		{ label = "PON 模式（驱动 sys_xpon_mode）", value = (sys_mode ~= "" and (sys_mode .. " → " .. (pon_mode_names[tonumber(sys_mode)] or "未知"))) or "N/A", group = "reg" },
 		{ label = "ONU 形态（env / 本次启动）", value = (onu_env_dec.form .. " / " .. onu_cmd_dec.form), group = "reg" },
@@ -2421,18 +2588,17 @@ local function collect_status(include_details)
 		{ label = "BOSA 温度", value = (bosa_t and (bosa_t .. " °C") or "N/A"), level = (bosa_t and bosa_level or "info"), group = "optical" },
 	}
 	if is_epon then
-		-- EPON 无 OMCI/OMCC 概念：移除 GPON 专属卡片，避免显示 "?"
 		local filtered = {}
-		for _, it in ipairs(summary) do
-			local l = it.label
-			if not (l:match("^OMCC 分配") or l:match("^OLT 下发")) then
-				filtered[#filtered + 1] = it
+		for _, item in ipairs(summary) do
+			if not item.label:match("^OMCC 分配") and not item.label:match("^OLT 下发") then
+				filtered[#filtered + 1] = item
 			end
 		end
 		summary = filtered
 	end
 	local sections = include_details and {
-		is_epon and { title = "EPON 注册与认证", body = pon_info }
+		is_epon and { title = "EPON MPCP 注册（驱动有效 LLID 表）",
+			body = epon_llid_out ~= "" and epon_llid_out or "（未返回有效 LLID）" }
 			or sec("认证参数 (omcicfgCmd)",
 				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat"),
 		is_epon and { title = "OLT-G", body = "EPON/OAM 模式不查询 OMCI ME 131。" }
@@ -2444,7 +2610,10 @@ local function collect_status(include_details)
 		  body = "---- FEC ----\n" .. fec_out .. "\n\n---- counters ----\n" .. mac_cnt },
 		{ title = "光模块 DDM（en7572.ko /proc/lddla/debug + phy_10g.ko /proc/pon_phy）",
 		  body = (diag ~= "" and diag) or "（空：/proc/lddla/debug 不存在，BOB 驱动未加载）" },
-		is_epon and { title = "EPON OAM 状态", body = pon_info }
+		is_epon and { title = "EPON OAM 认证（只读）",
+			body = "---- oamcfgCmd get authStatus ----\n" .. (epon_auth_out ~= "" and epon_auth_out or "（无输出）")
+				.. "\n\n---- 原厂状态文件（若存在） ----\n" .. (epon_status_file ~= "" and epon_status_file or "（不存在）")
+				.. "\n\n---- OAM 最近日志 ----\n" .. (epon_oam_log ~= "" and epon_oam_log or "（无输出）") }
 			or { title = "OMCC / GEM / TCONT",
 				body = omcc_out .. "\n" .. gemport_out .. "\n" .. tcont_out },
 		is_epon and { title = "GEM 映射", body = "EPON/OAM 模式不使用 GPON GEM 映射。" }

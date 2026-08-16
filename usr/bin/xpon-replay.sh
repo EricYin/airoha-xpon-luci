@@ -5,9 +5,16 @@
 OMCI=/userfs/bin/omcicfgCmd
 OAM=/userfs/bin/oamcfgCmd
 tries=0
-mode=$(uci -q get xpon.device.pon_mode)
+mac_applied=0
+# S11 restore-auth 已按本次 cmdline/env 把实际引擎镜像到 network。
+mode=$(uci -q get network.xpon_auth.pon_mode)
 
 while [ "$tries" -lt 90 ]; do
+	# GPON 系列的 PON MAC 只是 pon 业务接口地址，不必等待 OMCI。
+	# 接口一出现就先应用一次；OMCI 就绪后严格重放还会再次回读确认。
+	if [ "$mode" != "EPON" ] && [ "$mac_applied" = 0 ] && [ -e /sys/class/net/pon/address ]; then
+		/usr/bin/xpon-apply.sh mac >/dev/null 2>&1 && mac_applied=1
+	fi
 	if [ "$mode" = "EPON" ]; then
 		pidof epon_oam >/dev/null 2>&1 && "$OAM" get loid0 >/dev/null 2>&1 && break
 	else
@@ -18,6 +25,7 @@ while [ "$tries" -lt 90 ]; do
 done
 
 if [ "$tries" -ge 90 ]; then
+	[ "$mode" = "EPON" ] || [ "$mac_applied" = 1 ] || /usr/bin/xpon-apply.sh mac >/dev/null 2>&1
 	logger -t xpon "replay: OMCI 90 秒内未就绪，跳过本次重放"
 	exit 1
 fi

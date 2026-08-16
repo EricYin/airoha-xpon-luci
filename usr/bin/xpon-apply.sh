@@ -25,28 +25,54 @@ uci_get() { uci -q get "$1"; }
 # xpon.device.pon_mode 只由 LuCI 认证页成功保存时写入，并作为“用户已保存”标志。
 # EPON 走 OAM（oamcfgCmd loid0），GPON 走 OMCI（omcicfgCmd）。
 restore_auth() {
-	local t p k v factory_sn old_loid
+	local t p pt k v read_v factory_sn old_loid onu_type onu_high
+	# env 是 ONU 形态/PON 技术的唯一权威来源。优先采用本次实际启动参数，
+	# 只有 /proc/cmdline 缺失时才读取 env；此函数永远不反写两者。
+	onu_type=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' /proc/cmdline 2>/dev/null)
+	case "$onu_type" in
+		[0-9A-Fa-f][0-9A-Fa-f]) : ;;
+		*) onu_type=$(fw_printenv -n onu_type 2>/dev/null) ;;
+	esac
+	case "$onu_type" in [0-9A-Fa-f][0-9A-Fa-f]) : ;; *) onu_type= ;; esac
+	onu_high=${onu_type%?}
+	case "$onu_high" in
+		1) p=GPON; pt=GPON ;;
+		3) p=EPON; pt=EPON_10G_1G ;;
+		4) p=EPON; pt=EPON_10G_10G ;;
+		6) p=GPON; pt=XGPON ;;
+		7) p=GPON; pt=XGSPON ;;
+		*)
+			logger -t xpon "restore-auth: 无法识别 env onu_type=$onu_type，保留现有 PON 引擎且不写 env"
+			p=$(uci_get network.xpon_auth.pon_mode); [ "$p" = EPON ] || p=GPON
+			pt=$(uci_get network.xpon_auth.pon_tech)
+			;;
+	esac
 	if ! uci -q get xpon.device.pon_mode >/dev/null; then
 		# 旧包/覆盖安装没有“已保存”标志时，不把模板默认冒充用户配置。
 		# 保留 network 中已有 LOID，并用 DSD 的合法 FSAN 替换 NoNumber。
 		factory_sn=$(sed -n "s/^fsan='\(.*\)'/\1/p" /tmp/dsd.env 2>/dev/null | head -1)
 		old_loid=$(uci_get network.xpon_auth.loid)
 		uci set network.xpon_auth='xpon_auth'
-		uci set network.xpon_auth.pon_mode='GPON'
+		uci set network.xpon_auth.pon_mode="$p"
+		[ -n "$pt" ] && uci set network.xpon_auth.pon_tech="$pt"
 		[ "${#factory_sn}" -eq 12 ] && {
 			uci set network.xpon_auth.sn="$factory_sn"
 			uci set network.xpon_auth.def_sn="$factory_sn"
 		}
-		if [ -n "$old_loid" ]; then
+		if [ "$p" = EPON ]; then
+			uci set network.xpon_auth.auth_type_e='LOID'
+			uci -q delete network.xpon_auth.auth_type_g
+		elif [ -n "$old_loid" ]; then
 			uci set network.xpon_auth.auth_type_g='LOID'
+			uci -q delete network.xpon_auth.auth_type_e
 		else
 			uci set network.xpon_auth.auth_type_g='SN'
+			uci -q delete network.xpon_auth.auth_type_e
 		fi
 		uci commit network
 		logger -t xpon "restore-auth: 未找到已保存标志，使用 DSD/现存 LOID 初始化（sn=$factory_sn）"
 		return 0
 	fi
-	p=$(uci_get xpon.device.pon_mode); p=${p:-GPON}
 	t=$(uci_get xpon.device.auth_type_g)
 	if [ "$p" = "EPON" ]; then
 		[ -n "$(uci_get xpon.device.loid)" ] || {
@@ -69,9 +95,7 @@ restore_auth() {
 
 	uci set network.xpon_auth='xpon_auth'
 	uci set network.xpon_auth.pon_mode="$p"
-	pt=$(uci_get xpon.device.pon_tech); [ -z "$pt" ] && pt=GPON
-	case "$pt" in GPON|XGPON|XGSPON|EPON_10G_1G|EPON_10G_10G) : ;; *) pt=GPON ;; esac
-	uci set network.xpon_auth.pon_tech="$pt"
+	[ -n "$pt" ] && uci set network.xpon_auth.pon_tech="$pt"
 	if [ "$p" = "EPON" ]; then
 		te=$(uci_get xpon.device.auth_type_e); te=${te:-LOID}
 		uci set network.xpon_auth.auth_type_e="$te"
@@ -84,15 +108,28 @@ restore_auth() {
 		v=$(uci_get xpon.device.$k)
 		[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
 	done
-	# libuci 无法保存空字符串；空密码由 OMCI 就绪后的认证重放显式下发。
+	# libuci 不保留真正的空字符串。字面值 "" 对 UCI 是已配置值，
+	# netifd 拼接原生命令后则由 shell 解析为空参数，避免回退到 ECONET。
 	v=$(uci_get xpon.device.loid_password)
 	if [ -n "$v" ]; then
 		uci set network.xpon_auth.loid_password="$v"
 	else
-		uci -q delete network.xpon_auth.loid_password
+		uci set 'network.xpon_auth.loid_password=""'
 	fi
-	uci commit network
-	logger -t xpon "restore-auth: 已恢复 pon_mode=$p auth_type=$([ "$p" = EPON ] && echo EPON-LOID || echo "$t")（loid=$(uci_get network.xpon_auth.loid)）"
+	uci commit network || {
+		logger -t xpon "restore-auth: network 提交失败，持久认证未恢复"
+		return 1
+	}
+	for k in sn def_sn; do
+		v=$(uci_get xpon.device.$k)
+		[ -n "$v" ] || continue
+		read_v=$(uci_get network.xpon_auth.$k)
+		[ "$read_v" = "$v" ] || {
+			logger -t xpon "restore-auth: $k 回读失败 want='$v' have='$read_v'"
+			return 1
+		}
+	done
+	logger -t xpon "restore-auth: 按 env onu_type=$onu_type 恢复 pon_mode=$p pon_tech=$pt auth_type=$([ "$p" = EPON ] && echo EPON-LOID || echo "$t")（loid=$(uci_get network.xpon_auth.loid)）"
 }
 
 apply_auth() {
@@ -110,6 +147,7 @@ apply_auth() {
 	sn=$(printf '%s' "$sn" | tr 'a-z' 'A-Z')
 	loid=$(uci_get network.xpon_auth.loid)
 	loidpw=$(uci_get network.xpon_auth.loid_password)
+	[ "$loidpw" = '""' ] && loidpw=
 	defsn=$(uci_get network.xpon_auth.def_sn)
 	defsn=$(printf '%s' "$defsn" | tr 'a-z' 'A-Z')
 	sn_type=$(uci_get network.xpon_auth.xpon_sn_auth_type); [ -z "$sn_type" ] && sn_type=ascii
@@ -272,7 +310,16 @@ apply_mac() {
 		*" ethaddr="*) newba=$(printf '%s' "$ba" | sed "s/ethaddr=[^[:space:]]*/ethaddr=$pmac/") ;;
 		*) newba="$ba ethaddr=$pmac" ;;
 	esac
+	old_eth=$(fw_printenv -n ethaddr 2>/dev/null | tr 'a-f' 'A-F')
+	read_ba_eth=$(printf '%s\n' "$ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' | tr 'a-f' 'A-F')
+	if [ "$old_eth" = "$pmac" ] && [ "$read_ba_eth" = "$pmac" ]; then
+		ifconfig pon hw ether "$pmac" 2>/dev/null || true
+		logger -t xpon "EPON MPCP 注册 MAC env 已一致：ethaddr=$pmac（无需写入）"
+		return 0
+	fi
 
+	# 写入前保存完整环境，兼顾教程里的人工恢复路径。每次保存生成独立文件，
+	# 避免上一次写入失败后重试时覆盖唯一的可用备份。
 	backup_dir=/etc/xpon-env-backups
 	backup_stamp=$(date +%Y%m%d-%H%M%S 2>/dev/null)
 	[ -n "$backup_stamp" ] || backup_stamp=unknown
@@ -292,7 +339,6 @@ apply_mac() {
 		return 1
 	}
 
-	old_eth=$(fw_printenv -n ethaddr 2>/dev/null | tr 'a-f' 'A-F')
 	[ "$old_eth" = "$pmac" ] || fw_setenv ethaddr "$pmac" || {
 		echo "写入 env ethaddr 失败；原环境已备份到 $backup_path" >&2
 		return 1
@@ -353,18 +399,37 @@ apply_ponmode() {
 		return 1
 	}
 
-	# 1) 更新 bootargs 里的 onu_type=（保留其余参数，如 tclinux_info/ethaddr）
-	local ba ba_raw newba
+	# 两个 env 值必须同时写入并通过回读；否则不能把模式保存报告为成功。
+	local ba ba_raw newba read_onu read_ba read_ba_onu
 	ba_raw=$(fw_printenv -n bootargs 2>/dev/null)
 	ba=$ba_raw
 	while [ "${ba#bootargs=}" != "$ba" ]; do ba=${ba#bootargs=}; done
-	if [ -n "$ba" ]; then
-		newba=$(printf '%s' "$ba" | sed "s/onu_type=[0-9a-fA-F]*/onu_type=$val/")
-		[ -n "$newba" ] && [ "$newba" != "$ba_raw" ] && fw_setenv bootargs "$newba"
-	fi
-	# 2) 独立 onu_type 变量（bootcmd 若从变量拼 bootargs 也能生效）
-	fw_setenv onu_type "$val"
-	logger -t xpon "onu_type -> $val (bootargs updated: ${newba:+yes})"
+	case " $ba " in
+		*" onu_type="[0-9a-fA-F]*) : ;;
+		*) echo "bootargs 中缺少 onu_type，拒绝写入不完整模式" >&2; return 1 ;;
+	esac
+	newba=$(printf '%s' "$ba" | sed "s/onu_type=[0-9a-fA-F]*/onu_type=$val/")
+	[ -n "$newba" ] || { echo "生成 bootargs 失败" >&2; return 1; }
+
+	fw_setenv onu_type "$val" || { echo "写入 env onu_type 失败" >&2; return 1; }
+	[ "$newba" = "$ba" ] || fw_setenv bootargs "$newba" || {
+		echo "写入 env bootargs 失败" >&2
+		return 1
+	}
+
+	read_onu=$(fw_printenv -n onu_type 2>/dev/null | tr 'a-f' 'A-F')
+	read_ba=$(fw_printenv -n bootargs 2>/dev/null)
+	read_ba_onu=$(printf '%s\n' "$read_ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' | tr 'a-f' 'A-F')
+	val=$(printf '%s' "$val" | tr 'a-f' 'A-F')
+	[ "$read_onu" = "$val" ] || {
+		echo "env onu_type 回读失败：期望 $val，实际 ${read_onu:-空}" >&2
+		return 1
+	}
+	[ "$read_ba_onu" = "$val" ] || {
+		echo "env bootargs 回读失败：期望 onu_type=$val，实际 ${read_ba_onu:-空}" >&2
+		return 1
+	}
+	logger -t xpon "模式 env 写入并回读成功：onu_type=$val"
 }
 
 apply_iptv() {

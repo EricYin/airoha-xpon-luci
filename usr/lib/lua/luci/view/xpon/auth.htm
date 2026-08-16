@@ -222,10 +222,10 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="pon_mac">PON MAC（可修改；EPON 必需）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="pon_mac" name="pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">页面打开时自动读取当前值：EPON 优先通过 <code>ponmgr epon get devMac</code> 读取驱动的 ONU/LLID 注册基准 MAC，失败时回退本次启动 <code>ethaddr</code>；GPON/XGPON/XGSPON 取 <code>pon</code> 业务接口 MAC。手动清空后保存 = 取 dsd wan_mac。</div>
+				<div class="cbi-value-description">输入框优先显示已保存配置，防止启动重放期间被临时运行值覆盖；未保存过时，EPON 读取驱动的 ONU/LLID 注册基准 MAC，GPON/XGPON/XGSPON 读取 <code>pon</code> 业务接口 MAC。手动清空后保存 = 取 dsd wan_mac。</div>
 				<div class="cbi-value-description">GPON 系列的 PLOAM/OMCI 注册使用 SN/Registration ID，不使用 Ethernet MAC；EPON 保存时会备份并同步 U-Boot <code>ethaddr</code>/<code>bootargs</code>，重启后作为 MPCP ONU 注册 MAC。</div>
 				<div class="cbi-value-description">注意：EPON 修改 <code>ethaddr</code> 后，下次启动还会联动改变 <code>eth0</code>、<code>br-lan</code>、<code>oam</code> 等基础接口地址。</div>
-				<div class="cbi-value-description">当前 <code>pon</code> 业务接口：<code><%=esc(rt.pon_mac ~= "" and rt.pon_mac or "（空）")%></code>；本次启动 EPON 注册基准 MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code><% if (v.pon_mode or "") ~= "EPON" then %>（当前非 EPON，仅表示切换后驱动会采用的启动值）<% end %>；DSD 默认：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
+				<div class="cbi-value-description">已保存配置：<code><%=esc(v.pon_mac_saved ~= "" and v.pon_mac_saved or "（未保存，使用 DSD 默认）")%></code>；当前 <code>pon</code> 业务接口：<code><%=esc(rt.pon_mac ~= "" and rt.pon_mac or "（空）")%></code>；本次启动 EPON 注册基准 MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code><% if (v.pon_mode or "") ~= "EPON" then %>（当前非 EPON，仅表示切换后驱动会采用的启动值）<% end %>；DSD 默认：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
 			</div>
 		</div>
 

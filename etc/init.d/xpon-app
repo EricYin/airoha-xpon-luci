@@ -49,7 +49,7 @@ start() {
 	# preinit 未能读取 DSD 时再补建一次。
 	[ -s /tmp/dsd.env ] || /usr/bin/xpon-dsd-env.sh
 	# 先抵消 S00xponconfig 的认证覆盖，确保 S20network 读取持久认证值。
-	/usr/bin/xpon-apply.sh restore-auth
+	/usr/bin/xpon-apply.sh restore-auth || logger -t xpon "启动认证恢复失败；将继续等待引擎并尝试设备层重放"
 	/usr/bin/xpon-apply.sh leds
 	# vendorId/equipmentId/onuVersion 等只存在共享内存，必须等 OMCI 启动后重放。
 	/usr/bin/xpon-replay.sh >/dev/null 2>&1 &

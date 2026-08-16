@@ -1,8 +1,8 @@
 <%+header%>
-<script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js?v=20260814-mode-labels"></script>
 <style type="text/css">
 .xpon-na{color:#999;font-style:italic;}
-@media (prefers-color-scheme: dark){ .xpon-na{color:#8a8a8a;} }
+@media (prefers-color-scheme: dark){.xpon-na{color:#8a8a8a;}}
 html.dark .xpon-na{color:#8a8a8a;}
 </style>
 
@@ -15,17 +15,19 @@ end
 %>
 
 <% if saved then %>
-	<div class="alert-message">已写入 U-Boot env（<code>onu_type</code>）。<b>重启后生效</b>——如未重启，本次仍是旧模式。</div>
+	<div class="alert-message">下次启动模式已保存。<b>重启后生效</b>——如未重启，本次仍是当前模式。</div>
 <% end %>
 <% if v.pending then %>
-	<div class="alert-message">env 中 <code>onu_type=<%=v.env%></code> 与本次启动 <code><%=v.cmdline%></code> 不一致——<b>重启后才会切换到 env 值</b>。重启前请确认 <code>bootargs</code> 里的 onu_type 也已同步（<code>fw_printenv bootargs | grep onu_type</code>），否则重启后仍会是旧值。</div>
+	<div class="alert-message">当前模式：<b><%=v.run_dec.label%></b>；下次启动模式：<b><%=v.env_dec.label%></b>。<b>重启后切换</b>。</div>
 <% end %>
 <% if v.tech_mismatch then %>
-	<div class="alert-message error">认证页 PON 技术 <code><%=v.pon_tech%></code>（<%=v.pon_tech_name%>）与当前运行模式 <code><%=v.run_tech%></code> 不一致。
+	<div class="alert-message error">认证页 PON 技术 <b><%=v.saved_tech_short%></b> 与当前运行模式 <b><%=v.run_tech_short%></b> 不一致。
 		<b>若是有意切换</b>（如 XGPON → XGSPON），保存后重启生效；<b>若是误选</b>，请先到“认证 → PON 模式”改正再保存。</div>
 <% end %>
 <% if err == "low" then %>
 	<div class="alert-message error">保存被拒绝：请选择 SFU 或 HGU 形态。</div>
+<% elseif err == "env" then %>
+	<div class="alert-message error">保存被拒绝：无法从当前启动参数或 U-Boot env 读取有效的 PON 模式，未写入任何模式。</div>
 <% elseif err == "apply" then %>
 	<div class="alert-message error">写入失败：检查 fw_setenv 是否可用（uboot-envtools / fw_env.config）。</div>
 <% end %>
@@ -38,38 +40,31 @@ end
 	<input type="hidden" name="page" value="mode" />
 
 	<fieldset class="cbi-section">
-		<legend>目标形态（选择前置；写入 U-Boot env，重启后生效）</legend>
+		<legend>目标形态（重启后生效）</legend>
 
 		<div class="cbi-value">
 			<label class="cbi-value-title" for="onu_low">ONU 形态</label>
 			<div class="cbi-value-field">
-<%
-local sel_hex = v.forms[1].hex
-for _, f in ipairs(v.forms) do
-	if v.cur_low == f.low then sel_hex = f.hex end
-end
-%>
 				<select id="onu_low" name="onu_low" class="cbi-input-select" onchange="xponModePreview()">
 <%
 for _, f in ipairs(v.forms) do
 %>
-					<option value="<%=f.low%>" data-hex="<%=f.hex%>"<% if v.cur_low == f.low then %> selected="selected"<% end %>><%=f.name%></option>
+					<option value="<%=f.low%>" data-hex="<%=f.hex%>" data-label="<%=f.short%> / <%=v.pon_tech_short%>"<% if v.cur_low == f.low then %> selected="selected"<% end %>><%=f.name%></option>
 <% end %>
 				</select>
 				<div class="cbi-value-description">
 					<b>HGU（家庭网关）</b>= 国内运营商默认，LAN 桥接 + VEIP + IPTV 组播完整；
 					<b>SFU（桥形态）</b>= 纯桥/实验，无 VEIP/组播引擎。
-					当前技术 <code><%=v.pon_tech%></code>（<%=v.pon_tech_name%>）→ 将写入
-					<code>onu_type=<span id="onu-type-preview"><%=sel_hex%></span></code>。</div>
+					保存后模式：<b><span id="onu-type-preview"><%=v.run_dec.label%></span></b>。</div>
 			</div>
 		</div>
 
 		<div class="cbi-page-actions">
 			<button type="submit" name="apply" value="reboot" class="cbi-button cbi-button-apply">保存并重启（生效）</button>
-			<button type="submit" name="apply" value="save" class="cbi-button cbi-button-reset">仅保存到 env（不重启）</button>
+			<button type="submit" name="apply" value="save" class="cbi-button cbi-button-reset">仅保存（不重启）</button>
 		</div>
 		<div class="cbi-value-description">
-			保存写入 U-Boot env，重启后生效。
+			保存为下次启动模式，重启后生效。
 		</div>
 	</fieldset>
 </form>
@@ -227,9 +222,9 @@ for _, f in ipairs(v.forms) do
 	<legend>当前状态（只读）</legend>
 	<table class="cbi-section-table">
 		<tr><th>项目</th><th>值</th></tr>
-		<tr><td>当前运行</td><td><b><%=v.run_dec.form%></b>（<%=v.run_dec.form_cn%>）+ <b><%=v.run_dec.tech%></b>（<%=v.run_dec.tech_cn%>）</td></tr>
-		<tr><td>env 目标</td><td><b><%=v.env_dec.form%></b>（<%=v.env_dec.form_cn%>）+ <b><%=v.env_dec.tech%></b>（<%=v.env_dec.tech_cn%>）<% if v.pending then %>（<b>重启后才生效</b>）<% else %>（与当前运行一致）<% end %></td></tr>
-		<tr><td>PON 技术（认证页设置）</td><td><code><%=v.pon_tech%></code>（<%=v.pon_tech_name%>）</td></tr>
+		<tr><td>当前模式</td><td><b><%=v.run_dec.label%></b></td></tr>
+		<tr><td>下次启动模式</td><td><b><%=v.env_dec.label%></b><% if v.pending then %>（重启后生效）<% else %>（与当前模式一致）<% end %></td></tr>
+		<tr><td>PON 技术</td><td><b><%=v.pon_tech_short%></b></td></tr>
 		<tr><td>BBF247 标志</td><td><% if (v.bbf_gpon ~= "" and v.bbf_gpon ~= "0") or (v.bbf_xgpon ~= "" and v.bbf_xgpon ~= "0") then %>已启用（BBF247 脚本模式）<% else %>未启用（普通模式）<% end %></td></tr>
 	</table>
 </fieldset>
