@@ -2484,14 +2484,24 @@ local function collect_status(include_details)
 		epon_auth_out = sh("/userfs/bin/oamcfgCmd get authStatus 2>&1")
 		epon_status_file = sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
 		epon_oam_log = sh("tail -120 /tmp/oam_debug 2>/dev/null")
-		-- Some XEPON builds crash in `ponmgr epon get llid_info` and emit GPON
-		-- shared-memory errors even though EPON OAM is still running. Never run
-		-- those diagnostic commands from the 10-second status poll. The detailed
-		-- view uses read-only proc/kernel evidence once during page rendering.
+		-- The 10-second poll never invokes ponmgr. It consumes the status file
+		-- maintained by xpon-app so the main MPCP label still has LLID evidence.
+		epon_llid_out = epon_status_file
+		-- Keep ponmgr out of the 10-second status poll, but allow one bounded query
+		-- while rendering the detailed view. A successful live result takes priority
+		-- over the cache; proc and kernel output remain supplementary evidence.
 		if include_details then
+			local epon_live = sh("timeout 2 /userfs/bin/ponmgr epon get llid_info 2>/dev/null")
 			local epon_proc = sh("cat /proc/epon/debug 2>/dev/null")
 			local epon_klog = sh("dmesg 2>/dev/null | grep -Ei 'epon|mpcp|register|llid' | tail -120")
-			epon_llid_out = epon_proc
+			if epon_live ~= "" then
+				epon_llid_out = epon_live
+			end
+			if epon_llid_out == "" then
+				epon_llid_out = epon_proc
+			elseif epon_proc ~= "" then
+				epon_llid_out = epon_llid_out .. "\n\n---- /proc/epon/debug ----\n" .. epon_proc
+			end
 			if epon_klog ~= "" then
 				epon_llid_out = (epon_llid_out ~= "" and (epon_llid_out .. "\n\n") or "")
 					.. "---- kernel log ----\n" .. epon_klog
@@ -2504,7 +2514,7 @@ local function collect_status(include_details)
 	local fec_out
 	local mac_cnt
 	if is_epon then
-		fec_out = "（已停用自动 ponmgr epon 查询；该固件的查询路径会破坏共享内存稳定性）"
+		fec_out = "（10 秒轮询不调用 ponmgr；详情页和状态文件刷新器均使用 timeout 保护）"
 		mac_cnt = "（EPON 使用 pon 接口计数与只读内核证据）"
 	else
 		fec_out = sh("/userfs/bin/ponmgr gpon get fec_status 2>&1")
@@ -2614,8 +2624,9 @@ local function collect_status(include_details)
 	local epon_entry_num = tonumber(epon_llid_lower:match("entry%s*num%s*[:=]%s*(%d+)")
 		or epon_llid_lower:match("entries%s*[:=]%s*(%d+)")
 		or epon_llid_lower:match("number%s*[:=]%s*(%d+)"))
+	-- llidIdx is an internal/control index on some kernels and may stay at zero
+	-- even when the registered data LLID is non-zero. Only parse an explicit LLID.
 	local epon_llid_token = epon_llid_lower:match("llid%s*[:=]%s*([%w]+)")
-		or epon_llid_lower:match("llididx%s*=%s*([%w]+)")
 	local epon_llid
 	if epon_llid_token then
 		if epon_llid_token:match("^0x%x+$") then
@@ -2769,7 +2780,7 @@ local function collect_status(include_details)
 	local sections = include_details and {
 		is_epon and { title = "EPON MPCP 注册（只读驱动/内核证据）",
 			body = epon_llid_out ~= "" and epon_llid_out
-				or "（无只读 LLID 输出；自动 ponmgr epon 查询已停用）" }
+				or "（ponmgr、状态文件、/proc 与内核日志均无有效 LLID 输出）" }
 			or sec("认证参数 (omcicfgCmd)",
 				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat"),
 		is_epon and { title = "OLT-G", body = "EPON/OAM 模式不查询 OMCI ME 131。" }

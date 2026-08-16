@@ -41,6 +41,36 @@ normalize_pppoe_names() {
 	[ "$changed" = 0 ] || uci commit network
 }
 
+refresh_epon_status() {
+	local mode tmp=/tmp/epon_reg_auth_status.$$
+	while true; do
+		mode=$(cat /proc/tc3162/sys_xpon_mode 2>/dev/null)
+		case "$mode" in
+			2|3|4|5|12)
+				if timeout 3 /userfs/bin/ponmgr epon get llid_info >"$tmp" 2>/dev/null &&
+				   [ -s "$tmp" ]; then
+					mv -f "$tmp" /tmp/epon_reg_auth_status
+				else
+					printf 'LLID = N/A\n' >"$tmp"
+					mv -f "$tmp" /tmp/epon_reg_auth_status
+				fi
+				;;
+			*)
+				rm -f "$tmp" /tmp/epon_reg_auth_status
+				;;
+		esac
+		sleep 30
+	done
+}
+
+start_epon_status_refresher() {
+	local pid
+	pid=$(cat /var/run/xpon-epon-status.pid 2>/dev/null)
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+	refresh_epon_status >/dev/null 2>&1 &
+	echo $! >/var/run/xpon-epon-status.pid
+}
+
 start() {
 	disable_factory_uenv_autostart
 	[ -f /etc/config/xpon ] || [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon
@@ -61,10 +91,14 @@ start() {
 	# netifd/vendor control paths may restart epon_oam again after the initial
 	# replay. Track process changes and restore the complete OAM identity.
 	/usr/bin/xpon-epon-sn.sh watch 5 >/dev/null 2>&1 &
+	start_epon_status_refresher
 	[ "$(uci -q get xpon.fallback.enable)" = "1" ] && /usr/bin/xpon-fallback.sh &
 }
 
 stop() {
+	status_pid=$(cat /var/run/xpon-epon-status.pid 2>/dev/null)
+	[ -n "$status_pid" ] && kill "$status_pid" 2>/dev/null
+	rm -f /var/run/xpon-epon-status.pid /tmp/epon_reg_auth_status
 	watch_pid=$(cat /var/run/xpon-epon-sn-watch.pid 2>/dev/null)
 	[ -n "$watch_pid" ] && kill "$watch_pid" 2>/dev/null
 	rm -f /var/run/xpon-epon-sn-watch.pid
