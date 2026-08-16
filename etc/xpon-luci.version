@@ -1,4 +1,5 @@
 xpon-luci 2.6 2026-08-16
+boot: 修正原厂 S00xponconfig 的 gponauth 变量错误；启动主路径直接采用持久认证和 PON MAC，S11 仅作旧固件兜底
 auth: PON SN/Vendor ID 提交后同时回读 network 与 xpon 持久源；PON MAC 输入框优先显示已保存配置，运行值独立展示
 boot: GPON pon 接口出现后即重放已保存 MAC，不再依赖 OMCI 90 秒内就绪；EPON env 已一致时不重复写入或生成备份
 boot: restore-auth 提交后回读 sn/def_sn，原厂 S00 覆盖未被纠正时记录明确错误，不再静默失败

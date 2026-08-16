@@ -1,7 +1,7 @@
 #!/bin/sh /etc/rc.common
-# xpon-luci 开机重放（在 S00xponconfig 之后）：
-#   * 重放 LOID/SN/厂商信息（S00 会用 /tmp/dsd.env 的 fsan 覆盖 network.xpon_auth.sn）
-#   * 覆盖 PON MAC（可选）
+# xpon-luci 启动兼容与运行态重放（在 S00xponconfig 之后）：
+#   * 新版 S00 已直接采用持久认证；旧版 S00 或主路径失败时在此兜底
+#   * OMCI/OAM 就绪后重放厂商信息和 PON MAC
 #   * LED 修复（sts_green 常亮 / 上网灯触发器）
 #   * 可选：规则守护进程（xpon.fallback.enable=1 时启动）
 START=11
@@ -48,8 +48,13 @@ start() {
 	normalize_pppoe_names
 	# preinit 未能读取 DSD 时再补建一次。
 	[ -s /tmp/dsd.env ] || /usr/bin/xpon-dsd-env.sh
-	# 先抵消 S00xponconfig 的认证覆盖，确保 S20network 读取持久认证值。
-	/usr/bin/xpon-apply.sh restore-auth || logger -t xpon "启动认证恢复失败；将继续等待引擎并尝试设备层重放"
+	# 新版 S00 会在 S20network 前恢复认证并留下标记；没有标记说明仍是
+	# 旧版原厂脚本，或主路径失败，需要维持原有兼容兜底。
+	if [ ! -e /tmp/.xponconfig-persistent-auth ]; then
+		/usr/bin/xpon-apply.sh restore-auth || logger -t xpon "兼容认证恢复失败；将继续等待引擎并尝试设备层重放"
+	else
+		logger -t xpon "S00 已恢复持久认证，跳过 S11 兼容覆盖"
+	fi
 	/usr/bin/xpon-apply.sh leds
 	# vendorId/equipmentId/onuVersion 等只存在共享内存，必须等 OMCI 启动后重放。
 	/usr/bin/xpon-replay.sh >/dev/null 2>&1 &

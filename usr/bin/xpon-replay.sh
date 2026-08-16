@@ -1,12 +1,13 @@
 #!/bin/sh
-# Replay settings only after netifd has started the OMCI engine. S11 restores
-# network.xpon_auth first; this helper handles shared-memory-only attributes.
+# Replay settings only after netifd has started the OMCI/OAM engine. Patched
+# S00 restores network.xpon_auth first; S11 provides the old-firmware fallback.
+# This helper handles runtime/shared-memory-only attributes.
 
 OMCI=/userfs/bin/omcicfgCmd
 OAM=/userfs/bin/oamcfgCmd
 tries=0
 mac_applied=0
-# S11 restore-auth 已按本次 cmdline/env 把实际引擎镜像到 network。
+# S00 主路径或 S11 兼容路径已把实际引擎镜像到 network。
 mode=$(uci -q get network.xpon_auth.pon_mode)
 
 while [ "$tries" -lt 90 ]; do

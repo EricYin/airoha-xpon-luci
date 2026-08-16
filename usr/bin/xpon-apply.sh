@@ -16,12 +16,10 @@ EPON_OAM=/userfs/bin/epon_oam
 
 uci_get() { uci -q get "$1"; }
 
-# 开机恢复：S00xponconfig 的 validate_xponauth_section() 有 `-z $gponauth` 笔误
-# （变量从未赋值，恒真），每次开机都把 network.xpon_auth 打回
-#   pon_mode=GPON / auth_type_g=sn / sn=$fsan（fsan 来自 /tmp/dsd.env）
-# 这里是 LOID 重启失效的真正根因。restore_auth 从 LuCI 保存的持久源
-# /etc/config/xpon（auth 类型段 device）重写 network.xpon_auth，
-# 必须在 netifd 加载网络配置（S20network）之前运行（xpon-app START=11）。
+# 开机恢复：新版 S00xponconfig 在驱动初始化阶段直接调用本函数；旧固件
+# 仍由 S11xpon-app 在 S20network/netifd 读取配置前调用。两条路径都从
+# LuCI 持久源 /etc/config/xpon（auth 类型段 device）镜像 network.xpon_auth，
+# 避免原厂脚本使用 DSD fsan 覆盖用户保存的 SN/LOID。
 # xpon.device.pon_mode 只由 LuCI 认证页成功保存时写入，并作为“用户已保存”标志。
 # EPON 走 OAM（oamcfgCmd loid0），GPON 走 OMCI（omcicfgCmd）。
 restore_auth() {
