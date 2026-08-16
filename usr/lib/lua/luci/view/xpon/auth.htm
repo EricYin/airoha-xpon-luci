@@ -185,11 +185,14 @@ for _, t in ipairs(v.pon_techs or {}) do
 
 	<fieldset class="cbi-section">
 		<legend>厂商信息</legend>
-		<div class="alert-message error">
+		<div class="alert-message error xpon-gpon-auth">
 			<b>改猫风险提示：</b>PON SN 是 ONU 身份。错误值可能导致 OLT 拒绝注册，修改前请记录当前生效值。
 		</div>
+		<div class="alert-message xpon-epon-auth">
+			EPON 不使用 OMCI 的 PON SN、Equipment ID、ONU/OMCC 版本参与认证；这些运行值重启后恢复为 DSD/出厂值（如 AXON、BVMN）属于正常现象。EPON 身份以 MPCP MAC、LOID、CTC OAM 字段和 ONUSN 为准。
+		</div>
 
-		<div class="cbi-value">
+		<div class="cbi-value xpon-gpon-auth">
 			<label class="cbi-value-title" for="sn">PON SN（含 Vendor ID）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 AXON10503407" pattern="[A-Za-z0-9]{4}[0-9A-Fa-f]{8}" />
@@ -199,7 +202,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			</div>
 		</div>
 
-		<div class="cbi-value">
+		<div class="cbi-value xpon-gpon-auth">
 			<label class="cbi-value-title" for="equipment_id">设备型号/标识（Equipment ID，可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="equipment_id" name="equipment_id" class="cbi-input-text" maxlength="24" value="<%=v.equipment_id%>" placeholder="留空 = 保持原值" pattern="[\x20-\x7E]{0,24}" />
@@ -208,7 +211,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			</div>
 		</div>
 
-		<div class="cbi-value">
+		<div class="cbi-value xpon-gpon-auth">
 			<label class="cbi-value-title" for="onu_version">ONU 版本（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="onu_version" name="onu_version" class="cbi-input-text" value="<%=v.onu_version%>" placeholder="RP0201" />
@@ -217,7 +220,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			</div>
 		</div>
 
-		<div class="cbi-value">
+		<div class="cbi-value xpon-gpon-auth">
 			<label class="cbi-value-title" for="omcc_version">OMCC 版本（可选，芯片能力标识）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="omcc_version" name="omcc_version" class="cbi-input-text" value="<%=v.omcc_version%>" list="omcc_version_list" placeholder="0xA3" />
@@ -231,7 +234,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			</div>
 		</div>
 
-		<div class="cbi-value">
+		<div class="cbi-value xpon-gpon-auth">
 			<label class="cbi-value-title" for="omci_spec_ver">OMCI 协议版本（specVer，只读兼容项）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="omci_spec_ver" name="omci_spec_ver" class="cbi-input-text" value="<%=v.omci_spec_ver%>" placeholder="留空 = 不下发" pattern="(0[xX][0-9a-fA-F]{1,2}|[0-9]{1,3})" />

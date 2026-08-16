@@ -20,6 +20,8 @@ EPON 替换注册至少需要同时满足以下三层，任何一层错误都可
 - `ctcOui` 与 `localOui` 解耦，默认及空值回退为抓包验证的 `111111`，仍允许手动覆盖。
 - 状态页分开显示 MPCP 注册与 OAM 认证，且不再周期调用不稳定的 `ponmgr epon` 查询。
 
+EPON 模式下，`omcicfgCmd get sn`、`equipmentId` 等 OMCI 运行值可能在重启后恢复为 DSD/出厂派生值，例如 AXON 或 BVMN。这些属于 GPON/OMCI 身份，不参与本机 EPON OAM 认证，也不应由 EPON 身份守护反复覆盖。认证页在 EPON 模式下会隐藏这些字段。
+
 ## 抓包方法
 
 OAM 通道的外层封装可能使用 `0x2202/0x440b`，内层 `0x8809` 为 OAMPDU：

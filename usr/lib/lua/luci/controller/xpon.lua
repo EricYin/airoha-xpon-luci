@@ -485,12 +485,12 @@ function auth_values()
 	end
 	local rt = {
 		loid         = is_epon and oam_get("loid0") or omci_get("loid"),
-		sn           = omci_get("sn"),
-		vendor_id    = omci_get("vendorId"),
-		equipment_id = omci_get("equipmentId"),
-		onu_version  = omci_get("onuVersion"),
-		omcc_version = omci_get("omccVersion"),
-		spec_ver     = sh("/userfs/bin/omcicfgCmd get specVer 2>&1"):match("(%d+)") or "",
+		sn           = is_epon and "" or omci_get("sn"),
+		vendor_id    = is_epon and "" or omci_get("vendorId"),
+		equipment_id = is_epon and "" or omci_get("equipmentId"),
+		onu_version  = is_epon and "" or omci_get("onuVersion"),
+		omcc_version = is_epon and "" or omci_get("omccVersion"),
+		spec_ver     = is_epon and "" or (sh("/userfs/bin/omcicfgCmd get specVer 2>&1"):match("(%d+)") or ""),
 		epon_oui     = is_epon and oam_get("localOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ctc_oui = is_epon and oam_get("ctcOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ven_info = is_epon and oam_get("localVenInfo"):gsub("^0[xX]", ""):upper() or "",

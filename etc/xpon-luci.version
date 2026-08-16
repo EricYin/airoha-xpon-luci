@@ -1,4 +1,5 @@
 xpon-luci 2.7 2026-08-16
+epon: OMCI sn/equipmentId/版本重启恢复 AXON/BVMN 属出厂 GPON 链；EPON 页面停止读取并隐藏这些非认证字段
 epon: LOID-only 在首次应用和守护重放中都显式下发空 loidPasswd0，并对空值执行真实回读校验
 epon: 增加 OAM 身份守护；按 epon_oam PID 变化自动重放，且每 30 秒只读校验 ONUSN，漂移时才修复
 epon: ctcOui 与 localOui 解耦，默认及空值回退改为抓包验证的 111111；迁移旧版自动复制值并保留手动覆盖
