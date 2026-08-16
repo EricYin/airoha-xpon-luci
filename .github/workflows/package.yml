@@ -1,0 +1,58 @@
+name: Package xpon-luci
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build xpon-luci.tar.gz
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate package files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d etc
+          test -d lib
+          test -d usr
+          test -d www
+          bash -n usr/bin/xpon-apply.sh
+          bash -n usr/bin/xpon-auth-native.sh
+
+      - name: Build archive
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_date_epoch="$(git log -1 --format=%ct)"
+          tar \
+            --format=gnu \
+            --sort=name \
+            --mtime="@${source_date_epoch}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf xpon-luci.tar.gz \
+            docs etc lib tools usr www
+          tar -tzf xpon-luci.tar.gz
+          sha256="$(sha256sum xpon-luci.tar.gz | awk '{print $1}')"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          printf '### xpon-luci.tar.gz\n\n- Commit: `%s`\n- SHA256: `%s`\n' \
+            "$GITHUB_SHA" "$sha256" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: xpon-luci.tar.gz
+          path: xpon-luci.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
