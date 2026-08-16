@@ -7,7 +7,8 @@ function xponAuthCaptureInit(form) {
 	if (!form) return;
 	var fields = ['onu_low', 'pon_tech', 'auth_type_g', 'loid', 'loid_password', 'def_sn', 'sn',
 		'xpon_sn_auth_type', 'sn_password', 'reg_id', 'equipment_id', 'onu_version',
-		'omcc_version', 'omci_spec_ver', 'pon_mac', 'epon_oui', 'epon_ven_info'];
+		'omcc_version', 'omci_spec_ver', 'pon_mac', 'epon_oui', 'epon_ctc_oui',
+		'epon_ven_info', 'epon_onu_vendor_id', 'epon_serial'];
 	fields.forEach(function (id) {
 		var el = form.elements[id];
 		if (el) xponAuthInit[id] = el.value;
@@ -134,6 +135,10 @@ function xponAuthCheck(form) {
 	}
 	if (form.epon_oui.value && !/^[0-9A-Fa-f]{6}$/.test(form.epon_oui.value)) {
 		alert('EPON OUI 需为 6 位 16 进制字符（如 089AC7）');
+		return false;
+	}
+	if (form.epon_ctc_oui.value && !/^[0-9A-Fa-f]{6}$/.test(form.epon_ctc_oui.value)) {
+		alert('CTC OUI 需为 6 位 16 进制字符（中兴 OLT 抓包值为 111111）');
 		return false;
 	}
 	if (form.epon_ven_info.value && !/^[0-9A-Fa-f]{8}$/.test(form.epon_ven_info.value)) {

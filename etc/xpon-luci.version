@@ -1,4 +1,5 @@
 xpon-luci 2.7 2026-08-16
+epon: ctcOui 与 localOui 解耦，默认及空值回退改为抓包验证的 111111；迁移旧版自动复制值并保留手动覆盖
 status: EPON 自动轮询不再调用会段错误/污染共享内存的 ponmgr epon 查询；MPCP 改读状态文件、/proc 与内核日志
 epon: 增加 CTC ONUSN 复合身份中的 6 字节 ONU ID 独立配置；仅对已校验的 epon_oam 写入并回读，和 MPCP MAC 分离
 services: Access 桥接持久摘除 br-lan 端口并跟踪恢复；保存重载、开机与 hotplug 统一核对实际桥成员

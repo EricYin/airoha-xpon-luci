@@ -145,7 +145,7 @@ sn_type=$(get xpon_sn_auth_type); asciipw=$(get sn_ascii_password); hexpw=$(get 
 epon_oui=$(get epon_oui); epon_ctc_oui=$(get epon_ctc_oui); epon_ven=$(get epon_ven_info)
 epon_onu_vendor=$(get epon_onu_vendor_id)
 epon_serial=$(get epon_serial)
-[ -n "$epon_ctc_oui" ] || epon_ctc_oui=$epon_oui
+[ -n "$epon_ctc_oui" ] || epon_ctc_oui=111111
 [ -n "$epon_onu_vendor" ] || epon_onu_vendor=$(identity_get vendor_id)
 [ -n "$epon_onu_vendor" ] || epon_onu_vendor=$(hex_ascii4 "$epon_ven" 2>/dev/null)
 

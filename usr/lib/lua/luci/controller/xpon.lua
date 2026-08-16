@@ -537,7 +537,7 @@ function auth_values()
 	v.omcc_version  = identity_fb("omcc_version", rt.omcc_version, "")
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
 	if v.epon_ctc_oui == "" then
-		v.epon_ctc_oui = v.epon_oui ~= "" and v.epon_oui or rt.epon_ctc_oui
+		v.epon_ctc_oui = "111111"
 	end
 	if v.epon_onu_vendor_id == "" then
 		local migrated_vendor = ""

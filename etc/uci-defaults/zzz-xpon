@@ -34,6 +34,7 @@ config auth 'device'
 	option xpon_sn_auth_type 'ascii'
 	option sn_regid_password ''
 	option epon_oui ''
+	option epon_ctc_oui '111111'
 	option epon_ven_info ''
 	option epon_serial ''
 
@@ -121,6 +122,13 @@ uci -q get xpon.device.sn >/dev/null || uci set xpon.device.sn=''
 uci -q get xpon.device.xpon_sn_auth_type >/dev/null || uci set xpon.device.xpon_sn_auth_type='ascii'
 uci -q get xpon.device.sn_regid_password >/dev/null || uci set xpon.device.sn_regid_password=''
 uci -q get xpon.device.epon_oui >/dev/null || uci set xpon.device.epon_oui=''
+epon_oui=$(uci -q get xpon.device.epon_oui)
+epon_ctc_oui=$(uci -q get xpon.device.epon_ctc_oui)
+# Older xpon-luci versions incorrectly copied localOui into ctcOui. Migrate
+# only an empty value or that legacy derived value; preserve other overrides.
+if [ -z "$epon_ctc_oui" ] || { [ -n "$epon_oui" ] && [ "$epon_ctc_oui" = "$epon_oui" ]; }; then
+	uci set xpon.device.epon_ctc_oui='111111'
+fi
 uci -q get xpon.device.epon_ven_info >/dev/null || uci set xpon.device.epon_ven_info=''
 uci -q get xpon.device.epon_serial >/dev/null || uci set xpon.device.epon_serial=''
 uci commit xpon

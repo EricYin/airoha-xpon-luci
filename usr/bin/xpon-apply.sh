@@ -239,7 +239,7 @@ apply_auth() {
 		# OAM 身份均为运行态；这里先写只是兼容旧引擎，重启后的新进程
 		# 还必须由 xpon-auth-native.sh 再写一次并逐项回读。
 		epon_oui=$(uci_get xpon.device.epon_oui)
-		epon_ctc_oui=$(uci_get xpon.device.epon_ctc_oui); epon_ctc_oui=${epon_ctc_oui:-$epon_oui}
+		epon_ctc_oui=$(uci_get xpon.device.epon_ctc_oui); epon_ctc_oui=${epon_ctc_oui:-111111}
 		epon_ven=$(uci_get xpon.device.epon_ven_info)
 		epon_onu_vendor=$(uci_get xpon.device.epon_onu_vendor_id)
 		[ -n "$epon_oui" ] && $OAM set localOui "$epon_oui" >/dev/null 2>&1

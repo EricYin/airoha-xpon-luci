@@ -105,10 +105,10 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_ctc_oui">CTC OUI</label>
+			<label class="cbi-value-title" for="epon_ctc_oui">CTC OUI（EPON 必填）</label>
 			<div class="cbi-value-field">
-				<input type="text" id="epon_ctc_oui" name="epon_ctc_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_ctc_oui%>" placeholder="留空跟随 EPON OUI" pattern="[0-9A-Fa-f]{6}" />
-				<div class="cbi-value-description">OLT 在 CTC OAM 扩展中读取的 3 字节 OUI；留空时跟随 EPON OUI。当前 OAM 生效：<code><%=esc(rt.epon_ctc_oui ~= "" and rt.epon_ctc_oui or "（空）")%></code></div>
+				<input type="text" id="epon_ctc_oui" name="epon_ctc_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_ctc_oui%>" placeholder="111111" pattern="[0-9A-Fa-f]{6}" />
+				<div class="cbi-value-description">CTC OAM 扩展组织标识，与 ONU 的 EPON OUI 独立；中兴 OLT 抓包验证值为 <code>111111</code>。留空也按 <code>111111</code> 下发。当前 OAM 生效：<code><%=esc(rt.epon_ctc_oui ~= "" and rt.epon_ctc_oui or "（空）")%></code></div>
 			</div>
 		</div>
 
