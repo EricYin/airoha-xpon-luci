@@ -182,6 +182,14 @@ local function sh(cmd)
 	return util.trim((out:gsub("%z", "")))
 end
 
+local function dsd_wan_mac()
+	local mac = sh([[sed -n 's/^wan_mac=//p' /tmp/dsd.env | tr -d "'\"" | head -1]])
+	if #mac == 17 and mac:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") then
+		return mac:upper()
+	end
+	return ""
+end
+
 -- 写系统日志（logread 可查），单引号转义防注入
 local function logger(tag, msg)
 	sys.call("logger -t " .. tag .. " '" .. (msg or ""):gsub("'", "'\\''") .. "' 2>/dev/null")
@@ -445,9 +453,10 @@ function auth_values()
 	v.onu_version   = identity_fb("onu_version", rt.onu_version, "")
 	v.omcc_version  = identity_fb("omcc_version", rt.omcc_version, "")
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
-	-- PON MAC 默认取 DSD wan_mac（ifconfig pon 未就绪时兜底）
-	local dsd_mac = sh("grep -o 'wan_mac[=:][0-9A-Fa-f:]*' /tmp/dsd.env 2>/dev/null | head -1"):match("[0-9A-Fa-f:]+$") or ""
-	v.pon_mac       = sys_fb("pon_mac", (rt.pon_mac ~= "" and rt.pon_mac or dsd_mac), "")
+	-- 输入框只展示显式覆盖值；未覆盖时保持空白并在保存时读取 DSD。
+	-- 不能回填当前运行态地址，否则旧 U-Boot 占位 MAC 会被再次固化。
+	local dsd_mac = dsd_wan_mac()
+	v.pon_mac       = (uget("xpon", "device", "pon_mac") or ""):upper()
 	if v.loid == "" and rt.loid ~= "" then v.loid = rt.loid end
 	if (v.sn == "" or v.sn == "NoNumber") and rt.sn ~= "" then v.sn = rt.sn end
 	v.pon_mac_default = dsd_mac
@@ -1129,11 +1138,12 @@ local function save_auth(fv)
 	local sn = (fv("sn") or ""):gsub("%s+", ""):upper()
 	if sn == "NONUMBER" then sn = "" end
 	local vendor_id = (#sn == 12) and sn:sub(1, 4) or ""
-	-- EPON OUI = PON MAC 前 3 字节（含 OUI 的 MAC 才是 EPON OLT 认的东西），填了 MAC 就自动提取
-	local pon_mac = fv("pon_mac") or ""
+	local pon_mac = (fv("pon_mac") or ""):gsub("%s+", ""):upper()
+	local effective_pon_mac = pon_mac ~= "" and pon_mac or dsd_wan_mac()
+	-- EPON OUI = 最终 PON MAC 前 3 字节，留空使用 DSD 时也保持联动。
 	local eoui = fv("epon_oui") or ""
-	if eoui == "" and ponmac_ok(pon_mac) then
-		eoui = pon_mac:gsub(":", ""):sub(1, 6):upper()
+	if eoui == "" and ponmac_ok(effective_pon_mac) then
+		eoui = effective_pon_mac:gsub(":", ""):sub(1, 6):upper()
 	end
 	-- OMCI 协议版本（specVer）：固件存 uint8；omcicfgCmd 用 atoi 解析 -> 统一落库为十进制
 	local omci_spec_ver = (fv("omci_spec_ver") or ""):gsub("%s+", "")
@@ -1225,7 +1235,11 @@ local function save_auth(fv)
 	if fv("onu_version") and fv("onu_version") ~= "" then u:set("xpon", "device", "onu_version", fv("onu_version")) end
 	if omcc_version ~= "" then u:set("xpon", "device", "omcc_version", omcc_version) end
 	if omci_spec_ver ~= "" then u:set("xpon", "device", "omci_spec_ver", omci_spec_ver) end
-	if pon_mac ~= "" then u:set("xpon", "device", "pon_mac", pon_mac) end
+	if pon_mac ~= "" then
+		u:set("xpon", "device", "pon_mac", pon_mac)
+	else
+		u:delete("xpon", "device", "pon_mac")
+	end
 	u:set("xpon", "device", "epon_oui", eoui)
 	u:set("xpon", "device", "epon_ven_info", fv("epon_ven_info") or "")
 
@@ -1257,6 +1271,12 @@ local function save_auth(fv)
 	end
 	if omcc_version ~= "" and check:get("network", "xpon_auth", "omcc_version") ~= omcc_version then
 		return nil, "persist_omcc_version"
+	end
+	if pon_mac ~= "" and check:get("xpon", "device", "pon_mac") ~= pon_mac then
+		return nil, "persist_pon_mac"
+	end
+	if pon_mac == "" and (check:get("xpon", "device", "pon_mac") or "") ~= "" then
+		return nil, "persist_pon_mac_default"
 	end
 	return true
 end
@@ -1558,7 +1578,8 @@ function action_save()
 		local atg = (formvalue("auth_type_g") or ""):lower()
 		local ptech = formvalue("pon_tech") or "GPON"
 		local pmode = pon_engine_for(ptech)
-		local pon_mac = formvalue("pon_mac") or ""
+		local pon_mac = (formvalue("pon_mac") or ""):gsub("%s+", ""):upper()
+		local effective_pon_mac = pon_mac ~= "" and pon_mac or dsd_wan_mac()
 		local onu_low = formvalue("onu_low") or ""
 		-- EPON OUI（3 字节 hex）/ 厂商信息（4 字节 hex），oamcfgCmd localOui/localVenInfo
 		local eoui = formvalue("epon_oui") or ""
@@ -1581,7 +1602,7 @@ function action_save()
 			err = "loid"
 		elseif pmode == "EPON" and #loid == 0 then
 			err = "loid"
-		elseif pmode == "EPON" and #pon_mac == 0 then
+		elseif not ponmac_ok(effective_pon_mac) then
 			err = "pon_mac"
 		elseif atg == "loid" and #loid == 0 then
 			err = "loid"
@@ -1615,16 +1636,21 @@ function action_save()
 			else
 				local onu_val = onu_type_hex(ptech, onu_low)
 				local u = uci.cursor(); u:set("xpon","device","onu_type",onu_val); u:save("xpon"); u:commit("xpon")
-				local rc = sys.call("/usr/bin/xpon-auth-native.sh")
-				if rc ~= 0 then
-					err = "native_write_" .. tostring(rc)
+				local mac_rc = sys.call("/usr/bin/xpon-apply.sh mac")
+				if mac_rc ~= 0 then
+					err = "ponmac_write_" .. tostring(mac_rc)
 				else
-					http.prepare_content("text/html; charset=utf-8")
-					if schedule_reboot(8) then
-						http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>认证参数写入并回读成功</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
-						return
+					local rc = sys.call("/usr/bin/xpon-auth-native.sh")
+					if rc ~= 0 then
+						err = "native_write_" .. tostring(rc)
+					else
+						http.prepare_content("text/html; charset=utf-8")
+						if schedule_reboot(8) then
+							http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>认证参数及注册 MAC 写入并回读成功</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
+							return
+						end
+						err = "reboot_schedule"
 					end
-					err = "reboot_schedule"
 				end
 			end
 		end

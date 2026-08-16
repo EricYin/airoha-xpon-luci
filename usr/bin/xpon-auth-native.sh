@@ -110,6 +110,7 @@ loid=$(get loid); loidpw=$(get loid_password); sn=$(get sn)
 [ -n "$sn" ] || sn=$(uci -q get network.xpon_auth.sn)
 equipment=$(identity_get equipment_id); onuver=$(identity_get onu_version); omcc=$(identity_get omcc_version)
 spec=$(get omci_spec_ver); pmac=$(get pon_mac); regid=$(get sn_regid_password)
+[ -n "$pmac" ] || pmac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
 sn_type=$(get xpon_sn_auth_type); asciipw=$(get sn_ascii_password); hexpw=$(get sn_hex_password)
 epon_oui=$(get epon_oui); epon_ven=$(get epon_ven_info)
 

@@ -95,8 +95,10 @@ function xponAuthCheck(form) {
 			return false;
 		}
 	}
-	if (epon && form.pon_mac.value.trim().length === 0) {
-		alert('EPON/10G-EPON 模式必须填写 PON MAC（EPON OLT 绑定 MAC 不绑 SN）');
+	var enteredMac = form.pon_mac.value.trim();
+	var effectiveMac = enteredMac || form.pon_mac.getAttribute('data-default') || '';
+	if (!/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(effectiveMac)) {
+		alert('请填写有效 PON MAC，或确保设备已读取到有效的 dsd wan_mac');
 		return false;
 	}
 	if ((auth === 'SN' || auth === 'REGID') && form.sn_password.value.trim().length > 0) {
@@ -121,7 +123,7 @@ function xponAuthCheck(form) {
 		alert('REG_ID（移动 Password）不能超过 36 个字符');
 		return false;
 	}
-	if (form.pon_mac.value && !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(form.pon_mac.value)) {
+	if (enteredMac && !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(enteredMac)) {
 		alert('PON MAC 格式应为 00:AA:BB:01:23:40');
 		return false;
 	}

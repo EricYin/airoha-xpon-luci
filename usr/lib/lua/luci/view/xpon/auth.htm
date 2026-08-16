@@ -6,7 +6,7 @@ local function esc(s)
 	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
 %>
-<script type="text/javascript" src="<%=resource%>/view/xpon.js"></script>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js?v=20260816-ponmac-env"></script>
 
 <h2 name="content">PON设置 — 认证 Auth</h2>
 <br />
@@ -18,10 +18,12 @@ end
 	<div class="alert-message error">配置已保存，但设备命令下发或回读失败（<b><%=err%></b>），因此未重启。请通过 SSH 查看 <code>/tmp/xpon-auth-native.log</code>；修正后重新保存。</div>
 <% elseif err and tostring(err):match("^persist_") then %>
 	<div class="alert-message error">持久配置写入后回读不一致（<b><%=err%></b>），设备命令未执行。请检查 <code>/etc/config/xpon</code> 是否可写及 <code>config auth 'device'</code> 段是否正常。</div>
+<% elseif err and tostring(err):match("^ponmac_write_") then %>
+	<div class="alert-message error">认证配置已保存，但注册 MAC 写入 U-Boot env 或回读失败（<b><%=err%></b>），因此未重启。请检查 <code>fw_printenv ethaddr</code>、<code>fw_printenv bootargs</code>、<code>/etc/fw_env.config</code> 和 <code>/etc/xpon-env-backups/</code>。</div>
 <% elseif err == "reboot_schedule" then %>
 	<div class="alert-message error">设备参数已下发并回读成功，但未能创建重启任务。请手动重启设备后核对当前生效值。</div>
 <% elseif err then %>
-	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；PON SN 为 4 位厂商代码 + 8 位 hex；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；EPON 模式 PON MAC 必填）。</div>
+	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；PON SN 为 4 位厂商代码 + 8 位 hex；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；PON MAC 留空时必须能读取有效 dsd wan_mac）。</div>
 <% end %>
 
 <form class="cbi-map" method="post" action="save" onsubmit="return xponAuthCheck(this)" id="authform">
@@ -217,10 +219,10 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="pon_mac">PON MAC（可修改；EPON 必填）</label>
+			<label class="cbi-value-title" for="pon_mac">PON MAC（可修改；EPON 必需）</label>
 			<div class="cbi-value-field">
-				<input type="text" id="pon_mac" name="pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.pon_mac%>" placeholder="如 00:AA:BB:01:23:40" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">可修改；EPON 模式下为 <b>MPCP 注册身份</b>（OLT 按此 MAC 放行并分配 LLID），换猫时必须克隆旧猫的 PON MAC。留空 = 取 dsd wan_mac。</div>
+				<input type="text" id="pon_mac" name="pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
+				<div class="cbi-value-description">EPON 模式下为 <b>MPCP 注册身份</b>。留空 = 取 dsd wan_mac；保存时先备份完整 U-Boot env，再同步 ethaddr、bootargs 与 PON 接口。</div>
 				<div class="cbi-value-description">当前系统生效：<code><%=esc(rt.pon_mac ~= "" and rt.pon_mac or "（空）")%></code>（留空时默认 <code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code>）</div>
 			</div>
 		</div>

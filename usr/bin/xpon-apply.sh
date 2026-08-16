@@ -227,11 +227,74 @@ apply_network() {
 }
 
 apply_mac() {
-	# S00xponconfig 已用 /tmp/dsd.env 的 wan_mac 设置 pon MAC；
-	# 这里允许用 xpon.device.pon_mac 显式覆盖（留空=维持默认）
-	local pmac
+	# MPCP/OMCI 注册身份来自 U-Boot ethaddr；pon 接口地址只同步运行态。
+	# 显式配置留空时恢复 DSD wan_mac，GPON 和 EPON 共用此路径。
+	local pmac ba ba_raw newba old_eth read_eth read_ba read_ba_eth
+	local backup_dir backup_stamp backup_path backup_tmp
 	pmac=$(uci_get xpon.device.pon_mac)
-	[ -n "$pmac" ] && ifconfig pon hw ether "$pmac" 2>/dev/null
+	[ -n "$pmac" ] || pmac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
+	case "$pmac" in
+		[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) : ;;
+		*) echo "PON MAC 无效，且未取得有效 DSD wan_mac" >&2; return 1 ;;
+	esac
+	pmac=$(printf '%s' "$pmac" | tr 'a-f' 'A-F')
+	command -v fw_setenv >/dev/null 2>&1 && command -v fw_printenv >/dev/null 2>&1 || {
+		echo "fw_setenv/fw_printenv 不可用（缺 uboot-envtools 或 fw_env.config）" >&2
+		return 1
+	}
+
+	ba_raw=$(fw_printenv -n bootargs 2>/dev/null)
+	ba=$ba_raw
+	while [ "${ba#bootargs=}" != "$ba" ]; do ba=${ba#bootargs=}; done
+	[ -n "$ba" ] || { echo "读取 env bootargs 失败" >&2; return 1; }
+	case " $ba " in
+		*" ethaddr="*) newba=$(printf '%s' "$ba" | sed "s/ethaddr=[^[:space:]]*/ethaddr=$pmac/") ;;
+		*) newba="$ba ethaddr=$pmac" ;;
+	esac
+
+	backup_dir=/etc/xpon-env-backups
+	backup_stamp=$(date +%Y%m%d-%H%M%S 2>/dev/null)
+	[ -n "$backup_stamp" ] || backup_stamp=unknown
+	backup_path="$backup_dir/ponmac-$backup_stamp-$$.bak"
+	backup_tmp="$backup_path.tmp"
+	umask 077
+	mkdir -p "$backup_dir" || { echo "创建 U-Boot env 备份目录失败" >&2; return 1; }
+	chmod 700 "$backup_dir" 2>/dev/null || true
+	fw_printenv > "$backup_tmp" 2>/dev/null || {
+		rm -f "$backup_tmp"
+		echo "备份 U-Boot env 失败，拒绝修改注册 MAC" >&2
+		return 1
+	}
+	mv "$backup_tmp" "$backup_path" || {
+		rm -f "$backup_tmp"
+		echo "保存 U-Boot env 备份失败，拒绝修改注册 MAC" >&2
+		return 1
+	}
+
+	old_eth=$(fw_printenv -n ethaddr 2>/dev/null | tr 'a-f' 'A-F')
+	[ "$old_eth" = "$pmac" ] || fw_setenv ethaddr "$pmac" || {
+		echo "写入 env ethaddr 失败；原环境已备份到 $backup_path" >&2
+		return 1
+	}
+	[ "$newba" = "$ba" ] || fw_setenv bootargs "$newba" || {
+		echo "写入 env bootargs ethaddr 失败；原环境已备份到 $backup_path" >&2
+		return 1
+	}
+
+	read_eth=$(fw_printenv -n ethaddr 2>/dev/null | tr 'a-f' 'A-F')
+	read_ba=$(fw_printenv -n bootargs 2>/dev/null)
+	read_ba_eth=$(printf '%s\n' "$read_ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' | tr 'a-f' 'A-F')
+	[ "$read_eth" = "$pmac" ] || {
+		echo "env ethaddr 回读失败：期望 $pmac，实际 ${read_eth:-空}" >&2
+		return 1
+	}
+	[ "$read_ba_eth" = "$pmac" ] || {
+		echo "env bootargs 回读失败：期望 ethaddr=$pmac，实际 ${read_ba_eth:-空}" >&2
+		return 1
+	}
+
+	ifconfig pon hw ether "$pmac" 2>/dev/null || true
+	logger -t xpon "PON 注册 MAC env 写入并回读成功：ethaddr=$pmac backup=$backup_path"
 }
 
 apply_leds() {
