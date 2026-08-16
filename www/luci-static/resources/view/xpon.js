@@ -71,7 +71,7 @@ function xponAuthCheck(form) {
 		return false;
 	}
 	if (epon && form.loid.value.trim().length === 0) {
-		alert('EPON/10G-EPON 认证需要填写 LOID');
+		alert('EPON/10G-EPON 需保留 LOID 字段（多数运营商不校验，可填任意占位值）');
 		return false;
 	}
 	var snv = form.sn.value.trim();
