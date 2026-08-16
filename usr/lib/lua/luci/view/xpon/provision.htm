@@ -1,5 +1,21 @@
 <%+header%>
-<style>.omci-dump{background:#f5f5f5;border:1px solid #d8dee4;padding:10px;font-size:12px;line-height:1.45;overflow:auto;white-space:pre-wrap}.omci-na{color:#777}.omci-ok{color:#237804;font-weight:600}.omci-warn{border-left:5px solid #cf1322;background:#fff1f0;padding:12px;margin:12px 0}.omci-level{font-weight:600;white-space:nowrap}</style>
+<style>
+.omci-dump{background:#f5f5f5;border:1px solid #d8dee4;padding:10px;font-size:12px;line-height:1.45;overflow:auto;white-space:pre-wrap}
+.omci-na{color:#777}
+.omci-ok{color:#237804;font-weight:600}
+.omci-warn{border-left:5px solid #cf1322;background:#fff1f0;padding:12px;margin:12px 0}
+.omci-level{font-weight:600;white-space:nowrap}
+@media (prefers-color-scheme: dark){
+	.omci-dump{background:#252526;border-color:#3c3c3c;color:#ccc;}
+	.omci-na{color:#8a8a8a;}
+	.omci-ok{color:#66bb6a;}
+	.omci-warn{background:#3a2020;border-left-color:#ef5350;color:#f2c9c9;}
+}
+html.dark .omci-dump{background:#252526;border-color:#3c3c3c;color:#ccc;}
+html.dark .omci-na{color:#8a8a8a;}
+html.dark .omci-ok{color:#66bb6a;}
+html.dark .omci-warn{background:#3a2020;border-left-color:#ef5350;color:#f2c9c9;}
+</style>
 <% local function esc(s) return (tostring(s or ''):gsub('&','&amp;'):gsub('<','&lt;'):gsub('>','&gt;')) end
 local an=analysis or {}; local rows=an.rows or {}; local concl=an.conclusion; local wild=(an.wild_gems or 0)>0 %>
 <h2 name="content">PON 设置 - OMCI</h2>

@@ -28,6 +28,50 @@ details.xpon-sec summary{cursor:pointer;padding:6px 10px;font-size:13px;font-wei
 details.xpon-sec summary:hover{background:#eef3fa;}
 details.xpon-sec[open] summary{border-bottom:1px solid #ddd;background:#eef3fa;}
 details.xpon-sec pre{margin:0;border:none;}
+@media (prefers-color-scheme: dark){
+	pre.xpon-status{background:#252526;border-color:#3c3c3c;color:#ccc;}
+	.xpon-sum-item{background:#1e1e1e;border-color:#3c3c3c;border-left-color:#555;}
+	.xpon-sum-item.xpon-sum-ok{border-left-color:#66bb6a;}
+	.xpon-sum-item.xpon-sum-warn{border-left-color:#ffa726;}
+	.xpon-sum-item.xpon-sum-err{border-left-color:#ef5350;}
+	.xpon-sum-item.xpon-sum-err .xpon-sum-value{color:#ef5350;}
+	.xpon-sum-item.xpon-sum-warn .xpon-sum-value{color:#ffa726;}
+	.xpon-sum-item.xpon-sum-ok .xpon-sum-value{color:#66bb6a;}
+	.xpon-sum-label{color:#adb5bd;}
+	.xpon-sum-value{color:#ccc;}
+	.xpon-ifbar-label{color:#adb5bd;}
+	.xpon-ifbar-track{background:#333;border-color:#3c3c3c;}
+	.xpon-na{color:#8a8a8a;}
+	table.xpon-gemvlan th,table.xpon-gemvlan td{border-color:#3c3c3c;color:#ccc;}
+	table.xpon-gemvlan th{background:#252526;}
+	.xpon-fill-rx{background:#66bb6a;}
+	.xpon-fill-tx{background:#5e9fd6;}
+	details.xpon-sec{background:#1e1e1e;border-color:#3c3c3c;}
+	details.xpon-sec summary{color:#ccc;background:#252526;}
+	details.xpon-sec summary:hover{background:#2d2d2d;}
+	details.xpon-sec[open] summary{border-bottom-color:#3c3c3c;background:#2d2d2d;}
+}
+html.dark pre.xpon-status{background:#252526;border-color:#3c3c3c;color:#ccc;}
+html.dark .xpon-sum-item{background:#1e1e1e;border-color:#3c3c3c;border-left-color:#555;}
+html.dark .xpon-sum-item.xpon-sum-ok{border-left-color:#66bb6a;}
+html.dark .xpon-sum-item.xpon-sum-warn{border-left-color:#ffa726;}
+html.dark .xpon-sum-item.xpon-sum-err{border-left-color:#ef5350;}
+html.dark .xpon-sum-item.xpon-sum-err .xpon-sum-value{color:#ef5350;}
+html.dark .xpon-sum-item.xpon-sum-warn .xpon-sum-value{color:#ffa726;}
+html.dark .xpon-sum-item.xpon-sum-ok .xpon-sum-value{color:#66bb6a;}
+html.dark .xpon-sum-label{color:#adb5bd;}
+html.dark .xpon-sum-value{color:#ccc;}
+html.dark .xpon-ifbar-label{color:#adb5bd;}
+html.dark .xpon-ifbar-track{background:#333;border-color:#3c3c3c;}
+html.dark .xpon-na{color:#8a8a8a;}
+html.dark table.xpon-gemvlan th,html.dark table.xpon-gemvlan td{border-color:#3c3c3c;color:#ccc;}
+html.dark table.xpon-gemvlan th{background:#252526;}
+html.dark .xpon-fill-rx{background:#66bb6a;}
+html.dark .xpon-fill-tx{background:#5e9fd6;}
+html.dark details.xpon-sec{background:#1e1e1e;border-color:#3c3c3c;}
+html.dark details.xpon-sec summary{color:#ccc;background:#252526;}
+html.dark details.xpon-sec summary:hover{background:#2d2d2d;}
+html.dark details.xpon-sec[open] summary{border-bottom-color:#3c3c3c;background:#2d2d2d;}
 </style>
 
 <h2 name="content">PON设置 — 状态 Status</h2>

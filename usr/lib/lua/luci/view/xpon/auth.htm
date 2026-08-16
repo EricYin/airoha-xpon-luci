@@ -60,7 +60,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 					<option value="<%=t.id%>"<% if ptech == t.id then %> selected="selected"<% end %>><%=t.name%></option>
 <% end %>
 				</select>
-				<div class="cbi-value-description">GPON/XGPON/XGSPON → OMCI（可选 SN/LOID）；10G-EPON → OAM（固定 LOID）。</div>
+				<div class="cbi-value-description">GPON/XGPON/XGSPON 经 OMCI 管理（SN/LOID 认证）；10G-EPON 经 OAM 管理（MPCP 注册 + OAM 扩展，认证要素见下方「EPON 认证方式」）。</div>
 			</div>
 		</div>
 
@@ -78,8 +78,11 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-epon-auth">
 			<label class="cbi-value-title">EPON 认证方式</label>
 			<div class="cbi-value-field">
-				<span class="cbi-input-text" style="padding:4px 8px;">LOID（固定）</span>
-				<div class="cbi-value-description">EPON/XEPON 仅支持 LOID。</div>
+				<span class="cbi-input-text" style="padding:4px 8px;">MPCP（PON MAC）＋ OAM 扩展</span>
+				<div class="cbi-value-description">
+					EPON/XEPON 注册分两步：<b>① MPCP</b> —— OLT 校验 <b>PON MAC</b> 并分配 LLID（MAC 未放行则拿不到 LLID）；<b>② OAM 扩展</b> —— 上报 <b>OUI / 厂商信息 / LOID</b>，运营商按区域校验其一或组合。<br />
+					北京联通 EPON 仅校验 PON MAC；电信部分区域校验 LOID；移动为 SN+Password（对应 GPON 模式）。
+				</div>
 			</div>
 		</div>
 
@@ -87,7 +90,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="epon_oui">EPON OUI（必填，EPON 模式）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_oui" name="epon_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_oui%>" placeholder="089AC7" pattern="[0-9A-Fa-f]{6}" />
-				<div class="cbi-value-description">3 字节 hex；= PON MAC 前 3 字节，填了 MAC 自动提取。当前 OAM 生效：<code><%=esc(rt.epon_oui ~= "" and rt.epon_oui or "（空）")%></code></div>
+				<div class="cbi-value-description">OAM 发现阶段上报的厂商标识（OUI，3 字节 hex），须与 PON MAC 前 3 字节一致（填写 MAC 自动提取）。当前 OAM 生效：<code><%=esc(rt.epon_oui ~= "" and rt.epon_oui or "（空）")%></code></div>
 			</div>
 		</div>
 
@@ -95,7 +98,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="epon_ven_info">EPON 厂商信息（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_ven_info" name="epon_ven_info" class="cbi-input-text" maxlength="8" value="<%=v.epon_ven_info%>" placeholder="4D150100" pattern="[0-9A-Fa-f]{8}" />
-				<div class="cbi-value-description">4 字节 hex，可选。当前 OAM 生效：<code><%=esc(rt.epon_ven_info ~= "" and rt.epon_ven_info or "（空）")%></code></div>
+				<div class="cbi-value-description">OAM 扩展的 Vendor-Specific 信息（4 字节 hex）；克隆旧猫时按旧猫值填写，多数运营商不校验。当前 OAM 生效：<code><%=esc(rt.epon_ven_info ~= "" and rt.epon_ven_info or "（空）")%></code></div>
 			</div>
 		</div>
 
@@ -103,7 +106,10 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="loid">LOID</label>
 			<div class="cbi-value-field">
 				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 H060161032" />
-				<div class="cbi-value-description">≤24 字节，运营商提供。当前系统生效：<code><%=esc(rt.loid ~= "" and rt.loid or "（空）")%></code></div>
+				<div class="cbi-value-description">≤24 字节，运营商提供。
+					<span class="xpon-gpon-auth">GPON/XGPON/XGSPON：OLT 经 OMCI 校验。</span>
+					<span class="xpon-epon-auth">EPON/XEPON：经 OAM 扩展透传（loid0），多数运营商（如北京联通）不校验，保留占位值即可。</span>
+					当前系统生效：<code><%=esc(rt.loid ~= "" and rt.loid or "（空）")%></code></div>
 			</div>
 		</div>
 
@@ -161,8 +167,9 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="sn">PON SN（含 Vendor ID）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 AXON10503407" pattern="[A-Za-z0-9]{4}[0-9A-Fa-f]{8}" />
-				<div class="cbi-value-description">完整 12 字符：前 4 位为 PON Vendor ID，后 8 位为十六进制序列号。保存时后台自动拆分，并分别调用 SDK 写入 <code>vendorId</code> 和 <code>sn</code>。<br />
-				当前系统生效：<code><%=esc(rt.sn ~= "" and rt.sn or "（空）")%></code>；解析 Vendor ID：<code><%=esc(rt.vendor_id ~= "" and rt.vendor_id or "（空）")%></code></div>
+				<div class="cbi-value-description">完整 12 字符：前 4 位为 PON Vendor ID，后 8 位为十六进制序列号。保存时后台自动拆分，并分别调用 SDK 写入 <code>vendorId</code> 和 <code>sn</code>。
+					<span class="xpon-epon-auth">EPON 模式：本字段仅存配置、不随 OAM 下发（SN 认证属 GPON OMCI 范畴），EPON 身份以 PON MAC / OUI 为准。</span><br />
+					当前系统生效：<code><%=esc(rt.sn ~= "" and rt.sn or "（空）")%></code>；解析 Vendor ID：<code><%=esc(rt.vendor_id ~= "" and rt.vendor_id or "（空）")%></code></div>
 			</div>
 		</div>
 
@@ -213,7 +220,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="pon_mac">PON MAC（可修改；EPON 必填）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="pon_mac" name="pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.pon_mac%>" placeholder="如 00:AA:BB:01:23:40" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">可修改；EPON 模式必填。留空 = 取 dsd wan_mac。</div>
+				<div class="cbi-value-description">可修改；EPON 模式下为 <b>MPCP 注册身份</b>（OLT 按此 MAC 放行并分配 LLID），换猫时必须克隆旧猫的 PON MAC。留空 = 取 dsd wan_mac。</div>
 				<div class="cbi-value-description">当前系统生效：<code><%=esc(rt.pon_mac ~= "" and rt.pon_mac or "（空）")%></code>（留空时默认 <code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code>）</div>
 			</div>
 		</div>

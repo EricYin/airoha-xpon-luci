@@ -491,6 +491,7 @@ local function service_values()
 				enable=s.enable ~= "0" and "1" or "0", service_type=s.service_type or "internet",
 				mode=s.mode or s.payload or "routed", proto=s.proto or (owner and owner.proto) or "dhcp", mtu=s.mtu or (owner and owner.mtu) or "1500",
 				username=s.username or (owner and owner.username) or "", ipaddr=s.ipaddr or (owner and owner.ipaddr) or "", netmask=s.netmask or (owner and owner.netmask) or "",
+				password_set = ((s.password and s.password ~= "") or (owner and owner.password and owner.password ~= "")) and true or nil,
 				gateway=s.gateway or (owner and owner.gateway) or "", dns1=s.dns1 or "", dns2=s.dns2 or "",
 				lan_port=s.lan_port or "none", mcast_vlan=s.mcast_vlan or "",
 				interface=iface, external_owner=owner and owner.xpon_managed ~= "1" and owner[".name"] or nil,
@@ -2028,6 +2029,26 @@ local function onu_state_name(state_id)
 	return names[state_id] or (state_id and ("O" .. state_id)) or ""
 end
 
+-- EPON：/tmp/epon_reg_auth_status 原厂进程不写，由本控制器按需生成。
+-- 从 ponmgr epon get llid_info 读取 LLID：有效 LLID 即视为已注册并认证。
+local function ensure_epon_status_file()
+	local mode = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
+	local n = tonumber(mode)
+	if not (n == 2 or n == 3 or n == 4 or n == 5 or n == 12) then return end
+	local llid_info = sh("/userfs/bin/ponmgr epon get llid_info 2>&1")
+	local llid = tonumber(llid_info:match("LLID%s*=%s*(%d+)"))
+	local oui_out = sh("/userfs/bin/oamcfgCmd get localOui 2>&1")
+	local ven_out = sh("/userfs/bin/oamcfgCmd get localVenInfo 2>&1")
+	local loid_out = sh("/userfs/bin/oamcfgCmd get loid0 2>&1")
+	local body = "Auth Status: \n"
+	if llid and llid > 0 and llid < 32768 then
+		body = "Auth Status: REG_AND_AUTH\nLLID: " .. llid .. "\n" .. llid_info
+			.. "\nOUI: " .. oui_out .. "\nVendor Info: " .. ven_out .. "\nLOID: " .. loid_out .. "\n"
+	end
+	local f = io.open("/tmp/epon_reg_auth_status", "w")
+	if f then f:write(body) f:close() end
+end
+
 ------------------------------------------------------------------------
 -- 光模块 DDM / 温度：
 --   en7572.ko（BOB 驱动）→ /proc/lddla/debug 写 bob_info/bosa_info，
@@ -2116,8 +2137,13 @@ local function collect_status(include_details)
 	local is_epon = sys_mode_num == 2 or sys_mode_num == 3 or sys_mode_num == 4
 		or sys_mode_num == 5 or sys_mode_num == 12
 	local pon_family = is_epon and "epon" or "gpon"
-	local pon_info = is_epon and sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
-		or sh("/userfs/bin/ponmgr gpon get info 2>&1")
+	local pon_info
+	if is_epon then
+		ensure_epon_status_file()
+		pon_info = sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
+	else
+		pon_info = sh("/userfs/bin/ponmgr gpon get info 2>&1")
+	end
 	local fec_out
 	local mac_cnt
 	if is_epon then
@@ -2276,15 +2302,33 @@ local function collect_status(include_details)
 	local onu_env_dec = decode_onu(onu_env)
 	local onu_cmd_dec = decode_onu(onu_cmd)
 
-	local state_label = onu_state_name(state_id)
-	if state_inf then
-		state_label = "O5 运行（推断：OMCC alloc=" .. alloc_id .. " 已分配，dmesg 不可读）"
-	end
+	local epon_llid = is_epon and pon_info:match("LLID:%s*(%d+)") or nil
+	local state_label
 	local level = "info"
-	if state_id == "5" then
-		level = (alloc_id and alloc_id ~= "1023") and "ok" or "warn"
-	elseif state_id then
-		level = "err"
+	if is_epon then
+		if auth_raw == "REG_AND_AUTH" then
+			state_label = "已注册并认证（MPCP LLID=" .. (epon_llid or "?") .. " / OAM REG_AND_AUTH）"
+			level = "ok"
+		elseif auth_raw == "REG_BUT_NOT_AUTH" then
+			state_label = "已注册（MPCP LLID=" .. (epon_llid or "?") .. "），OAM 认证未完成（REG_BUT_NOT_AUTH）"
+			level = "warn"
+		elseif epon_llid then
+			state_label = "已注册（MPCP LLID=" .. epon_llid .. "），OAM 认证进行中"
+			level = "warn"
+		else
+			state_label = "未注册（MPCP 发现中，LLID 未分配）"
+			level = "err"
+		end
+	else
+		state_label = onu_state_name(state_id)
+		if state_inf then
+			state_label = "O5 运行（推断：OMCC alloc=" .. alloc_id .. " 已分配，dmesg 不可读）"
+		end
+		if state_id == "5" then
+			level = (alloc_id and alloc_id ~= "1023") and "ok" or "warn"
+		elseif state_id then
+			level = "err"
+		end
 	end
 	local auth_label
 	if is_epon and auth_raw == "REG_AND_AUTH" then
@@ -2300,9 +2344,13 @@ local function collect_status(include_details)
 	end
 
 	local summary = {
-		{ label = "ONU 状态", value = state_label, level = level, group = "reg", wide = true },
-		{ label = is_epon and "OAM 认证" or "OMCI 认证", value = auth_label, group = "reg" },
-		{ label = "OLT 设备", value = (olt_label ~= "" and olt_label) or "N/A（未收到 ME131 OLT-G）",
+		{ label = is_epon and "ONU 状态（MPCP/OAM）" or "ONU 状态", value = state_label, level = level, group = "reg", wide = true },
+		{ label = is_epon and "OAM 认证" or "OMCI 认证", value = auth_label,
+		  level = (auth_raw == "1" or auth_raw == "REG_AND_AUTH") and "ok"
+			or (auth_raw == "0" or auth_raw == "REG_BUT_NOT_AUTH") and "warn"
+			or "info", group = "reg" },
+		{ label = "OLT 设备", value = (olt_label ~= "" and olt_label)
+			or (is_epon and "EPON/OAM 模式不查询 ME131") or "N/A（未收到 ME131 OLT-G）",
 		  level = (olt_vendor ~= "") and "ok" or "info", group = "reg" },
 		{ label = "PON 模式（驱动 sys_xpon_mode）", value = (sys_mode ~= "" and (sys_mode .. " → " .. (pon_mode_names[tonumber(sys_mode)] or "未知"))) or "N/A", group = "reg" },
 		{ label = "ONU 形态（env / 本次启动）", value = (onu_env_dec.form .. " / " .. onu_cmd_dec.form), group = "reg" },
@@ -2322,6 +2370,17 @@ local function collect_status(include_details)
 		{ label = "光模块温度（Transceiver）", value = (xp_t and (xp_t .. " °C") or "N/A"), level = (xp_t and temp_level or "info"), group = "optical" },
 		{ label = "BOSA 温度", value = (bosa_t and (bosa_t .. " °C") or "N/A"), level = (bosa_t and bosa_level or "info"), group = "optical" },
 	}
+	if is_epon then
+		-- EPON 无 OMCI/OMCC 概念：移除 GPON 专属卡片，避免显示 "?"
+		local filtered = {}
+		for _, it in ipairs(summary) do
+			local l = it.label
+			if not (l:match("^OMCC 分配") or l:match("^OLT 下发")) then
+				filtered[#filtered + 1] = it
+			end
+		end
+		summary = filtered
+	end
 	local sections = include_details and {
 		is_epon and { title = "EPON 注册与认证", body = pon_info }
 			or sec("认证参数 (omcicfgCmd)",
