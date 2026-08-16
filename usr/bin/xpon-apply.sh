@@ -132,6 +132,7 @@ restore_auth() {
 
 apply_auth() {
 	local mode auth sn_type loid loidpw defsn sn apwd hexpwd regpwd identity_sn identity_vendor
+	local epon_oui epon_ctc_oui epon_ven epon_onu_vendor tries
 	local equipment_val onuver_val omcc_val
 	identity_get() {
 		iv=$(uci_get network.xpon_auth.$1)
@@ -235,9 +236,16 @@ apply_auth() {
 		$OAM set mode 2 >/dev/null 2>&1
 		[ -n "$loid" ] && $OAM set loid0 "$loid" >/dev/null 2>&1
 		[ -n "$loidpw" ] && $OAM set loidPasswd0 "$loidpw" >/dev/null 2>&1
-		# EPON 侧 OUI / 厂商信息（ZTE setmac EPONSN 前 6 位 = OUI，VENDORID 的 OAM 对应）
-		[ -n "$(uci_get xpon.device.epon_oui)" ] && $OAM set localOui "$(uci_get xpon.device.epon_oui)" >/dev/null 2>&1
-		[ -n "$(uci_get xpon.device.epon_ven_info)" ] && $OAM set localVenInfo "$(uci_get xpon.device.epon_ven_info)" >/dev/null 2>&1
+		# OAM 身份均为运行态；这里先写只是兼容旧引擎，重启后的新进程
+		# 还必须由 xpon-auth-native.sh 再写一次并逐项回读。
+		epon_oui=$(uci_get xpon.device.epon_oui)
+		epon_ctc_oui=$(uci_get xpon.device.epon_ctc_oui); epon_ctc_oui=${epon_ctc_oui:-$epon_oui}
+		epon_ven=$(uci_get xpon.device.epon_ven_info)
+		epon_onu_vendor=$(uci_get xpon.device.epon_onu_vendor_id)
+		[ -n "$epon_oui" ] && $OAM set localOui "$epon_oui" >/dev/null 2>&1
+		[ -n "$epon_ctc_oui" ] && $OAM set ctcOui "$epon_ctc_oui" >/dev/null 2>&1
+		[ -n "$epon_ven" ] && $OAM set localVenInfo "$epon_ven" >/dev/null 2>&1
+		[ -n "$epon_onu_vendor" ] && $OAM set onuVenID "$epon_onu_vendor" >/dev/null 2>&1
 	fi
 
 	# 让共享内存配置生效。
@@ -249,6 +257,22 @@ apply_auth() {
 		killall ponmgr_cfg >/dev/null 2>&1
 		$PONMGR &
 		$EPON_OAM &
+		# epon_oam 初始化会把 ctcOui/onuVenID 等运行态恢复为固件默认值。
+		# 必须等待新进程可读后再做最终身份重放，不能在 kill 之前写完就退出。
+		tries=0
+		while [ "$tries" -lt 20 ]; do
+			pidof epon_oam >/dev/null 2>&1 && $OAM get mode >/dev/null 2>&1 && break
+			tries=$((tries + 1))
+			sleep 1
+		done
+		[ "$tries" -lt 20 ] || {
+			logger -t xpon "EPON OAM 重启后 20 秒内未就绪，身份未重放"
+			return 1
+		}
+		/usr/bin/xpon-auth-native.sh || {
+			logger -t xpon "EPON OAM 重启后身份重放失败，详见 /tmp/xpon-auth-native.log"
+			return 1
+		}
 	else
 		# GPON：认证属性（尤其 vendorId/equipmentId）写入共享配置后只需 reconfig。
 		# 不能在 LuCI 保存请求中 kill/restart omci/ponmgr，否则 PON 短断并导致页面登出。
@@ -435,22 +459,23 @@ apply_iptv() {
 	/usr/bin/xpon-iptv.sh >/dev/null 2>&1
 }
 
+rc=0
 case "${1:-all}" in
-	restore-auth) restore_auth ;;
-	auth)    apply_auth ;;
-	network) apply_network ;;
-	mac)     apply_mac ;;
-	leds)    apply_leds ;;
-	iptv)    apply_iptv ;;
-	ponmode) apply_ponmode "$2" ;;
+	restore-auth) restore_auth || rc=$? ;;
+	auth)    apply_auth || rc=$? ;;
+	network) apply_network || rc=$? ;;
+	mac)     apply_mac || rc=$? ;;
+	leds)    apply_leds || rc=$? ;;
+	iptv)    apply_iptv || rc=$? ;;
+	ponmode) apply_ponmode "$2" || rc=$? ;;
 	all)
-		restore_auth
-		apply_auth
-		apply_mac
-		apply_network
-		apply_leds
+		restore_auth || rc=$?
+		[ "$rc" -ne 0 ] || apply_auth || rc=$?
+		[ "$rc" -ne 0 ] || apply_mac || rc=$?
+		[ "$rc" -ne 0 ] || apply_network || rc=$?
+		[ "$rc" -ne 0 ] || apply_leds || rc=$?
 		;;
 	*) echo "usage: $0 {restore-auth|auth|network|mac|leds|iptv|ponmode <hex>|all}" >&2; exit 1 ;;
 esac
 
-exit 0
+exit "$rc"

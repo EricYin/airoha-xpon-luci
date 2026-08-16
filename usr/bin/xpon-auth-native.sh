@@ -81,7 +81,7 @@ verify_oam() {
 	cmp_have=$have
 	cmp_want=$want
 	case "$attr" in
-		localOui|localVenInfo)
+		localOui|localVenInfo|ctcOui)
 			cmp_have=$(printf '%s' "$have" | sed 's/^0[xX]//' | tr 'a-f' 'A-F')
 			cmp_want=$(printf '%s' "$want" | sed 's/^0[xX]//' | tr 'a-f' 'A-F')
 			;;
@@ -101,18 +101,52 @@ verify_oam() {
 	fi
 }
 
-mode=$(get pon_mode); auth=$(get auth_type_g)
-onu_type=$(get onu_type)
-# 旧版认证页可能只写入了独立的 U-Boot onu_type，未在 xpon UCI 镜像中
-# 留下同名字段。仍须用该目标值同步 bootargs，否则重启会继续沿用旧模式。
-[ -n "$onu_type" ] || onu_type=$(/usr/sbin/fw_printenv -n onu_type 2>/dev/null)
+hex_ascii4() {
+	hex=$(printf '%s' "$1" | tr 'a-f' 'A-F')
+	case "$hex" in ????????) : ;; *) return 1 ;; esac
+	case "$hex" in *[!0-9A-F]*) return 1 ;; esac
+	out=
+	for pos in 1 3 5 7; do
+		pair=$(printf '%s' "$hex" | cut -c "$pos-$((pos + 1))")
+		dec=$((0x$pair))
+		[ "$dec" -ge 32 ] && [ "$dec" -le 126 ] || return 1
+		oct=$(printf '%03o' "$dec")
+		out="$out$(printf "\\$oct")"
+	done
+	printf '%s' "$out"
+}
+
+auth=$(get auth_type_g)
+
+# 启动重放只读取本次实际启动的 onu_type，绝不根据 UCI 改写 env。
+# /proc/cmdline 是当前内核模式；仅在取不到时才读取 U-Boot env。
+onu_type=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' /proc/cmdline 2>/dev/null)
+case "$onu_type" in
+	[0-9A-Fa-f][0-9A-Fa-f]) : ;;
+	*) onu_type=$(/usr/sbin/fw_printenv -n onu_type 2>/dev/null) ;;
+esac
+case "$onu_type" in [0-9A-Fa-f][0-9A-Fa-f]) : ;; *) onu_type= ;; esac
+onu_high=${onu_type%?}
+case "$onu_high" in
+	3|4) mode=EPON ;;
+	1|6|7) mode=GPON ;;
+	*)
+		mode=$(uci -q get network.xpon_auth.pon_mode)
+		[ "$mode" = "EPON" ] || mode=GPON
+		echo "警告：无法从当前启动参数识别 onu_type='$onu_type'，仅沿用运行时引擎 $mode；未写 env" >> "$LOG"
+		;;
+esac
 loid=$(get loid); loidpw=$(get loid_password); sn=$(get sn)
 [ -n "$sn" ] || sn=$(uci -q get network.xpon_auth.sn)
 equipment=$(identity_get equipment_id); onuver=$(identity_get onu_version); omcc=$(identity_get omcc_version)
 spec=$(get omci_spec_ver); pmac=$(get pon_mac); regid=$(get sn_regid_password)
 [ -n "$pmac" ] || pmac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
 sn_type=$(get xpon_sn_auth_type); asciipw=$(get sn_ascii_password); hexpw=$(get sn_hex_password)
-epon_oui=$(get epon_oui); epon_ven=$(get epon_ven_info)
+epon_oui=$(get epon_oui); epon_ctc_oui=$(get epon_ctc_oui); epon_ven=$(get epon_ven_info)
+epon_onu_vendor=$(get epon_onu_vendor_id)
+[ -n "$epon_ctc_oui" ] || epon_ctc_oui=$epon_oui
+[ -n "$epon_onu_vendor" ] || epon_onu_vendor=$(identity_get vendor_id)
+[ -n "$epon_onu_vendor" ] || epon_onu_vendor=$(hex_ascii4 "$epon_ven" 2>/dev/null)
 
 # PON SN 是唯一输入源；SDK 仍要求分别设置 ME 256 SN 与 ME 7 Vendor ID。
 sn=$(printf '%s' "$sn" | tr -d '[:space:]' | tr 'a-z' 'A-Z')
@@ -133,26 +167,22 @@ if [ "$mode" != "EPON" ] && [ -z "$valid_sn" ]; then
 fi
 
 # 一般留空字段跳过；LOID 密码例外，空字符串表示明确使用 LOID-only。
-[ -n "$onu_type" ] && run /usr/sbin/fw_setenv onu_type "$onu_type"
-[ -n "$onu_type" ] && {
-	bootargs_raw=$(/usr/sbin/fw_printenv -n bootargs 2>/dev/null)
-	bootargs=$bootargs_raw
-	# 旧脚本把 `fw_printenv bootargs` 的键名也写回，可能累积 bootargs= 前缀。
-	while [ "${bootargs#bootargs=}" != "$bootargs" ]; do bootargs=${bootargs#bootargs=}; done
-	newargs=$(printf '%s' "$bootargs" | sed "s/onu_type=[0-9A-Fa-f]*/onu_type=$onu_type/")
-	[ "$newargs" = "$bootargs_raw" ] || run /usr/sbin/fw_setenv bootargs "$newargs"
-}
+# ONU 形态/PON 技术只允许由显式的 `xpon-apply.sh ponmode` 写入 env。
 if [ "$mode" = "EPON" ]; then
 	[ -x "$OAM" ] || { echo "oamcfgCmd 不存在或不可执行" >> "$LOG"; exit 127; }
 	run "$OAM" set mode 2
 	[ -n "$loid" ] && run "$OAM" set loid0 "$loid"
 	[ -n "$loidpw" ] && run_secret "oamcfgCmd set loidPasswd0" "$OAM" set loidPasswd0 "$loidpw"
 	[ -n "$epon_oui" ] && run "$OAM" set localOui "$epon_oui"
+	[ -n "$epon_ctc_oui" ] && run "$OAM" set ctcOui "$epon_ctc_oui"
 	[ -n "$epon_ven" ] && run "$OAM" set localVenInfo "$epon_ven"
+	[ -n "$epon_onu_vendor" ] && run "$OAM" set onuVenID "$epon_onu_vendor"
 	verify_oam loid0 "$loid" 0
 	verify_oam loidPasswd0 "$loidpw" 1
 	verify_oam localOui "$epon_oui" 0
+	verify_oam ctcOui "$epon_ctc_oui" 0
 	verify_oam localVenInfo "$epon_ven" 0
+	verify_oam onuVenID "$epon_onu_vendor" 0
 else
 	[ -x "$OMCI" ] || { echo "omcicfgCmd 不存在或不可执行" >> "$LOG"; exit 127; }
 	[ -n "$vendor" ] && run "$OMCI" set vendorId "$vendor"

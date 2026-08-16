@@ -394,6 +394,18 @@ local function encode_json(t)
 	return table.concat(out)
 end
 
+local function hex_ascii4(s)
+	s = (s or ""):gsub("%s+", "")
+	if #s ~= 8 or not s:match("^%x+$") then return "" end
+	local out = {}
+	for i = 1, 8, 2 do
+		local b = tonumber(s:sub(i, i + 1), 16)
+		if not b or b < 32 or b > 126 then return "" end
+		out[#out + 1] = string.char(b)
+	end
+	return table.concat(out)
+end
+
 function auth_values()
 	local u = uci.cursor()
 	local v = {}
@@ -438,7 +450,9 @@ function auth_values()
 	v.omcc_version      = uget("network", "xpon_auth", "omcc_version") or uget("xpon", "device", "omcc_version") or ""
 	v.omci_spec_ver     = uget("xpon", "device", "omci_spec_ver") or ""
 	v.epon_oui          = uget("xpon", "device", "epon_oui") or ""
+	v.epon_ctc_oui      = uget("xpon", "device", "epon_ctc_oui") or ""
 	v.epon_ven_info     = uget("xpon", "device", "epon_ven_info") or ""
+	v.epon_onu_vendor_id = uget("xpon", "device", "epon_onu_vendor_id") or ""
 	-- 运行时读回（只读展示）：omcicfgCmd get 是 OMCI 层实际生效值，
 	-- 输出格式 "field = value" 或 "ONU SN: value"（读不到 = 空串）
 	local function omci_get(field)
@@ -463,7 +477,9 @@ function auth_values()
 		omcc_version = omci_get("omccVersion"),
 		spec_ver     = sh("/userfs/bin/omcicfgCmd get specVer 2>&1"):match("(%d+)") or "",
 		epon_oui     = is_epon and oam_get("localOui"):gsub("^0[xX]", ""):upper() or "",
+		epon_ctc_oui = is_epon and oam_get("ctcOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ven_info = is_epon and oam_get("localVenInfo"):gsub("^0[xX]", ""):upper() or "",
+		epon_onu_vendor_id = is_epon and oam_get("onuVenID") or "",
 	}
 	local pon_ifconfig = sh("ifconfig pon 2>/dev/null")
 	rt.pon_mac = runtime_mac(sh("cat /sys/class/net/pon/address 2>/dev/null"):match("([0-9A-Fa-f:]+)")
@@ -504,6 +520,17 @@ function auth_values()
 	v.onu_version   = identity_fb("onu_version", rt.onu_version, "")
 	v.omcc_version  = identity_fb("omcc_version", rt.omcc_version, "")
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
+	if v.epon_ctc_oui == "" then
+		v.epon_ctc_oui = v.epon_oui ~= "" and v.epon_oui or rt.epon_ctc_oui
+	end
+	if v.epon_onu_vendor_id == "" then
+		local migrated_vendor = ""
+		-- Older versions only stored localVenInfo. When those four bytes are
+		-- printable ASCII, they are also a safe migration source for onuVenID.
+		if #v.vendor_id == 4 then migrated_vendor = v.vendor_id end
+		if migrated_vendor == "" then migrated_vendor = hex_ascii4(v.epon_ven_info) end
+		v.epon_onu_vendor_id = migrated_vendor ~= "" and migrated_vendor or rt.epon_onu_vendor_id
+	end
 	local dsd_mac = dsd_wan_mac()
 	local saved_pon_mac = runtime_mac(uget("xpon", "device", "pon_mac") or "")
 	-- 输入框是持久配置，已保存时必须优先回显，避免启动重放尚未完成时
@@ -1134,6 +1161,16 @@ local function ascii24_optional(s)
 	return true
 end
 
+local function ascii4_optional(s)
+	if #s == 0 then return true end
+	if #s ~= 4 then return false end
+	for i = 1, #s do
+		local b = s:byte(i)
+		if not (b >= 32 and b <= 126) then return false end
+	end
+	return true
+end
+
 -- OMCI 协议版本 specVer：固件存 uint8（0~255），接受十进制或 0x 十六进制
 local function specver_ok(s)
 	s = (s or ""):gsub("%s+", "")
@@ -1217,6 +1254,13 @@ local function save_auth(fv)
 	local eoui = fv("epon_oui") or ""
 	if eoui == "" and ponmac_ok(effective_pon_mac) then
 		eoui = effective_pon_mac:gsub(":", ""):sub(1, 6):upper()
+	end
+	local ectc = (fv("epon_ctc_oui") or ""):gsub("%s+", ""):upper()
+	if ectc == "" then ectc = eoui end
+	local eonu_vendor = fv("epon_onu_vendor_id") or ""
+	local even = (fv("epon_ven_info") or ""):gsub("%s+", ""):upper()
+	if eonu_vendor == "" then
+		eonu_vendor = vendor_id ~= "" and vendor_id or hex_ascii4(even)
 	end
 	-- OMCI 协议版本（specVer）：固件存 uint8；omcicfgCmd 用 atoi 解析 -> 统一落库为十进制
 	local omci_spec_ver = (fv("omci_spec_ver") or ""):gsub("%s+", "")
@@ -1314,7 +1358,13 @@ local function save_auth(fv)
 		u:delete("xpon", "device", "pon_mac")
 	end
 	u:set("xpon", "device", "epon_oui", eoui)
-	u:set("xpon", "device", "epon_ven_info", fv("epon_ven_info") or "")
+	u:set("xpon", "device", "epon_ctc_oui", ectc)
+	u:set("xpon", "device", "epon_ven_info", even)
+	if eonu_vendor ~= "" then
+		u:set("xpon", "device", "epon_onu_vendor_id", eonu_vendor)
+	else
+		u:delete("xpon", "device", "epon_onu_vendor_id")
+	end
 
 	u:save("network")
 	local network_commit = u:commit("network")
@@ -1363,6 +1413,13 @@ local function save_auth(fv)
 	end
 	if pon_mac == "" and (check:get("xpon", "device", "pon_mac") or "") ~= "" then
 		return nil, "persist_pon_mac_default"
+	end
+	if pmode == "EPON" then
+		if check:get("xpon", "device", "epon_oui") ~= eoui then return nil, "persist_epon_oui" end
+		if check:get("xpon", "device", "epon_ctc_oui") ~= ectc then return nil, "persist_epon_ctc_oui" end
+		if (check:get("xpon", "device", "epon_onu_vendor_id") or "") ~= eonu_vendor then
+			return nil, "persist_epon_onu_vendor_id"
+		end
 	end
 	return true
 end
@@ -1667,9 +1724,12 @@ function action_save()
 		local pon_mac = (formvalue("pon_mac") or ""):gsub("%s+", ""):upper()
 		local effective_pon_mac = pon_mac ~= "" and pon_mac or dsd_wan_mac()
 		local onu_low = formvalue("onu_low") or ""
-		-- EPON OUI（3 字节 hex）/ 厂商信息（4 字节 hex），oamcfgCmd localOui/localVenInfo
+		-- EPON OAM 身份：localOui/ctcOui 为 3 字节 hex，localVenInfo 为
+		-- 4 字节 hex，onuVenID 为 4 字节可打印 ASCII。
 		local eoui = formvalue("epon_oui") or ""
+		local ectc = formvalue("epon_ctc_oui") or ""
 		local even = formvalue("epon_ven_info") or ""
+		local eonu_vendor = formvalue("epon_onu_vendor_id") or ""
 		if onu_low ~= "1" and onu_low ~= "2" then
 			err = "onu_low"
 		elseif pmode ~= "EPON" and (#sn ~= 12 or not sn:sub(1, 4):match("^[A-Za-z0-9]+$") or not sn:sub(5, 12):match("^[0-9a-fA-F]+$")) then
@@ -1680,8 +1740,12 @@ function action_save()
 			err = "omci_spec_ver"
 		elseif #eoui > 0 and not hex_len(eoui, 6, 6) then
 			err = "epon_oui"
+		elseif #ectc > 0 and not hex_len(ectc, 6, 6) then
+			err = "epon_ctc_oui"
 		elseif #even > 0 and not hex_len(even, 8, 8) then
 			err = "epon_ven_info"
+		elseif not ascii4_optional(eonu_vendor) then
+			err = "epon_onu_vendor_id"
 		elseif #pon_mac > 0 and not ponmac_ok(pon_mac) then
 			err = "pon_mac"
 		elseif #loid > 24 then

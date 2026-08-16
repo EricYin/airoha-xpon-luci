@@ -1,4 +1,5 @@
 xpon-luci 2.6 2026-08-16
+epon: 持久保存并重放 localOui/ctcOui/localVenInfo/onuVenID；最终写入改到 epon_oam 重启之后，防止恢复 111111/MTKc
 boot: 修正原厂 S00xponconfig 的 gponauth 变量错误；启动主路径直接采用持久认证和 PON MAC，S11 仅作旧固件兜底
 auth: PON SN/Vendor ID 提交后同时回读 network 与 xpon 持久源；PON MAC 输入框优先显示已保存配置，运行值独立展示
 boot: GPON pon 接口出现后即重放已保存 MAC，不再依赖 OMCI 90 秒内就绪；EPON env 已一致时不重复写入或生成备份

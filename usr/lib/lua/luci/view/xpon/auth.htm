@@ -23,7 +23,7 @@ end
 <% elseif err == "reboot_schedule" then %>
 	<div class="alert-message error">设备参数已下发并回读成功，但未能创建重启任务。请手动重启设备后核对当前生效值。</div>
 <% elseif err then %>
-	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；PON SN 为 4 位厂商代码 + 8 位 hex；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；EPON 注册 MAC 留空时必须能读取有效 dsd wan_mac）。</div>
+	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节；PON SN 为 4 位厂商代码 + 8 位 hex；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；EPON OUI 为 6 位 hex、ONU Vendor ID 为 4 位可打印 ASCII；EPON 注册 MAC 留空时必须能读取有效 dsd wan_mac）。</div>
 <% end %>
 
 <form class="cbi-map" method="post" action="save" onsubmit="return xponAuthCheck(this)" id="authform">
@@ -101,6 +101,22 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<div class="cbi-value-field">
 				<input type="text" id="epon_ven_info" name="epon_ven_info" class="cbi-input-text" maxlength="8" value="<%=v.epon_ven_info%>" placeholder="4D150100" pattern="[0-9A-Fa-f]{8}" />
 				<div class="cbi-value-description">OAM 扩展的 Vendor-Specific 信息（4 字节 hex）；克隆旧猫时按旧猫值填写，多数运营商不校验。当前 OAM 生效：<code><%=esc(rt.epon_ven_info ~= "" and rt.epon_ven_info or "（空）")%></code></div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title" for="epon_ctc_oui">CTC OUI</label>
+			<div class="cbi-value-field">
+				<input type="text" id="epon_ctc_oui" name="epon_ctc_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_ctc_oui%>" placeholder="留空跟随 EPON OUI" pattern="[0-9A-Fa-f]{6}" />
+				<div class="cbi-value-description">OLT 在 CTC OAM 扩展中读取的 3 字节 OUI；留空时跟随 EPON OUI。当前 OAM 生效：<code><%=esc(rt.epon_ctc_oui ~= "" and rt.epon_ctc_oui or "（空）")%></code></div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title" for="epon_onu_vendor_id">ONU Vendor ID</label>
+			<div class="cbi-value-field">
+				<input type="text" id="epon_onu_vendor_id" name="epon_onu_vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.epon_onu_vendor_id%>" placeholder="例如 HWTC" pattern="[\x20-\x7E]{4}" />
+				<div class="cbi-value-description">OAM <code>onuVenID</code>，固定 4 字节可打印 ASCII。当前 OAM 生效：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
 			</div>
 		</div>
 

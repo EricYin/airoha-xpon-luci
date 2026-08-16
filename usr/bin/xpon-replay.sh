@@ -33,13 +33,20 @@ fi
 
 # Let ponmgr/OMCI/OAM finish their own shared-memory initialization first.
 sleep 2
-if ! /usr/bin/xpon-auth-native.sh; then
-	logger -t xpon "replay: 设备参数严格下发或回读失败，详见 /tmp/xpon-auth-native.log"
-	exit 1
+if [ "$mode" = "EPON" ]; then
+	# apply auth 会先重启 epon_oam，再对新进程重放并回读全部 OAM 身份。
+	if ! /usr/bin/xpon-apply.sh auth; then
+		logger -t xpon "replay: EPON OAM 重启后身份重放失败，详见 /tmp/xpon-auth-native.log"
+		exit 1
+	fi
+else
+	if ! /usr/bin/xpon-auth-native.sh; then
+		logger -t xpon "replay: 设备参数严格下发或回读失败，详见 /tmp/xpon-auth-native.log"
+		exit 1
+	fi
+	# GPON 严格脚本负责逐项写入与回读，apply auth 触发 OMCI reconfig。
+	/usr/bin/xpon-apply.sh auth || exit 1
 fi
-# 严格脚本负责逐项写入与回读；旧应用函数只负责触发 OMCI reconfig，
-# 或在 EPON 下重启 OAM 引擎使新认证参数参与下一次注册。
-/usr/bin/xpon-apply.sh auth
 /usr/bin/xpon-apply.sh mac
 /usr/bin/xpon-apply.sh iptv
 /usr/bin/xpon-mvlan.sh
