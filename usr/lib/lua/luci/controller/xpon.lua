@@ -144,9 +144,8 @@ end
 function index()
 	entry({"admin", "xpon"}, firstchild(), "PON", 39).dependent = false
 	entry({"admin", "xpon", "auth"}, call("action_auth"), "认证", 1)
-	-- 业务 Services 页默认不内置（模板 services.htm 保留在包内，
-	-- 需要时取消下面这行注释即可单独挂出）
-	entry({"admin", "xpon", "services"}, call("action_services"), "业务", 3)
+	entry({"admin", "xpon", "services"}, call("action_services"), "业务", 2)
+	entry({"admin", "xpon", "voice"}, call("action_voice"), "语音", 3)
 	entry({"admin", "xpon", "service-vlan"}, post("action_service_vlan")).leaf = true
 	entry({"admin", "xpon", "provision"}, call("action_provision"), "OMCI", 4)
 	entry({"admin", "xpon", "status"}, call("action_status"), "状态", 5)
@@ -617,6 +616,134 @@ local function service_values()
 	end)
 	table.sort(rows, function(a,b) return tonumber(a.vlan_id) < tonumber(b.vlan_id) end)
 	return rows
+end
+
+-- 语音配置。SDK 的启动脚本按 /proc/fxs/fxsNum 设置最大 line/account 数，
+-- 并在双 FXS 时打开 VoIPLine2Enable；因此这里使用两个独立的账号 section。
+-- 旧的 xpon.voice_auth 仍作为 FXS 1 的兼容 section。
+local voice_line_defaults = {
+	enable = "1", registrar = "", proxy = "", domain = "", username = "",
+	auth_username = "", password = "", display_name = "", transport = "udp",
+	port = "5060", expires = "3600", outbound_proxy = "",
+}
+
+local function voice_line_values(u, section, legacy)
+	local result = {}
+	for name, default in pairs(voice_line_defaults) do
+		local value = u:get("xpon", section, name)
+		if value == nil and legacy then value = u:get("xpon", legacy, name) end
+		result[name] = value ~= nil and value or default
+	end
+	if section == "voice_auth_line2" and u:get("xpon", section, "enable") == nil
+		and u:get("xpon", legacy or "", "enable") ~= nil then
+		result.enable = "0"
+	end
+	result.password_set = result.password ~= ""
+	return result
+end
+
+local function voice_line_count()
+	local fxs = tonumber(sh("cat /proc/fxs/fxsNum 2>/dev/null | head -1")) or 0
+	local fxo = tonumber(sh("cat /proc/fxs/fxoNum 2>/dev/null | head -1")) or 0
+	local line_count = fxs + fxo
+	if line_count < 1 then
+		-- SDK 设备缺少 /proc/fxs 时，按本项目目标 MTK 双 FXS 预留两路。
+		line_count = 2
+	end
+	return math.min(line_count, 2)
+end
+
+local function voice_values()
+	local u = uci.cursor()
+	local status = sh("pidof sipclient 2>/dev/null")
+	local service_vlan = u:get("xpon", "voice", "vlan")
+		or u:get("network", "xpon_voice", "vlan_id")
+		  or ""
+	return {
+		lines = {
+			voice_line_values(u, "voice_auth", nil),
+			voice_line_values(u, "voice_auth_line2", "voice_auth"),
+		},
+		line_count = voice_line_count(),
+		vlan = service_vlan,
+		running = status ~= "",
+		pid = status,
+	}
+end
+
+local function voice_host_ok(value, optional)
+	value = (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if optional and value == "" then return true end
+	if #value == 0 or #value > 255 then return false end
+	for i = 1, #value do
+		local b = value:byte(i)
+		if not b or b < 33 or b > 126 or value:sub(i, i) == "'" then return false end
+	end
+	return true
+end
+
+local function voice_text_ok(value, max_len, optional)
+	value = value or ""
+	if optional and value == "" then return true end
+	if #value == 0 or #value > max_len then return false end
+	for i = 1, #value do
+		local b = value:byte(i)
+		if not b or b < 32 or b > 126 or value:sub(i, i) == "'" then return false end
+	end
+	return true
+end
+
+local function save_voice(fv)
+	local u = uci_native.cursor()
+	local function save_line(index, section, legacy)
+		local function value(name)
+			return (fv("line" .. index .. "_" .. name) or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		end
+		local enabled = value("enable") == "1" and "1" or "0"
+		local registrar, proxy = value("registrar"), value("proxy")
+		local domain, username = value("domain"), value("username")
+		local auth_username, display_name = value("auth_username"), value("display_name")
+		local outbound_proxy, transport = value("outbound_proxy"), value("transport"):lower()
+		local port, expires = tonumber(value("port")), tonumber(value("expires"))
+		local old_password = u:get("xpon", section, "password")
+			or (legacy and u:get("xpon", legacy, "password"))
+			or ""
+		local password = value("password")
+		if password == "" then password = old_password end
+
+		if enabled == "1" and not voice_host_ok(registrar, false) then return nil, "line" .. index .. "_registrar" end
+		if not voice_host_ok(proxy, true) then return nil, "line" .. index .. "_proxy" end
+		if not voice_host_ok(domain, true) then return nil, "line" .. index .. "_domain" end
+		if not voice_host_ok(outbound_proxy, true) then return nil, "line" .. index .. "_outbound_proxy" end
+		if enabled == "1" and not voice_text_ok(username, 128, false) then return nil, "line" .. index .. "_username" end
+		if not voice_text_ok(auth_username, 128, true) then return nil, "line" .. index .. "_auth_username" end
+		if not voice_text_ok(display_name, 64, true) then return nil, "line" .. index .. "_display_name" end
+		if transport ~= "udp" and transport ~= "tcp" and transport ~= "tls" then return nil, "line" .. index .. "_transport" end
+		if not port or port < 1 or port > 65535 then return nil, "line" .. index .. "_port" end
+		if not expires or expires < 60 or expires > 86400 then return nil, "line" .. index .. "_expires" end
+		if not voice_text_ok(password, 128, true) then return nil, "line" .. index .. "_password" end
+
+		if not ensure_section(u, "xpon", section, "voice_auth") then return nil, "voice_section" end
+		local fields = {
+			enable = enabled, registrar = registrar, proxy = proxy, domain = domain,
+			username = username, auth_username = auth_username, password = password,
+			display_name = display_name, transport = transport, port = tostring(port),
+			expires = tostring(expires), outbound_proxy = outbound_proxy,
+		}
+		for name, field_value in pairs(fields) do u:set("xpon", section, name, field_value) end
+		return true
+	end
+
+	local ok, why = save_line(1, "voice_auth", nil)
+	if not ok then return nil, why end
+	ok, why = save_line(2, "voice_auth_line2", "voice_auth")
+	if not ok then return nil, why end
+	local ok, commit_ok = pcall(function()
+		u:save("xpon")
+		commit_ok = u:commit("xpon")
+	end)
+	if not ok or commit_ok == false then return nil, "voice_commit" end
+	return true
 end
 
 local function kernel_vlan_values()
@@ -1129,42 +1256,6 @@ local function ponvlan_del(vid, del_persist)
 			u:commit("network")
 		end
 	end)
-end
-
--- ONU 形态保存（modeform，GET/POST 通用）：按 PON 技术 + SFU/HGU 组合 onu_type 写 U-Boot env，
--- apply=reboot 时立即重启。处理完返回 true（调用方直接 return）。
-local function save_onu_mode()
-	local low = formvalue("onu_low") or ""
-	if low ~= "1" and low ~= "2" then
-		http.redirect(xpon_url("mode", "err=low"))
-		return true
-	end
-	-- 只允许改低半字节；PON 技术高半字节必须从 cmdline/env 读取并保留。
-	local cur = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1"):match("=(.*)$")
-	if not cur or cur == "" then
-		cur = sh("fw_printenv -n onu_type 2>/dev/null")
-	end
-	local bits = tonumber(cur or "", 16)
-	local tech = bits and pon_tech_by_bits[math.floor(bits / 16)] or nil
-	if not tech then
-		http.redirect(xpon_url("mode", "err=env"))
-		return true
-	end
-	local val = onu_type_hex(tech, low)
-	local target_label = decode_onu(val).label
-	local rc = sys.call("/usr/bin/xpon-apply.sh ponmode %s >/dev/null 2>&1" % { val })
-	if rc ~= 0 then
-		http.redirect(xpon_url("mode", "err=apply"))
-		return true
-	end
-	if formvalue("apply") == "reboot" then
-		http.prepare_content("text/html; charset=utf-8")
-		http.write("<html><body><h3>下次启动模式：" .. target_label .. "，正在重启…</h3><p>约 1 分钟后重新登录。</p></body></html>")
-		sys.call("(sleep 2; reboot) >/dev/null 2>&1 </dev/null &")
-		return true
-	end
-	http.redirect(xpon_url("mode", "saved=1"))
-	return true
 end
 
 -- Equipment ID：可选；非空时允许 1~24 个可打印 ASCII 字符。
@@ -1910,6 +2001,12 @@ function action_save()
 				end
 			end
 		end
+	elseif page == "voice" then
+		local ok, why = save_voice(formvalue)
+		if not ok then
+			http.redirect(xpon_url("voice", "err=" .. tostring(why)))
+			return
+		end
 	elseif page == "services" then
 		local ok, why = save_services(formvalue)
 		if not ok then
@@ -1934,31 +2031,6 @@ function action_save()
 			http.redirect(xpon_url("provision", "act=save"))
 		end
 		return
-	elseif page == "mode" then
-		-- PON VLAN 接口管理（内核 802.1q：pon.<VID>，PPPoE/静态 IP 拨号子接口）
-		local pvop = formvalue("ponvlan_op") or ""
-		if pvop ~= "" then
-			local vid = tonumber(formvalue("ponvlan_vid") or "")
-			if not vid or vid < 1 or vid > 4094 then
-				http.redirect(xpon_url("mode", "vlan=bad"))
-				return
-			end
-			if pvop == "add" then
-				local pbit = tonumber(formvalue("ponvlan_pbit") or "0") or 0
-				if pbit < 0 or pbit > 7 then pbit = 0 end
-				local ok, exists = ponvlan_add(vid, pbit, parse_mvids(formvalue("ponvlan_mvids")))
-				http.redirect(xpon_url("mode", "vlan=add&rc=" ..
-					(ok and exists and "ok" or "fail") .. "&vid=" .. vid))
-				return
-			elseif pvop == "del" then
-				-- 删除即连持久化段一起删（否则重启后 netifd 会重建 pon.<VID>）
-				local ok = ponvlan_del(vid, true)
-				http.redirect(xpon_url("mode", "vlan=del&rc=" .. (ok and "ok" or "fail") .. "&vid=" .. vid))
-				return
-			end
-		end
-		save_onu_mode()
-		return
 	end
 
 	if err then
@@ -1970,6 +2042,19 @@ function action_save()
 	-- 进程，若同步执行会在 HTTP 响应前断开网络，表现为“保存后被登出”。
 	if page == "auth" then
 		sys.call("( /usr/bin/xpon-apply.sh auth; /usr/bin/xpon-apply.sh mac ) >/tmp/xpon-auth-apply.log 2>&1 </dev/null &")
+	elseif page == "voice" then
+		-- sipclient 的配置接口由 SDK 私有实现；保存 UCI 后只重载 voice WAN，
+		-- 并按 SDK 监控程序的约定重启 sipclient（不存在时静默跳过）。
+		local voice_enabled = formvalue("line1_enable") == "1" or formvalue("line2_enable") == "1"
+		local line2_switch = formvalue("line2_enable") == "1" and "Yes" or "No"
+		local sip_action = voice_enabled
+			and "killall -HUP sipclient >/dev/null 2>&1 || true; if [ -x /userfs/bin/sipclient ]; then /userfs/bin/sipclient >/dev/null 2>&1 & fi"
+			or "killall -9 sipclient >/dev/null 2>&1 || true"
+		sys.call("( ifdown voice >/dev/null 2>&1; ifup voice >/dev/null 2>&1; " ..
+			"if [ -x /userfs/bin/tcapi ]; then /userfs/bin/tcapi set VoIPBasic_Common VoIPLine2Enable " ..
+			line2_switch .. " >/dev/null 2>&1; fi; " ..
+			sip_action .. " ) " ..
+			">/tmp/xpon-voice-apply.log 2>&1 </dev/null &")
 	elseif page == "services" then
 		sys.call("( /etc/init.d/network reload; /etc/init.d/firewall reload; /usr/bin/xpon-bind-lan.sh all; /usr/bin/pon-multicast apply-all ) >/tmp/pon-services.log 2>&1 </dev/null &")
 	end
@@ -1989,6 +2074,14 @@ function action_auth()
 		v = auth_values(),
 		saved = (formvalue("saved") == "1"),
 		err = page_err,
+	})
+end
+
+function action_voice()
+	ltemplate.render("xpon/voice", {
+		v = voice_values(),
+		saved = (formvalue("saved") == "1"),
+		err = formvalue("err"),
 	})
 end
 
@@ -2019,54 +2112,6 @@ function action_service_action()
 	end
 	local rc = sys.call((op == "up" and "ifup " or "ifdown ") .. iface .. " >/tmp/xpon-service-action.log 2>&1")
 	http.redirect(xpon_url("services", rc == 0 and ("service_op=" .. op) or ("err=service_runtime_" .. rc)))
-end
-
-function action_mode()
-	-- PON VLAN 添加/删除：GET + token（绕开部分 LuCI 21.02 对 POST 手写表单的会话拦截，
-	-- 且 GET 提交不触发 post_on 的 CSRF 校验，这里手动核对 session token）
-	local pvop = formvalue("ponvlan_op") or ""
-	if pvop ~= "" then
-		if formvalue("token") ~= dispatcher.context.authtoken then
-			http.status(403, "Invalid token")
-			return
-		end
-		local vid = tonumber(formvalue("ponvlan_vid") or "")
-		if not vid or vid < 1 or vid > 4094 then
-			http.redirect(xpon_url("mode", "vlan=bad"))
-			return
-		end
-		if pvop == "add" then
-			local pbit = tonumber(formvalue("ponvlan_pbit") or "0") or 0
-			if pbit < 0 or pbit > 7 then pbit = 0 end
-			local ok, exists = ponvlan_add(vid, pbit, parse_mvids(formvalue("ponvlan_mvids")))
-			http.redirect(xpon_url("mode", "vlan=add&rc=" ..
-				(ok and exists and "ok" or "fail") .. "&vid=" .. vid))
-			return
-		elseif pvop == "del" then
-			-- 删除即连持久化段一起删（否则重启后 netifd 会重建 pon.<VID>）
-			local ok = ponvlan_del(vid, true)
-			http.redirect(xpon_url("mode", "vlan=del&rc=" ..
-				(ok and "ok" or "fail") .. "&vid=" .. vid))
-			return
-		end
-	end
-	-- ONU 形态保存（modeform 改 GET 后走这里；POST 旧路径在 action_save）
-	local low = formvalue("onu_low") or ""
-	if low ~= "" then
-		if formvalue("token") ~= dispatcher.context.authtoken then
-			http.status(403, "Invalid token")
-			return
-		end
-		save_onu_mode()
-		return
-	end
-	local v = ponmode_values()
-	v.vlan_msg, v.vlan_ok = vlan_msg_for(formvalue("vlan"), formvalue("rc"), formvalue("vid"))
-	ltemplate.render("xpon/mode", {
-		v = v,
-		saved = (formvalue("saved") == "1"),
-		err = formvalue("err"),
-	})
 end
 
 ------------------------------------------------------------------------

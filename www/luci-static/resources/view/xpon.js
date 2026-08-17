@@ -3,6 +3,63 @@
 // 认证页：记录打开时的初始值（页面默认已回显系统当前生效值），
 // 用户修改后提交前弹窗确认“将重启 OMCI 重新注册”。
 var xponAuthInit = {};
+var xponVoiceInit = {};
+function xponVoiceCaptureInit(form) {
+	if (!form) return;
+	[1, 2].forEach(function (line) {
+		['enable', 'registrar', 'proxy', 'domain', 'outbound_proxy', 'username',
+			'auth_username', 'password', 'display_name', 'transport', 'port', 'expires']
+			.forEach(function (id) {
+				var name = 'line' + line + '_' + id;
+				var el = form.elements[name];
+				if (el) xponVoiceInit[name] = el.value;
+			});
+	});
+}
+function xponVoiceCheck(form) {
+	var host = function (id, required) {
+		var el = form.elements[id];
+		var value = (el && el.value || '').trim();
+		if (required && !value) {
+			alert('请填写 SIP 注册服务器');
+			return false;
+		}
+		if (value.length > 255 || /['\u0000-\u001f\u007f]/.test(value)) {
+			alert(id + ' 含有非法字符');
+			return false;
+		}
+		return true;
+	};
+	var active = false;
+	for (var line = 1; line <= 2; line++) {
+		var prefix = 'line' + line + '_';
+		var enabled = form.elements[prefix + 'enable'].value === '1';
+		if (!enabled) continue;
+		active = true;
+		if (!host(prefix + 'registrar', true) || !host(prefix + 'proxy', false) ||
+			!host(prefix + 'domain', false) || !host(prefix + 'outbound_proxy', false)) return false;
+		if (!form.elements[prefix + 'username'].value.trim()) {
+			alert('请填写 FXS ' + line + ' 的 SIP 用户名');
+			return false;
+		}
+		var port = parseInt(form.elements[prefix + 'port'].value, 10);
+		if (!(port >= 1 && port <= 65535)) {
+			alert('FXS ' + line + ' 的 SIP 端口必须在 1~65535 之间');
+			return false;
+		}
+		var expires = parseInt(form.elements[prefix + 'expires'].value, 10);
+		if (!(expires >= 60 && expires <= 86400)) {
+			alert('FXS ' + line + ' 的注册周期必须在 60~86400 秒之间');
+			return false;
+		}
+	}
+	if (!active) {
+		alert('至少启用一路语音账号');
+		return false;
+	}
+	return confirm('保存后将重载 VOICE 业务并重启 SIP 客户端，当前通话可能中断，是否继续？');
+}
+
 function xponAuthCaptureInit(form) {
 	if (!form) return;
 	var fields = ['onu_low', 'pon_tech', 'auth_type_g', 'loid', 'loid_password', 'def_sn', 'sn',
@@ -102,7 +159,7 @@ function xponAuthCheck(form) {
 		return false;
 	}
 	if (!epon && !/^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$/.test(snv)) {
-		alert('PON SN 必须是 12 字符：前 4 位厂商代码 + 后 8 位十六进制序列号（如 AXON10503407）');
+		alert('PON SN 必须是 12 字符：前 4 位厂商代码 + 后 8 位十六进制序列号（如 TEST1234ABCD）');
 		return false;
 	}
 	if (form.equipment_id.value.trim() && !/^[\x20-\x7E]{1,24}$/.test(form.equipment_id.value.trim())) {
@@ -222,79 +279,6 @@ function xponMulticastControl(form, changed) {
 	var proxy = form.elements.proxy;
 	if (changed === 'proxy' && proxy.checked) snooping.checked = true;
 	if (changed === 'snooping' && !snooping.checked) proxy.checked = false;
-}
-
-// 模式页：预览组合出的 onu_type；重启前二次确认
-var xponModeInit = null;
-function xponModeCaptureInit(form) {
-	if (!form) return;
-	var el = form.elements['onu_low'];
-	xponModeInit = el ? el.value : null;
-}
-function xponModeChanged(form) {
-	var el = form.elements['onu_low'];
-	return !!el && xponModeInit !== null && el.value !== xponModeInit;
-}
-
-function xponModePreview() {
-	var sel = document.getElementById('onu_low');
-	var p = document.getElementById('onu-type-preview');
-	if (!sel || !p) return;
-	var o = sel.options[sel.selectedIndex];
-	if (o) p.textContent = o.getAttribute('data-hex');
-}
-
-function xponModeCheck(form) {
-	var sel = form.onu_low;
-	var o = sel.options[sel.selectedIndex];
-	var hex = (o && o.getAttribute('data-hex')) || '';
-	if (!hex || !/^[0-9a-fA-F]{2}$/.test(hex)) {
-		alert('请选择 SFU 或 HGU 形态');
-		return false;
-	}
-	var reboot = form.apply.value === 'reboot';
-	if (xponModeChanged(form) || reboot) {
-		return confirm('将写入 onu_type=' + hex + '（' + (o ? o.text : '') + '）' +
-			(reboot ? '并立即重启' : '（重启后生效）') + '。\n\n' +
-			'PON 技术来自“认证 → PON 模式”；确保与 OLT 端口能力一致，否则可能无法注册（O5）。\n' +
-			'恢复方法：U-Boot 提示符 setenv onu_type 62; saveenv; reset。\n\n' +
-			(reboot ? '确认重启？' : '确认写入？'));
-	}
-	return true;
-}
-
-// 模式页：PON VLAN 接口（pon.<VID> 802.1q）添加/删除校验与确认
-function xponPonVlanCheck(form) {
-	var vid = parseInt(form.ponvlan_vid.value, 10);
-	if (!(vid >= 1 && vid <= 4094)) {
-		alert('VLAN ID 需在 1~4094 之间');
-		return false;
-	}
-	if (form.ponvlan_op.value === 'del') {
-		return confirm('删除 pon.' + vid + ' 802.1q 接口？' +
-			'\n将同时删除 network 里的 wan_vlan 持久化段（否则重启后会重建）。' +
-			'\n正在使用该接口拨号的业务会中断。');
-	}
-	var pbit = form.ponvlan_pbit.value;
-	if (pbit && !/^[0-7]$/.test(pbit)) {
-		alert('Pbit 需为 0~7 的整数');
-		return false;
-	}
-	var mv = (form.ponvlan_mvids && form.ponvlan_mvids.value || '').replace(/，/g, ',').trim();
-	if (mv) {
-		var parts = mv.split(',');
-		for (var i = 0; i < parts.length; i++) {
-			var m = parseInt(parts[i], 10);
-			if (!(m >= 1 && m <= 4094)) {
-				alert('组播 VLAN 需为 1~4094 的整数，多个用逗号分隔');
-				return false;
-			}
-		}
-	}
-	return confirm('创建 pon.' + vid + ' 802.1q 接口（Pbit=' + (pbit || '0') + '）？' +
-		'\n将自动写入 network wan_vlan 段（重启后自动重建）。' +
-		(mv ? '\n组播 VLAN：' + mv + '（mvlan add 登记）' : '') +
-		'\n前提：PON 侧 GEM 通路已就绪（OLT 已下发通配规则），否则拨号会 PADO 超时。');
 }
 
 // 状态页：每 10 秒拉取只读状态（JSON：summary 卡片 + 单块可折叠日志）

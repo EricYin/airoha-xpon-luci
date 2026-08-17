@@ -1,0 +1,121 @@
+<%+header%>
+<%
+local function esc(s)
+	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
+end
+local function field_name(line, name)
+	return "line" .. tostring(line) .. "_" .. name
+end
+%>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js?v=20260817-voice2"></script>
+
+<h2 name="content">PON设置 — 语音 Voice</h2>
+<br />
+
+<% if saved then %>
+	<div class="alert-message">两路语音参数已保存，VOICE 业务已重载，sipclient 正在重新读取配置。</div>
+<% end %>
+<% if err then %>
+	<div class="alert-message error">保存被拒绝：<b><%=esc(err)%></b> 字段格式不合法或配置文件不可写。</div>
+<% end %>
+
+<div class="alert-message">
+	SDK 启动脚本会读取 <code>/proc/fxs/fxsNum</code>，并按 FXS/FXO 总数设置最大语音线路和账号数。
+	当前页面按 MTK DSP 双 FXS 设计，检测到 <b><%=esc(v.line_count)%></b> 路，支持分别配置 FXS 1 和 FXS 2。
+	语音 VLAN：<b><%=esc(v.vlan ~= "" and v.vlan or "未配置")%></b>。
+</div>
+
+<form class="cbi-map" method="post" action="save" onsubmit="return xponVoiceCheck(this)" id="voiceform">
+	<input type="hidden" name="token" value="<%=token%>" />
+	<input type="hidden" name="page" value="voice" />
+
+<% for line = 1, 2 do
+	local a = v.lines[line]
+%>
+	<fieldset class="cbi-section xpon-voice-line">
+		<legend>FXS <%=line%> 语音账号</legend>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'enable')%>">线路注册</label>
+			<div class="cbi-value-field">
+				<select id="<%=field_name(line, 'enable')%>" name="<%=field_name(line, 'enable')%>" class="cbi-input-select">
+					<option value="1"<% if a.enable == "1" then %> selected="selected"<% end %>>启用</option>
+					<option value="0"<% if a.enable ~= "1" then %> selected="selected"<% end %>>禁用</option>
+				</select>
+				<div class="cbi-value-description"><% if line == 2 then %>对应 SDK 的 <code>VoIPLine2Enable</code>；设备为双 FXS 时启用。<% else %>线路 1 兼容旧配置 <code>xpon.voice_auth</code>。<% end %></div>
+			</div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'registrar')%>">注册服务器</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'registrar')%>" name="<%=field_name(line, 'registrar')%>" class="cbi-input-text" maxlength="255" value="<%=esc(a.registrar)%>" placeholder="sip.example.com 或 192.0.2.10" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'proxy')%>">SIP 代理</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'proxy')%>" name="<%=field_name(line, 'proxy')%>" class="cbi-input-text" maxlength="255" value="<%=esc(a.proxy)%>" placeholder="可留空，使用注册服务器" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'domain')%>">SIP 域</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'domain')%>" name="<%=field_name(line, 'domain')%>" class="cbi-input-text" maxlength="255" value="<%=esc(a.domain)%>" placeholder="可留空，使用注册服务器" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'outbound_proxy')%>">出站代理</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'outbound_proxy')%>" name="<%=field_name(line, 'outbound_proxy')%>" class="cbi-input-text" maxlength="255" value="<%=esc(a.outbound_proxy)%>" placeholder="可选，host:port" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'username')%>">SIP 用户名</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'username')%>" name="<%=field_name(line, 'username')%>" class="cbi-input-text" maxlength="128" value="<%=esc(a.username)%>" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'auth_username')%>">认证用户名</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'auth_username')%>" name="<%=field_name(line, 'auth_username')%>" class="cbi-input-text" maxlength="128" value="<%=esc(a.auth_username)%>" placeholder="可留空，使用 SIP 用户名" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'password')%>">认证密码</label>
+			<div class="cbi-value-field">
+				<input id="<%=field_name(line, 'password')%>" name="<%=field_name(line, 'password')%>" type="password" class="cbi-input-text" maxlength="128" autocomplete="new-password" placeholder="<%=a.password_set and '已配置（留空保持原值）' or '请输入 SIP 密码'%>" />
+				<div class="cbi-value-description"><%=a.password_set and "当前密码已配置，不在页面显示；留空表示保持原密码。" or "当前尚未配置密码。"%></div>
+			</div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'display_name')%>">显示名称</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'display_name')%>" name="<%=field_name(line, 'display_name')%>" class="cbi-input-text" maxlength="64" value="<%=esc(a.display_name)%>" placeholder="可选，如家庭电话 <%=line%>" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'transport')%>">传输协议</label>
+			<div class="cbi-value-field">
+				<select id="<%=field_name(line, 'transport')%>" name="<%=field_name(line, 'transport')%>" class="cbi-input-select">
+					<option value="udp"<% if a.transport == "udp" then %> selected="selected"<% end %>>UDP</option>
+					<option value="tcp"<% if a.transport == "tcp" then %> selected="selected"<% end %>>TCP</option>
+					<option value="tls"<% if a.transport == "tls" then %> selected="selected"<% end %>>TLS</option>
+				</select>
+			</div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'port')%>">SIP 端口</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'port')%>" name="<%=field_name(line, 'port')%>" type="number" min="1" max="65535" class="cbi-input-text" value="<%=esc(a.port)%>" /></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="<%=field_name(line, 'expires')%>">注册周期</label>
+			<div class="cbi-value-field"><input id="<%=field_name(line, 'expires')%>" name="<%=field_name(line, 'expires')%>" type="number" min="60" max="86400" class="cbi-input-text" value="<%=esc(a.expires)%>" /><div class="cbi-value-description">单位：秒，范围 60~86400。</div></div>
+		</div>
+	</fieldset>
+<% end %>
+
+	<div class="cbi-page-actions">
+		<input type="submit" class="cbi-button cbi-button-apply" value="保存并应用" />
+		<input type="reset" class="cbi-button cbi-button-reset" value="重置表单" />
+	</div>
+</form>
+
+<fieldset class="cbi-section">
+	<legend>运行状态</legend>
+	<div class="cbi-value">
+		<label class="cbi-value-title">sipclient</label>
+		<div class="cbi-value-field">
+			<span class="cbi-input-text"><%=v.running and "运行中" or "未检测到进程"%></span>
+			<div class="cbi-value-description">PID：<code><%=esc(v.pid ~= "" and v.pid or "—")%></code>。应用日志：<code>/tmp/xpon-voice-apply.log</code>。</div>
+		</div>
+	</div>
+</fieldset>
+
+<script type="text/javascript">xponVoiceCaptureInit(document.getElementById('voiceform'));</script>
+<%+footer%>

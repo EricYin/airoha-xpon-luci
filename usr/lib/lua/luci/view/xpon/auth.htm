@@ -132,7 +132,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-loid">
 			<label class="cbi-value-title" for="loid">LOID</label>
 			<div class="cbi-value-field">
-				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 H060161032" />
+				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 LOID_EXAMPLE" />
 				<div class="cbi-value-description">≤24 字节，运营商提供。
 					<span class="xpon-gpon-auth">GPON/XGPON/XGSPON：OLT 经 OMCI 校验。</span>
 					<span class="xpon-epon-auth">EPON/XEPON：经 OAM 扩展透传（loid0），多数运营商（如北京联通）不校验，保留占位值即可。</span>
@@ -196,7 +196,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-gpon-auth">
 			<label class="cbi-value-title" for="sn">PON SN（含 Vendor ID）</label>
 			<div class="cbi-value-field">
-				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 AXON10503407" pattern="[A-Za-z0-9]{4}[0-9A-Fa-f]{8}" />
+				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 TEST1234ABCD" pattern="[A-Za-z0-9]{4}[0-9A-Fa-f]{8}" />
 				<div class="cbi-value-description">完整 12 字符：前 4 位为 PON Vendor ID，后 8 位为十六进制序列号。保存时后台自动拆分，并分别调用 SDK 写入 <code>vendorId</code> 和 <code>sn</code>。
 					<span class="xpon-epon-auth">EPON 模式：本字段仅存配置、不随 OAM 下发（SN 认证属 GPON OMCI 范畴），EPON 身份以 PON MAC / OUI 为准。</span><br />
 					当前系统生效：<code><%=esc(rt.sn ~= "" and rt.sn or "（空）")%></code>；解析 Vendor ID：<code><%=esc(rt.vendor_id ~= "" and rt.vendor_id or "（空）")%></code></div>
