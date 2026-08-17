@@ -7,8 +7,9 @@ var xponVoiceInit = {};
 function xponVoiceCaptureInit(form) {
 	if (!form) return;
 	[1, 2].forEach(function (line) {
-		['enable', 'registrar', 'proxy', 'domain', 'outbound_proxy', 'username',
-			'auth_username', 'password', 'display_name', 'transport', 'port', 'expires']
+		['enable', 'registrar', 'proxy', 'domain', 'outbound_proxy', 'uri',
+			'register_username', 'username', 'auth_username', 'password', 'display_name',
+			'transport', 'port', 'expires']
 			.forEach(function (id) {
 				var name = 'line' + line + '_' + id;
 				var el = form.elements[name];
@@ -38,10 +39,11 @@ function xponVoiceCheck(form) {
 		active = true;
 		if (!host(prefix + 'registrar', true) || !host(prefix + 'proxy', false) ||
 			!host(prefix + 'domain', false) || !host(prefix + 'outbound_proxy', false)) return false;
-		if (!form.elements[prefix + 'username'].value.trim()) {
-			alert('请填写 FXS ' + line + ' 的 SIP 用户名');
-			return false;
-		}
+			if (!form.elements[prefix + 'username'].value.trim() &&
+				!form.elements[prefix + 'register_username'].value.trim()) {
+				alert('请填写 FXS ' + line + ' 的注册用户名');
+				return false;
+			}
 		var port = parseInt(form.elements[prefix + 'port'].value, 10);
 		if (!(port >= 1 && port <= 65535)) {
 			alert('FXS ' + line + ' 的 SIP 端口必须在 1~65535 之间');
@@ -53,18 +55,14 @@ function xponVoiceCheck(form) {
 			return false;
 		}
 	}
-	if (!active) {
-		alert('至少启用一路语音账号');
-		return false;
-	}
-	return confirm('保存后将重载 VOICE 业务并重启 SIP 客户端，当前通话可能中断，是否继续？');
+	return confirm(active ? '保存后将重载 VOICE 业务并重启 SIP 客户端，当前通话可能中断，是否继续？' : '保存后将停止 SIP 客户端并关闭语音注册，是否继续？');
 }
 
 function xponAuthCaptureInit(form) {
 	if (!form) return;
 	var fields = ['onu_low', 'pon_tech', 'auth_type_g', 'loid', 'loid_password', 'def_sn', 'sn',
 		'xpon_sn_auth_type', 'sn_password', 'reg_id', 'equipment_id', 'onu_version',
-		'omcc_version', 'omci_spec_ver', 'pon_mac', 'epon_oui', 'epon_ctc_oui',
+		'omcc_version', 'omci_spec_ver', 'epon_pon_mac', 'gpon_pon_mac', 'pon_mac', 'epon_oui', 'epon_ctc_oui',
 		'epon_ven_info', 'epon_onu_vendor_id', 'epon_serial'];
 	fields.forEach(function (id) {
 		var el = form.elements[id];
@@ -107,7 +105,7 @@ function xponAuthToggle() {
 }
 
 function xponDeriveEponSerial() {
-	var macInput = document.getElementById('pon_mac');
+	var macInput = document.getElementById('epon_pon_mac') || document.getElementById('pon_mac');
 	var serialInput = document.getElementById('epon_serial');
 	var mac = macInput ? macInput.value.trim() : '';
 	if (!serialInput || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
@@ -174,11 +172,18 @@ function xponAuthCheck(form) {
 			return false;
 		}
 	}
-	var enteredMac = form.pon_mac.value.trim();
-	var effectiveMac = enteredMac || form.pon_mac.getAttribute('data-default') || '';
+	var eponMac = form.epon_pon_mac ? form.epon_pon_mac.value.trim() : (form.pon_mac ? form.pon_mac.value.trim() : '');
+	var gponMac = form.gpon_pon_mac ? form.gpon_pon_mac.value.trim() : (form.pon_mac ? form.pon_mac.value.trim() : '');
+	var enteredMac = epon ? eponMac : gponMac;
+	var macDefaultEl = epon ? form.epon_pon_mac : form.gpon_pon_mac;
+	var effectiveMac = enteredMac || (macDefaultEl && macDefaultEl.getAttribute('data-default')) || '';
 	var macPattern = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
-	if (enteredMac && !macPattern.test(enteredMac)) {
-		alert('请填写有效 PON MAC');
+	if (eponMac && !macPattern.test(eponMac)) {
+		alert('请填写有效 EPON 注册 MAC');
+		return false;
+	}
+	if (gponMac && !macPattern.test(gponMac)) {
+		alert('请填写有效 GPON 业务接口 MAC');
 		return false;
 	}
 	if (epon && !macPattern.test(effectiveMac)) {
@@ -247,16 +252,17 @@ function xponAuthLiveCheck() {
 }
 
 function xponServicesCheck(form) {
-	var seen = {}, ports = {}, rows = document.querySelectorAll('.pon-vlan-row');
+	var ports = {}, rows = document.querySelectorAll('.pon-vlan-row');
 	function val(idx, name) { var e=form.elements['vlan_'+idx+'_'+name]; return e ? e.value.trim() : ''; }
 	function ipv4(s) { if (!s) return true; var p=s.split('.'); return p.length===4 && p.every(function(x){return /^\d{1,3}$/.test(x)&&+x<=255;}); }
 	for (var i = 0; i < rows.length; i++) {
 		var idx = rows[i].getAttribute('data-index');
 		if (form.elements['vlan_' + idx + '_deleted'].value === '1') continue;
+		var access = val(idx, 'access_mode') === 'untagged' ? 'untagged' : 'tagged';
 		var vid = parseInt(val(idx,'id'), 10), mtu=parseInt(val(idx,'mtu'),10);
-		if (!(vid >= 1 && vid <= 4094)) { alert('VLAN ID 必须在 1~4094 之间'); return false; }
-		if (seen[vid]) { alert('相同 VLAN ID 绝对禁止保存'); return false; }
-		seen[vid] = true;
+		if (access === 'tagged') {
+			if (!(vid >= 1 && vid <= 4094)) { alert('tag 业务的 VLAN ID 必须在 1~4094 之间'); return false; }
+		}
 		if (!(mtu>=576&&mtu<=2000)) { alert('MTU 必须在 576~2000 之间'); return false; }
 		var mode=val(idx,'mode'), proto=val(idx,'proto'), port=val(idx,'lan_port');
 		if (mode==='bridged' && proto!=='none') { alert('桥接业务的协议必须选择“无（桥接）”'); return false; }
@@ -265,13 +271,13 @@ function xponServicesCheck(form) {
 		if (proto==='static' && (!val(idx,'ipaddr')||!val(idx,'netmask'))) { alert('静态 IPv4 必须填写地址和子网掩码'); return false; }
 		for (var j=0,names=['ipaddr','netmask','gateway','dns1','dns2'];j<names.length;j++) if(!ipv4(val(idx,names[j]))){alert('IPv4 地址格式错误：'+val(idx,names[j]));return false;}
 		if (port!=='none') { if(mode!=='bridged'){alert('LAN/STB 端口只能绑定到桥接业务');return false;} if(ports[port]){alert(port.toUpperCase()+' 已被其他业务绑定');return false;} ports[port]=true; }
-		var mv=val(idx,'mcast_vlan'); if(mv && (val(idx,'service_type')!=='iptv' || +mv<1 || +mv>4094)){alert('组播 VLAN 只能关联 IPTV 业务，范围 1~4094');return false;}
+		var mv=val(idx,'mcast_vlan'); if(mv && (access!=='tagged' || val(idx,'service_type')!=='iptv' || +mv<1 || +mv>4094)){alert('组播 VLAN 只能关联 tag IPTV 业务，范围 1~4094');return false;}
 	}
 	return confirm('将重建所有 xpon_managed=1 的业务配置并重载网络。未受管配置不会修改。\n绑定 LAN/STB 端口可能使该端口暂时断连，是否继续？');
 }
 function xponVlanDelete(btn){if(!confirm('删除该受管业务及其 device/interface 配置，是否继续？'))return;var r=btn.closest('.pon-vlan-row'),i=r.dataset.index;r.querySelector('[name="vlan_'+i+'_deleted"]').value='1';r.style.display='none';}
 function xponVlanAdd(){var c=document.getElementById('vlan_count'),n=parseInt(c.value,10)||0,t=document.getElementById('pon-vlan-template').innerHTML.replace(/__N__/g,n);document.getElementById('pon-vlan-body').insertAdjacentHTML('beforeend',t);c.value=n+1;xponServiceFields(document.querySelector('.pon-vlan-row[data-index="'+n+'"] select[name$="_mode"]'));}
-function xponServiceFields(el){var row=el&&el.closest('.pon-vlan-row');if(!row)return;var mode=row.querySelector('select[name$="_mode"]').value,proto=row.querySelector('select[name$="_proto"]').value,type=row.querySelector('select[name$="_service_type"]').value;if(mode==='bridged'){row.querySelector('select[name$="_proto"]').value='none';proto='none';}else if(proto==='none'){row.querySelector('select[name$="_proto"]').value='dhcp';proto='dhcp';}row.querySelectorAll('[data-proto]').forEach(function(x){x.style.display=x.getAttribute('data-proto')===proto?'':'none';});row.querySelectorAll('[data-routed]').forEach(function(x){x.style.display=mode==='routed'?'':'none';});row.querySelectorAll('[data-iptv]').forEach(function(x){x.style.display=type==='iptv'?'':'none';});}
+function xponServiceFields(el){var row=el&&el.closest('.pon-vlan-row');if(!row)return;var access=(row.querySelector('select[name$="_access_mode"]')||{}).value==='untagged'?'untagged':'tagged',mode=row.querySelector('select[name$="_mode"]').value,proto=row.querySelector('select[name$="_proto"]').value,type=row.querySelector('select[name$="_service_type"]').value;if(mode==='bridged'){row.querySelector('select[name$="_proto"]').value='none';proto='none';}else if(proto==='none'){row.querySelector('select[name$="_proto"]').value='dhcp';proto='dhcp';}row.querySelectorAll('[data-access]').forEach(function(x){var show=x.getAttribute('data-access')===access;x.style.display=show?'':'none';x.querySelectorAll('input,select').forEach(function(e){e.disabled=!show;if(e.name&&e.name.match(/_id$/))e.required=show;});});if(access==='untagged'){var mv=row.querySelector('input[name$="_mcast_vlan"]');if(mv)mv.value='';}row.querySelectorAll('[data-proto]').forEach(function(x){x.style.display=x.getAttribute('data-proto')===proto?'':'none';});row.querySelectorAll('[data-routed]').forEach(function(x){x.style.display=mode==='routed'?'':'none';});row.querySelectorAll('[data-iptv]').forEach(function(x){x.style.display=(access==='tagged'&&type==='iptv')?'':'none';});}
 function xponMulticastToggle(cb){document.getElementById('multicast-fields').style.display=cb.checked?'':'none';}
 function xponMulticastControl(form, changed) {
 	if (!form) return;

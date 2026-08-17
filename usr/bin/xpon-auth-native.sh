@@ -139,8 +139,15 @@ esac
 loid=$(get loid); loidpw=$(get loid_password); sn=$(get sn)
 [ -n "$sn" ] || sn=$(uci -q get network.xpon_auth.sn)
 equipment=$(identity_get equipment_id); onuver=$(identity_get onu_version); omcc=$(identity_get omcc_version)
-spec=$(get omci_spec_ver); pmac=$(get pon_mac); regid=$(get sn_regid_password)
+spec=$(get omci_spec_ver)
+if [ "$mode" = "EPON" ]; then
+	pmac=$(get epon_pon_mac)
+else
+	pmac=$(get gpon_pon_mac)
+fi
+[ -n "$pmac" ] || pmac=$(get pon_mac)
 [ -n "$pmac" ] || pmac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
+regid=$(get sn_regid_password)
 sn_type=$(get xpon_sn_auth_type); asciipw=$(get sn_ascii_password); hexpw=$(get sn_hex_password)
 epon_oui=$(get epon_oui); epon_ctc_oui=$(get epon_ctc_oui); epon_ven=$(get epon_ven_info)
 epon_onu_vendor=$(get epon_onu_vendor_id)

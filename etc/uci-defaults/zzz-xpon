@@ -26,6 +26,8 @@ config auth 'device'
 	option onu_version ''
 	option omcc_version ''
 	option pon_mac ''
+	option epon_pon_mac ''
+	option gpon_pon_mac ''
 	option auth_type_g 'LOID'
 	option loid ''
 	option loid_password ''
@@ -139,6 +141,8 @@ uci commit network
 #    旧包升级时补齐缺省键；用户经 LuCI 认证页保存后这些值会被覆盖为实际选择。
 uci -q get xpon.device >/dev/null || uci set xpon.device='auth'
 uci -q get xpon.device.pon_tech >/dev/null || uci set xpon.device.pon_tech="$(uci -q get network.xpon_auth.pon_tech)"
+uci -q get xpon.device.epon_pon_mac >/dev/null || uci set xpon.device.epon_pon_mac=''
+uci -q get xpon.device.gpon_pon_mac >/dev/null || uci set xpon.device.gpon_pon_mac=''
 uci -q get xpon.device.auth_type_g >/dev/null || uci set xpon.device.auth_type_g='LOID'
 factory_vendor=${factory_sn%????????}
 [ "${#factory_vendor}" -eq 4 ] || factory_vendor=

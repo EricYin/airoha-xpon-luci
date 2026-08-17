@@ -295,7 +295,12 @@ apply_mac() {
 	mode=$(uci_get network.xpon_auth.pon_mode)
 	[ "$mode" = EPON ] || mode=$(uci_get xpon.device.pon_mode)
 	[ "$mode" = EPON ] || mode=GPON
-	pmac=$(uci_get xpon.device.pon_mac)
+	if [ "$mode" = EPON ]; then
+		pmac=$(uci_get xpon.device.epon_pon_mac)
+	else
+		pmac=$(uci_get xpon.device.gpon_pon_mac)
+	fi
+	[ -n "$pmac" ] || pmac=$(uci_get xpon.device.pon_mac)
 	[ -n "$pmac" ] || pmac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
 	case "$pmac" in
 		[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) : ;;

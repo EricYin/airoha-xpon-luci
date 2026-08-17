@@ -7,6 +7,7 @@ local function esc(s)
 end
 %>
 <script type="text/javascript" src="<%=resource%>/view/xpon.js?v=<%=devstamp or "20260816-epon-onusn"%>"></script>
+<style>.xpon-required:after{content:" *";color:#d00000;font-weight:bold;}</style>
 
 <h2 name="content">PON设置 — 认证 Auth</h2>
 <br />
@@ -42,7 +43,7 @@ end
 				<div class="cbi-value-description">
 					HGU 支持 LAN 桥接、VEIP 与 IPTV 组播；SFU 用于纯桥接（不常用）。
 					保存时按下方 PON 模式组合写入系统变量，重启后生效。
-					当前启动：<code><%=esc(v.onu_type_run ~= "" and v.onu_type_run or "未知")%></code>；系统变量：<code><%=esc(v.onu_type_env ~= "" and v.onu_type_env or "未知")%></code>。
+					当前启动：<code><%=esc(v.onu_type_run ~= "" and v.onu_type_run or "未知")%></code>；下次启动：<code><%=esc(v.onu_type_env ~= "" and v.onu_type_env or "未知")%></code>。
 				</div>
 			</div>
 		</div>
@@ -52,7 +53,7 @@ end
 		<legend>PON 认证</legend>
 
 		<div class="cbi-value">
-			<label class="cbi-value-title" for="pon_tech">PON 模式</label>
+			<label class="cbi-value-title xpon-required" for="pon_tech">PON 模式</label>
 			<div class="cbi-value-field">
 				<select id="pon_tech" name="pon_tech" class="cbi-input-select" onchange="xponAuthToggle()">
 <%
@@ -67,7 +68,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title" for="auth_type_g">认证方式</label>
+			<label class="cbi-value-title xpon-required" for="auth_type_g">认证方式</label>
 			<div class="cbi-value-field">
 				<select id="auth_type_g" name="auth_type_g" class="cbi-input-select" onchange="xponAuthToggle()">
 					<option value="loid"<% if atg == "loid" then %> selected="selected"<% end %>>LOID（大多数：电信/联通）</option>
@@ -89,7 +90,17 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_oui">EPON OUI（必填，EPON 模式）</label>
+			<label class="cbi-value-title xpon-required" for="epon_pon_mac">EPON 注册 MAC（MPCP/LLID）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="epon_pon_mac" name="epon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.epon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
+				<div class="cbi-value-description">EPON SDK 通过 EPON ONU devMac / LLID MAC 注册，保存后会备份并同步 U-Boot <code>ethaddr</code>/<code>bootargs</code>，重启后作为 MPCP ONU 注册 MAC。</div>
+				<div class="cbi-value-description">已保存 EPON：<code><%=esc(v.epon_pon_mac_saved ~= "" and v.epon_pon_mac_saved or "（未保存，使用 DSD 默认/旧 pon_mac）")%></code>；本次启动 EPON 注册基准 MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code>；DSD 默认：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
+				<div class="cbi-value-description">注意：EPON 修改 <code>ethaddr</code> 后，下次启动还会联动改变 <code>eth0</code>、<code>br-lan</code>、<code>oam</code> 等基础接口地址。</div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title xpon-required" for="epon_oui">EPON OUI（必填，EPON 模式）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_oui" name="epon_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_oui%>" placeholder="089AC7" pattern="[0-9A-Fa-f]{6}" />
 				<div class="cbi-value-description">OAM 发现阶段上报的厂商标识（OUI，3 字节 hex），须与 PON MAC 前 3 字节一致（填写 MAC 自动提取）。当前 OAM 生效：<code><%=esc(rt.epon_oui ~= "" and rt.epon_oui or "（空）")%></code></div>
@@ -105,7 +116,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_ctc_oui">CTC OUI（EPON 必填）</label>
+			<label class="cbi-value-title xpon-required" for="epon_ctc_oui">CTC OUI（EPON 必填）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_ctc_oui" name="epon_ctc_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_ctc_oui%>" placeholder="111111" pattern="[0-9A-Fa-f]{6}" />
 				<div class="cbi-value-description">CTC OAM 扩展组织标识，与 ONU 的 EPON OUI 独立；中兴 OLT 抓包验证值为 <code>111111</code>。留空也按 <code>111111</code> 下发。当前 OAM 生效：<code><%=esc(rt.epon_ctc_oui ~= "" and rt.epon_ctc_oui or "（空）")%></code></div>
@@ -130,7 +141,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-loid">
-			<label class="cbi-value-title" for="loid">LOID</label>
+			<label class="cbi-value-title xpon-required" for="loid">LOID</label>
 			<div class="cbi-value-field">
 				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 LOID_EXAMPLE" />
 				<div class="cbi-value-description">≤24 字节，运营商提供。
@@ -143,11 +154,13 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-loid">
 			<label class="cbi-value-title" for="loid_password">LOID 密码</label>
 			<div class="cbi-value-field">
-				<input type="password" id="loid_password" name="loid_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持当前选择" />
-				<label style="display:block;margin-top:4px;">
-					<input type="checkbox" id="loid_password_clear" name="loid_password_clear" value="1"<% if not v.loid_password_set then %> checked="checked"<% end %> />
-					使用空 LOID 密码（LOID-only默认值）
-				</label>
+				<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+					<input type="password" id="loid_password" name="loid_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持当前选择" />
+					<label style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
+						<input type="checkbox" id="loid_password_clear" name="loid_password_clear" value="1"<% if not v.loid_password_set then %> checked="checked"<% end %> />
+						使用空 LOID 密码（LOID-only默认值）
+					</label>
+				</div>
 				<div class="cbi-value-description">多数省份为空；LOID 密码 ≠ GPON PWD，别搞混了。<br />
 					当前已配置：<code><%=v.loid_password_set and "已设置（不显示明文）" or "（空）"%></code></div>
 			</div>
@@ -175,7 +188,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-regid">
-			<label class="cbi-value-title" for="reg_id">REG_ID（Password认证码）</label>
+			<label class="cbi-value-title xpon-required" for="reg_id">REG_ID（Password认证码）</label>
 			<div class="cbi-value-field">
 				<input type="password" id="reg_id" name="reg_id" class="cbi-input-text" autocomplete="new-password" maxlength="36" placeholder="留空 = 保持原值" />
 				<div class="cbi-value-description">仅移动 Password 认证需要，只填这一个（≤36 位），旧猫认证页「密码/REG_ID」直接抄。<br />
@@ -186,7 +199,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 
 	<fieldset class="cbi-section">
 		<legend>厂商信息</legend>
-		<div class="alert-message error xpon-gpon-auth">
+		<div class="cbi-value-description xpon-gpon-auth">
 			<b>ONU 身份信息修改风险提示：</b>以下用于修改 ONU 身份信息，以达到模拟原 ONU 的目的。错误值可能导致 OLT 拒绝注册，修改前请记录当前生效值。
 		</div>
 		<div class="alert-message xpon-epon-auth">
@@ -194,7 +207,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title" for="sn">PON SN（含 Vendor ID）</label>
+			<label class="cbi-value-title xpon-required" for="sn">PON SN（含 Vendor ID）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 TEST1234ABCD" pattern="[A-Za-z0-9]{4}[0-9A-Fa-f]{8}" />
 				<div class="cbi-value-description">完整 12 字符：前 4 位为 PON Vendor ID，后 8 位为十六进制序列号。保存时后台自动拆分，并分别写入 <code>vendorId</code> 和 <code>GPON SN</code>。
@@ -209,6 +222,15 @@ for _, t in ipairs(v.pon_techs or {}) do
 				<input type="text" id="equipment_id" name="equipment_id" class="cbi-input-text" maxlength="24" value="<%=v.equipment_id%>" placeholder="留空 = 保持原值" pattern="[\x20-\x7E]{0,24}" />
 				<div class="cbi-value-description">GPON ONU2-G 定义的设备型号/标识，可选；非空时允许 1~24 个可打印 ASCII，通过 <code>omcicfgCmd set equipmentId</code> 写入。<br />
 					当前系统生效：<code><%=esc(rt.equipment_id ~= "" and rt.equipment_id or "（空）")%></code></div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-gpon-auth">
+			<label class="cbi-value-title" for="gpon_pon_mac">GPON/XGPON/XGSPON 业务接口 MAC</label>
+			<div class="cbi-value-field">
+				<input type="text" id="gpon_pon_mac" name="gpon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.gpon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
+				<div class="cbi-value-description">GPON 系列的 PLOAM/OMCI 注册使用 SN/Registration ID；该值只用于 <code>pon</code> 业务侧 Ethernet 接口，不写 U-Boot <code>ethaddr</code>。</div>
+				<div class="cbi-value-description">已保存 GPON：<code><%=esc(v.gpon_pon_mac_saved ~= "" and v.gpon_pon_mac_saved or "（未保存，使用 DSD 默认/旧 pon_mac）")%></code>；当前 <code>pon</code> 业务接口：<code><%=esc(rt.pon_mac ~= "" and rt.pon_mac or "（空）")%></code>；DSD 默认：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
 			</div>
 		</div>
 
@@ -243,17 +265,6 @@ for _, t in ipairs(v.pon_techs or {}) do
 					设备以 0~255 保存该字段；仅在OLT设备明确要求时填写，留空保持当前值。<br />
 					当前系统生效：<code><%=esc(rt.spec_ver ~= "" and rt.spec_ver or "（空/未下发）")%></code>
 				</div>
-			</div>
-		</div>
-
-		<div class="cbi-value">
-			<label class="cbi-value-title" for="pon_mac">PON MAC（EPON 必需）</label>
-			<div class="cbi-value-field">
-				<input type="text" id="pon_mac" name="pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">输入框优先显示已保存配置，防止启动重放期间被临时运行值覆盖；未保存过时，EPON 读取驱动的 ONU/LLID 注册基准 MAC，GPON/XGPON/XGSPON 读取 <code>pon</code> 业务接口 MAC。手动清空后保存 = 取 dsd wan_mac。</div>
-				<div class="cbi-value-description">GPON 系列的 PLOAM/OMCI 注册使用 SN/Registration ID，不使用 Ethernet MAC；EPON 保存时会备份并同步 U-Boot <code>ethaddr</code>/<code>bootargs</code>，重启后作为 MPCP ONU 注册 MAC。</div>
-				<div class="cbi-value-description">注意：EPON 修改 <code>ethaddr</code> 后，下次启动还会联动改变 <code>eth0</code>、<code>br-lan</code>、<code>oam</code> 等基础接口地址。</div>
-				<div class="cbi-value-description">已保存配置：<code><%=esc(v.pon_mac_saved ~= "" and v.pon_mac_saved or "（未保存，使用 DSD 默认）")%></code>；当前 <code>pon</code> 业务接口：<code><%=esc(rt.pon_mac ~= "" and rt.pon_mac or "（空）")%></code>；本次启动 EPON 注册基准 MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code><% if (v.pon_mode or "") ~= "EPON" then %>（当前非 EPON，仅表示切换后驱动会采用的启动值）<% end %>；DSD 默认：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
 			</div>
 		</div>
 

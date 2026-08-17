@@ -548,19 +548,19 @@ function auth_values()
 	end
 	if v.epon_serial == "" then v.epon_serial = rt.epon_serial end
 	local dsd_mac = dsd_wan_mac()
-	local saved_pon_mac = runtime_mac(uget("xpon", "device", "pon_mac") or "")
-	-- 输入框是持久配置，已保存时必须优先回显，避免启动重放尚未完成时
-	-- 被临时运行值覆盖，看起来像“重启后丢失”。实际运行值在下方单独展示。
-	if saved_pon_mac ~= "" then
-		v.pon_mac = saved_pon_mac
-	elseif is_epon then
-		v.pon_mac = rt.epon_mac ~= "" and rt.epon_mac
-			or (rt.pon_mac ~= "" and rt.pon_mac or dsd_mac)
-	else
-		v.pon_mac = rt.pon_mac ~= "" and rt.pon_mac
-			or dsd_mac
-	end
-	v.pon_mac_saved = saved_pon_mac
+	local legacy_pon_mac = runtime_mac(uget("xpon", "device", "pon_mac") or "")
+	local saved_epon_pon_mac = runtime_mac(uget("xpon", "device", "epon_pon_mac") or "")
+	local saved_gpon_pon_mac = runtime_mac(uget("xpon", "device", "gpon_pon_mac") or "")
+	-- SDK/固件路径不同：EPON 使用 MPCP ONU 注册 MAC，GPON 系列只设置 pon 业务接口 MAC。
+	-- 旧版 pon_mac 仅作为升级兜底，不再让两种模式共用同一个持久值。
+	v.epon_pon_mac = saved_epon_pon_mac ~= "" and saved_epon_pon_mac
+		or (legacy_pon_mac ~= "" and legacy_pon_mac or (rt.epon_mac ~= "" and rt.epon_mac or dsd_mac))
+	v.gpon_pon_mac = saved_gpon_pon_mac ~= "" and saved_gpon_pon_mac
+		or (legacy_pon_mac ~= "" and legacy_pon_mac or (rt.pon_mac ~= "" and rt.pon_mac or dsd_mac))
+	v.pon_mac = is_epon and v.epon_pon_mac or v.gpon_pon_mac
+	v.epon_pon_mac_saved = saved_epon_pon_mac
+	v.gpon_pon_mac_saved = saved_gpon_pon_mac
+	v.pon_mac_saved = legacy_pon_mac
 	if v.loid == "" and rt.loid ~= "" then v.loid = rt.loid end
 	if (v.sn == "" or v.sn == "NoNumber") and rt.sn ~= "" then v.sn = rt.sn end
 	v.pon_mac_default = dsd_mac
@@ -580,27 +580,32 @@ function auth_values()
 end
 
 local function service_values()
-	local rows, owners = {}, {}
+	local rows, owners, untag_owner = {}, {}, nil
 	local uc = uci.cursor()
 	uc:foreach("network", "interface", function(s)
-		local vid = (s.device or ""):match("^pon%.(%d+)$")
-		if vid then owners[vid] = s end
+		local dev = s.device or ""
+		local vid = dev:match("^pon%.(%d+)$")
+		if vid then owners[vid] = s elseif dev == "pon" then untag_owner = s end
 	end)
 	uc:foreach("network", "xpon_service", function(s)
+		local access_mode = s.access_mode == "untagged" and "untagged" or "tagged"
 		local vid = tonumber(s.vlan_id or "")
-		if s.xpon_managed == "1" and vid and vid >= 1 and vid <= 4094 then
+		if s.xpon_managed == "1" and (access_mode == "untagged" or (vid and vid >= 1 and vid <= 4094)) then
 			local key = s.service_key or s[".name"]
-			if #key > 12 or not key:match("^[A-Za-z0-9_]+$") then key = "svc_" .. tostring(vid) end
-			local owner = owners[tostring(vid)]
+			if #key > 12 or not key:match("^[A-Za-z0-9_]+$") then key = "svc" .. tostring(#rows + 1) end
+			local owner = access_mode == "untagged" and untag_owner or owners[tostring(vid)]
 			local iface = s.interface or (owner and owner[".name"]) or ("xpon_" .. key)
 			local raw = sh("ubus call network.interface." .. iface .. " status 2>/dev/null")
 			local up = raw:match('"up"%s*:%s*true') ~= nil
 			local pending = raw:match('"pending"%s*:%s*true') ~= nil
 			local uptime = raw:match('"uptime"%s*:%s*(%d+)') or ""
 			local address = raw:match('"address"%s*:%s*"([0-9%.:]+)"') or ""
+			local vlan_id = access_mode == "untagged" and "" or tostring(vid)
+			local ifdev = access_mode == "untagged" and "pon" or ("pon." .. vlan_id)
 			local row = {
-				key=key, section=s[".name"], name=s.remark or ("VLAN " .. vid),
-				vlan_id=tostring(vid), priority=s.priority or "0", remark=s.remark or "",
+				key=key, section=s[".name"], name="业务 " .. tostring(#rows + 1),
+				access_mode=access_mode, access_label=access_mode == "untagged" and "untag" or "tag", ifdev=ifdev,
+				vlan_id=vlan_id, priority=s.priority or "0", remark=s.remark or "",
 				enable=s.enable ~= "0" and "1" or "0", service_type=s.service_type or "internet",
 				mode=s.mode or s.payload or "routed", proto=s.proto or (owner and owner.proto) or "dhcp", mtu=s.mtu or (owner and owner.mtu) or "1500",
 				username=s.username or (owner and owner.username) or "", ipaddr=s.ipaddr or (owner and owner.ipaddr) or "", netmask=s.netmask or (owner and owner.netmask) or "",
@@ -614,7 +619,11 @@ local function service_values()
 			rows[#rows + 1] = row
 		end
 	end)
-	table.sort(rows, function(a,b) return tonumber(a.vlan_id) < tonumber(b.vlan_id) end)
+	table.sort(rows, function(a,b)
+		local av = a.access_mode == "untagged" and -1 or tonumber(a.vlan_id) or 0
+		local bv = b.access_mode == "untagged" and -1 or tonumber(b.vlan_id) or 0
+		return av < bv
+	end)
 	return rows
 end
 
@@ -624,14 +633,216 @@ end
 local voice_line_defaults = {
 	enable = "1", registrar = "", proxy = "", domain = "", username = "",
 	auth_username = "", password = "", display_name = "", transport = "udp",
-	port = "5060", expires = "3600", outbound_proxy = "",
+	port = "5060", expires = "3600", outbound_proxy = "", uri = "",
+	register_username = "",
 }
 
-local function voice_line_values(u, section, legacy)
+local voice_sdk_common_defs = {
+	{ section = "VoIPSysParam_Common", stype = "VoIPSysParam_Common", title = "系统与 SIP 栈", fields = {
+		{ key = "SC_SYS_CFG_MAX_CALL", label = "最大通话数", kind = "number", min = 1, max = 16, default = "4" },
+		{ key = "SC_SYS_CFG_MAX_ACCT", label = "最大账号数", kind = "number", min = 1, max = 8, default = "2" },
+		{ key = "SC_SYS_CFG_MAX_LINE", label = "最大线路数", kind = "number", min = 1, max = 8, default = "2" },
+		{ key = "SlicFXSNum", label = "FXS 数量", kind = "number", min = 0, max = 8, default = "2" },
+		{ key = "SlicFXONum", label = "FXO 数量", kind = "number", min = 0, max = 8, default = "0" },
+		{ key = "SC_SYS_SIP_T1_INTERVAL", label = "SIP T1 间隔(ms)", kind = "number", min = 100, max = 10000, default = "1000" },
+		{ key = "SC_SYS_SIP_TRANSPORT_TYPE", label = "SIP 传输类型", kind = "select", default = "0", options = { {"0", "UDP"}, {"1", "TCP"}, {"2", "TLS"} } },
+		{ key = "SC_SYS_SIP_SUPPORTED", label = "SIP Supported", default = "100rel,timer" },
+		{ key = "SC_SYS_SIP_REREG_TIME", label = "重注册提前时间(s)", kind = "number", min = 0, max = 86400, default = "450" },
+		{ key = "SC_SYS_SPEED_UP_DIALING", label = "快速拨号", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SC_SYS_SPEED_UP_DIALING_STR", label = "快速拨号结束符", default = "#" },
+		{ key = "SC_SYS_VOICE_JB_TYPE", label = "抖动缓冲类型", kind = "select", default = "1", options = { {"0", "固定"}, {"1", "自适应"} } },
+		{ key = "SC_SYS_VOICE_JB_LEN", label = "抖动缓冲长度(ms)", kind = "number", min = 20, max = 1000, default = "200" },
+		{ key = "SC_MEDIA_CODEC_TELEVT_PT", label = "电话事件 PT", kind = "number", min = 0, max = 127, default = "101" },
+		{ key = "SC_MEDIA_CODEC_G726_16_PT", label = "G.726-16 PT", kind = "number", min = 0, max = 127, default = "96" },
+		{ key = "SC_MEDIA_CODEC_G726_40_PT", label = "G.726-40 PT", kind = "number", min = 0, max = 127, default = "99" },
+		{ key = "SC_MEDIA_CODEC_ILBC_PT", label = "iLBC PT", kind = "number", min = 0, max = 127, default = "104" },
+		{ key = "SC_MEDIA_CODEC_SINGLE_CODEC", label = "单 Codec 协商", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SC_EMERG_ENABLE", label = "紧急呼叫", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SC_EMERG_REGISTRATION", label = "紧急呼叫需注册", kind = "select", default = "1", options = { {"1", "是"}, {"0", "否"} } },
+		{ key = "SC_EMERG_NUM_GENERIC", label = "通用紧急号码", default = "112,911,119,110,120" },
+		{ key = "SC_EMERG_NUM_POLICE", label = "警务紧急号码", default = "112,119,911" },
+		{ key = "SC_EMERG_NUM_MEDICAL", label = "医疗紧急号码", default = "120,911" },
+		{ key = "SC_EMERG_NUM_FIRE", label = "火警紧急号码", default = "119,911" },
+		{ key = "SC_FAX_LEC_FORCE_OFF", label = "传真强制关闭 LEC", kind = "select", default = "1", options = { {"1", "是"}, {"0", "否"} } },
+		{ key = "SC_FAX_PASSTHRU_PCMU", label = "传真透传 PCMU", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "SC_FAX_ONLY_TIMER", label = "传真检测时间(s)", kind = "number", min = 0, max = 600, default = "5" },
+		{ key = "SC_FAX_REINV_RX", label = "接收传真 ReINVITE", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SC_FAX_T38_LEC_ON", label = "T.38 LEC", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "SC_FAX_T38_VERSION", label = "T.38 版本", kind = "number", min = 0, max = 3, default = "0" },
+		{ key = "SC_FAX_T38_MAXRATE", label = "T.38 最大速率", kind = "number", min = 0, max = 15, default = "5" },
+		{ key = "SC_FAX_T38_ECC_TYPE", label = "T.38 ECC 类型", kind = "number", min = 0, max = 3, default = "1" },
+		{ key = "SC_FAX_T38_RATE_MGNT", label = "T.38 速率管理", kind = "number", min = 0, max = 3, default = "2" },
+		{ key = "SC_FAX_T38_OPMODE", label = "T.38 工作模式", kind = "number", min = 0, max = 3, default = "0" },
+		{ key = "SC_FTR_SERVICE_ENABLE", label = "补充业务总开关", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SC_FTR_HF_AND_DIGIT_ENABLE", label = "拍叉+数字", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SC_FTR_HOLD_STR", label = "保持特征码", default = "*52#" },
+		{ key = "SC_FTR_HOLD_AND_ACCEPT_STR", label = "保持并接听", default = "*3#" },
+		{ key = "SC_FTR_HOLD_AND_RETRIEVE_STR", label = "保持并恢复", default = "*4#" },
+		{ key = "SC_FTR_RELEASE_AND_ACCEPT_STR", label = "释放并接听", default = "*1#" },
+		{ key = "SC_FTR_RELEASE_AND_RETRIEVE_STR", label = "释放并恢复", default = "*2#" },
+		{ key = "SC_FTR_CONF_DELETE_STR", label = "会议删除特征码", default = "#41#" },
+		{ key = "SC_FTR_RELEASE_HOLD_STR", label = "释放保持特征码", default = "*8#" },
+		{ key = "SC_FTR_REJECT_WAIT_STR", label = "拒接等待特征码", default = "*9#" },
+	} },
+	{ section = "VoIPBasic_Common", stype = "VoIPBasic_Common", title = "SIP 服务器", fields = {
+		{ key = "SIPProtocol", label = "SIP 协议", kind = "select", default = "SIP", options = { {"SIP", "SIP"} } },
+		{ key = "TelephoneEventPayloadType", label = "DTMF Payload Type", kind = "number", min = 0, max = 127, default = "101" },
+		{ key = "LocalSIPPort", label = "本地 SIP 端口", kind = "number", min = 1, max = 65535, default = "5065" },
+		{ key = "SIPProxyEnable", label = "SIP Proxy", kind = "select", default = "Yes", options = { {"Yes", "启用"}, {"No", "禁用"} } },
+		{ key = "SIPProxyAddr", label = "主用服务器地址", default = "0.0.0.0" },
+		{ key = "SIPProxyPort", label = "主用端口号", kind = "number", min = 1, max = 65535, default = "5060" },
+		{ key = "RegistrarServer", label = "Registrar/注册服务器地址", default = "0.0.0.0" },
+		{ key = "RegistrarServerPort", label = "Registrar/注册服务器端口", kind = "number", min = 1, max = 65535, default = "5060" },
+		{ key = "SBSIPProxyAddr", label = "备用服务器地址", default = "0.0.0.0" },
+		{ key = "SBSIPProxyPort", label = "备用端口号", kind = "number", min = 1, max = 65535, default = "5060" },
+		{ key = "SBRegistrarServer", label = "备用 Registrar 地址", default = "0.0.0.0" },
+		{ key = "SBRegistrarServerPort", label = "备用 Registrar 端口", kind = "number", min = 1, max = 65535, default = "5060" },
+		{ key = "SIPOutboundProxyEnable", label = "Outbound Proxy", kind = "select", default = "Yes", options = { {"Yes", "启用"}, {"No", "禁用"} } },
+		{ key = "SIPOutboundProxyAddr", label = "Outbound 服务器地址", default = "0.0.0.0" },
+		{ key = "SIPOutboundProxyPort", label = "Outbound 服务器端口号", kind = "number", min = 1, max = 65535, default = "5060" },
+		{ key = "SBOutboundProxyAddr", label = "备用 Outbound 服务器地址", default = "0.0.0.0" },
+		{ key = "SBOutboundProxyPort", label = "备用 Outbound 服务器端口号", kind = "number", min = 1, max = 65535, default = "5060" },
+		{ key = "ProxyIsOutbound", label = "Proxy 同时作为 Outbound", kind = "select", default = "0", options = { {"0", "否"}, {"1", "是"} } },
+		{ key = "SIPDSCPMark", label = "SIP DSCP", kind = "number", min = 0, max = 63, default = "26" },
+		{ key = "RTPDSCPMark", label = "RTP DSCP", kind = "number", min = 0, max = 63, default = "44" },
+		{ key = "SC_ACCT_SIP_SESSION_FLAG", label = "Session Timer", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SC_ACCT_SIP_SESSION_REFRESHER", label = "Session Refresher", kind = "number", min = 0, max = 2, default = "0" },
+		{ key = "SC_ACCT_SIP_SESSION_METHOD", label = "Session 刷新方法", kind = "number", min = 0, max = 2, default = "0" },
+		{ key = "SC_ACCT_SIP_SESSION_MIN_EXP", label = "Session 最小周期(s)", kind = "number", min = 0, max = 86400, default = "0" },
+		{ key = "SC_ACCT_SIP_SESSION_TIMER", label = "Session 周期(s)", kind = "number", min = 0, max = 86400, default = "0" },
+		{ key = "reg_max_retry", label = "注册最大重试", kind = "number", min = 0, max = 999, default = "10" },
+		{ key = "HeartbeatSwitch", label = "心跳开关", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "HeartbeatCycle", label = "心跳周期(s)", kind = "number", min = 1, max = 86400, default = "60" },
+		{ key = "VoIPLine2Enable", label = "第二路语音", kind = "select", default = "Yes", options = { {"Yes", "启用"}, {"No", "禁用"} } },
+	} },
+	{ section = "VoIPAdvanced_Common", stype = "VoIPAdvanced_Common", title = "高级 SIP/区域", fields = {
+		{ key = "RegistrationExpire", label = "注册有效期(s)", kind = "number", min = 60, max = 86400, default = "3600" },
+		{ key = "RegisterRetryInterval", label = "注册重试间隔(s)", kind = "number", min = 1, max = 3600, default = "60" },
+		{ key = "MaxStartDelay", label = "最大启动延迟(s)", kind = "number", min = 0, max = 600, default = "10" },
+		{ key = "DTMFTransportMode", label = "DTMF 传输", kind = "select", default = "InBand", options = { {"InBand", "InBand"}, {"RFC2833", "RFC2833"}, {"SIPInfo", "SIP INFO"} } },
+		{ key = "DTMFRfc283310000", label = "RFC2833 PT 映射", default = "10000;10001" },
+		{ key = "FaxPassThruCodec", label = "传真透传 Codec", kind = "select", default = "PCMA", options = { {"PCMA", "PCMA"}, {"PCMU", "PCMU"} } },
+		{ key = "FaxCtrlMode", label = "传真控制模式", kind = "select", default = "all", options = { {"all", "全部"}, {"t38", "T.38"}, {"passThrough", "透传"} } },
+		{ key = "SIPDomain", label = "归属域名", default = "" },
+		{ key = "VoIPRegion", label = "区域", default = "CHN-CHINA" },
+		{ key = "VoIPBindWanIf", label = "绑定 WAN/接口", default = "br-lan" },
+		{ key = "IPProtocal", label = "IP 协议族", kind = "select", default = "IPV4", options = { {"IPV4", "IPv4"}, {"IPV6", "IPv6"}, {"IPV4V6", "IPv4/IPv6"} } },
+		{ key = "NumberMatchMode", label = "号码匹配模式", kind = "number", min = 0, max = 9, default = "2" },
+		{ key = "VoiceCodecPriorityCtrl", label = "Codec 优先级控制", kind = "select", default = "0", options = { {"0", "默认"}, {"1", "启用"} } },
+	} },
+	{ section = "VoIPMedia_Common", stype = "VoIPMedia_Common", title = "媒体与 QoS", fields = {
+		{ key = "LocalRTPPort", label = "RTP 起始端口", kind = "number", min = 1, max = 65535, default = "41000" },
+		{ key = "LocalRTPPortEnd", label = "RTP 结束端口", kind = "number", min = 1, max = 65535, default = "42000" },
+		{ key = "SC_SF_CS_PROTOCOL", label = "媒体协议标识", kind = "number", min = 0, max = 255, default = "0" },
+		{ key = "SC_ACCT_MEDIA_G723_RATE", label = "G.723 速率", kind = "select", default = "0", options = { {"0", "6.3k"}, {"1", "5.3k"} } },
+		{ key = "FaxCodec", label = "Fax Codec", kind = "number", min = 0, max = 255, default = "0" },
+		{ key = "EchoCancellationEnable", label = "回声消除", kind = "select", default = "Yes", options = { {"Yes", "启用"}, {"No", "禁用"} } },
+		{ key = "EchoCancellationLowSpeedFax", label = "低速传真回声消除", kind = "select", default = "", options = { {"", "默认"}, {"Yes", "启用"}, {"No", "禁用"} } },
+	} },
+	{ section = "VoIPDigitMap_Entry", stype = "VoIPDigitMap_Entry", title = "拨号规则", fields = {
+		{ key = "DigitMapEnable", label = "DigitMap", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "DigitMapSpecialEnable", label = "特殊 DigitMap", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "PBXPrefixEnable", label = "PBX 前缀", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "NoAnswerTimer", label = "无应答时间(s)", kind = "number", min = 1, max = 600, default = "60" },
+		{ key = "InterDigitTimerShort", label = "短位间超时(s)", kind = "number", min = 1, max = 60, default = "3" },
+		{ key = "InterDigitTimerLong", label = "长位间超时(s)", kind = "number", min = 1, max = 120, default = "10" },
+		{ key = "StartDigitTimer", label = "首位超时(s)", kind = "number", min = 1, max = 120, default = "10" },
+		{ key = "BusyToneTimer", label = "忙音时间(s)", kind = "number", min = 1, max = 600, default = "40" },
+		{ key = "DigitMap1", label = "DigitMap1", default = "" },
+		{ key = "DigitMap2", label = "DigitMap2", default = "" },
+		{ key = "ServiceMap", label = "ServiceMap", default = "" },
+		{ key = "PBXPrefix", label = "PBXPrefix", default = "" },
+	} },
+}
+
+local voice_line_sdk_defs = {
+	{ prefix = "VoIPCallCtrl_Entry", stype = "VoIPCallCtrl_Entry", title = "补充业务", fields = {
+		{ key = "SIPMWIEnable", label = "MWI 消息灯", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "SIPDNDEnable", label = "免打扰", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "SIPCallWaitingEnable", label = "呼叫等待", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SyncCallerTimeEnable", label = "来电时间同步", kind = "select", default = "1", options = { {"1", "启用"}, {"0", "禁用"} } },
+		{ key = "SIPCallerIdEnable", label = "主叫号码显示", kind = "select", default = "2", options = { {"0", "禁用"}, {"1", "启用"}, {"2", "自动"} } },
+		{ key = "SIPCallTransfer", label = "呼叫转移/转接", kind = "select", default = "Yes", options = { {"Yes", "启用"}, {"No", "禁用"} } },
+		{ key = "SIP3wayConf", label = "三方通话", kind = "select", default = "Yes", options = { {"Yes", "启用"}, {"No", "禁用"} } },
+		{ key = "HotLineEnable", label = "热线", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "HotLineDelayTime", label = "热线延迟(s)", kind = "number", min = 0, max = 600, default = "5" },
+		{ key = "NoAnswerNCFWaitTime", label = "无应答前转等待(s)", kind = "number", min = 1, max = 600, default = "60" },
+		{ key = "MTKUCFEnable", label = "无条件前转", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "MTKSIPUCFNumber", label = "无条件前转号码", default = "" },
+		{ key = "MTKBCFEnable", label = "遇忙前转", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "MTKSIPBCFNumber", label = "遇忙前转号码", default = "" },
+		{ key = "MTKNCFEnable", label = "无应答前转", kind = "select", default = "0", options = { {"0", "禁用"}, {"1", "启用"} } },
+		{ key = "MTKSIPNCFNumber", label = "无应答前转号码", default = "" },
+		{ key = "HotLineNumber", label = "热线号码", default = "*53#" },
+		{ key = "SIPBlindTransferNumber", label = "盲转特征码", default = "*12*" },
+		{ key = "SIPAttendedTransferNumber", label = "咨询转特征码", default = "*12#" },
+		{ key = "SIP3wayConfNumber", label = "三方通话特征码", default = "*333" },
+		{ key = "HookMaxInterval", label = "拍叉最大(ms)", kind = "number", min = 1, max = 5000, default = "500" },
+		{ key = "HookMinInterval", label = "拍叉最小(ms)", kind = "number", min = 1, max = 5000, default = "90" },
+		{ key = "HookReleaseMin", label = "挂机最小(ms)", kind = "number", min = 1, max = 5000, default = "550" },
+	} },
+	{ prefix = "VoIPAdvanced_Entry", stype = "VoIPAdvanced_Entry", title = "线路电气/音量", fields = {
+		{ key = "SubscribeType", label = "订阅类型", kind = "number", min = 0, max = 9, default = "0" },
+		{ key = "SubscribeExpire", label = "订阅周期(s)", kind = "number", min = 0, max = 86400, default = "0" },
+		{ key = "SC_LINE_CID_PWR", label = "来显功率", kind = "number", min = 0, max = 20, default = "6" },
+		{ key = "VoiceVolumeSpeak", label = "发送音量", kind = "number", min = -12, max = 12, default = "0" },
+		{ key = "VoiceVolumeListen", label = "接收音量", kind = "number", min = -12, max = 12, default = "0" },
+	} },
+	{ prefix = "VoIPMedia_Entry", stype = "VoIPMedia_Entry", title = "线路媒体", fields = {
+		{ key = "SilenceCompressionEnable", label = "静音压缩", kind = "select", default = "No", options = { {"No", "禁用"}, {"Yes", "启用"} } },
+		{ key = "SIPSupportedCodecs0", label = "支持 Codec 0", default = "" },
+		{ key = "SIPSupportedCodecs1", label = "支持 Codec 1", default = "" },
+		{ key = "SIPSupportedCodecs2", label = "支持 Codec 2", default = "" },
+		{ key = "SIPSupportedCodecs3", label = "支持 Codec 3", default = "" },
+		{ key = "SIPSupportedCodecs4", label = "支持 Codec 4", default = "" },
+	} },
+}
+
+local voice_codec_names = {
+	"G.722", "G.711 U-law", "G.729", "G.711 A-law", "G.723",
+	"G.726 - 16", "G.726 - 24", "G.726 - 32", "G.726 - 40",
+}
+
+local function voice_field_name(section, key)
+	return "sdk_" .. section .. "_" .. key
+end
+
+local function voice_line_sdk_section(def, line)
+	return def.prefix .. tostring(line - 1)
+end
+
+local voice_line_account_tcapi_fields = {
+	"SC_ACCT_NAT_TYPE", "Enable", "SIPDisplayName", "SIPAuthenticationName",
+	"SIPPassword", "SIPURI", "SIPRegisterUserName", "SIPUserName",
+}
+
+local function voice_line_values(u, section, legacy, line)
 	local result = {}
+	local account_section = line and ("VoIPBasic_Entry" .. tostring(line - 1)) or nil
+	local function account_value(key)
+		return account_section and u:get("xpon", account_section, key) or nil
+	end
 	for name, default in pairs(voice_line_defaults) do
 		local value = u:get("xpon", section, name)
 		if value == nil and legacy then value = u:get("xpon", legacy, name) end
+		if value == nil and account_section then
+			if name == "enable" then
+				local enabled = account_value("Enable")
+				if enabled ~= nil then value = enabled == "Yes" and "1" or "0" end
+			elseif name == "uri" then
+				value = account_value("SIPURI")
+			elseif name == "register_username" then
+				value = account_value("SIPRegisterUserName")
+			elseif name == "username" then
+				value = account_value("SIPUserName") or account_value("SIPRegisterUserName")
+			elseif name == "auth_username" then
+				value = account_value("SIPAuthenticationName")
+			elseif name == "password" then
+				value = account_value("SIPPassword")
+			elseif name == "display_name" then
+				value = account_value("SIPDisplayName")
+			end
+		end
 		result[name] = value ~= nil and value or default
 	end
 	if section == "voice_auth_line2" and u:get("xpon", section, "enable") == nil
@@ -653,21 +864,62 @@ local function voice_line_count()
 	return math.min(line_count, 2)
 end
 
+local function voice_sdk_section_values(u, section, fields)
+	local out = {}
+	for _, f in ipairs(fields or {}) do
+		local value = u:get("xpon", section, f.key)
+		out[f.key] = value ~= nil and value or (f.default or "")
+	end
+	return out
+end
+
+local function voice_codec_values(u, pvc)
+	local rows = {}
+	local pvc_section = "VoIPCodecs_PVC" .. tostring(pvc)
+	for i, codec in ipairs(voice_codec_names) do
+		local idx = i - 1
+		local section = "VoIPCodecs_PVC" .. tostring(pvc) .. "_Entry" .. tostring(idx)
+		rows[#rows + 1] = {
+			section = section,
+			codec = u:get("xpon", section, "codec") or codec,
+			Enable = u:get("xpon", section, "Enable") or (pvc == 0 and (idx == 1 or idx == 2) and "Yes" or (pvc == 1 and "Yes" or "No")),
+			priority = u:get("xpon", section, "priority") or ((pvc == 0 and (idx == 1 or idx == 2) or (pvc == 1 and idx >= 1 and idx <= 4)) and tostring(idx) or "0"),
+		}
+	end
+	return { ptime = u:get("xpon", pvc_section, "SIPPacketizationTime") or "20", rows = rows }
+end
+
 local function voice_values()
 	local u = uci.cursor()
 	local status = sh("pidof sipclient 2>/dev/null")
 	local service_vlan = u:get("xpon", "voice", "vlan")
 		or u:get("network", "xpon_voice", "vlan_id")
 		  or ""
+	local sdk_common, sdk_lines = {}, {}
+	for _, def in ipairs(voice_sdk_common_defs) do
+		sdk_common[def.section] = voice_sdk_section_values(u, def.section, def.fields)
+	end
+	for line = 1, 2 do
+		sdk_lines[line] = {}
+		for _, def in ipairs(voice_line_sdk_defs) do
+			local section = voice_line_sdk_section(def, line)
+			sdk_lines[line][section] = voice_sdk_section_values(u, section, def.fields)
+		end
+	end
 	return {
 		lines = {
-			voice_line_values(u, "voice_auth", nil),
-			voice_line_values(u, "voice_auth_line2", "voice_auth"),
+			voice_line_values(u, "voice_auth", nil, 1),
+			voice_line_values(u, "voice_auth_line2", "voice_auth", 2),
 		},
 		line_count = voice_line_count(),
 		vlan = service_vlan,
 		running = status ~= "",
 		pid = status,
+		sdk_common_defs = voice_sdk_common_defs,
+		sdk_line_defs = voice_line_sdk_defs,
+		sdk_common = sdk_common,
+		sdk_lines = sdk_lines,
+		codecs = { voice_codec_values(u, 0), voice_codec_values(u, 1) },
 	}
 end
 
@@ -693,6 +945,67 @@ local function voice_text_ok(value, max_len, optional)
 	return true
 end
 
+local function voice_sdk_value_ok(value, f)
+	value = value or ""
+	if #value > (f.max_len or 255) then return false end
+	for i = 1, #value do
+		local b = value:byte(i)
+		if not b or b < 32 or b > 126 or value:sub(i, i) == "'" then return false end
+	end
+	if f.kind == "number" then
+		local n = tonumber(value)
+		if not n then return false end
+		if f.min and n < f.min then return false end
+		if f.max and n > f.max then return false end
+	elseif f.kind == "select" then
+		local found = false
+		for _, opt in ipairs(f.options or {}) do
+			if value == opt[1] then found = true; break end
+		end
+		if not found then return false end
+	end
+	return true
+end
+
+local function save_voice_sdk_field(u, section, stype, f, fv)
+	local value = (fv(voice_field_name(section, f.key)) or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if not voice_sdk_value_ok(value, f) then return nil, section .. "_" .. f.key end
+	if not ensure_section(u, "xpon", section, stype) then return nil, "voice_sdk_section" end
+	u:set("xpon", section, f.key, value)
+	return true
+end
+
+local function voice_tcapi_apply_cmd()
+	local cmds = { "if [ -x /userfs/bin/tcapi ]; then" }
+	local function add(section, key)
+		cmds[#cmds + 1] = "/userfs/bin/tcapi set " .. section .. " " .. key ..
+			" \"$(uci -q get xpon." .. section .. "." .. key .. ")\" >/dev/null 2>&1"
+	end
+	for _, def in ipairs(voice_sdk_common_defs) do
+		for _, f in ipairs(def.fields or {}) do add(def.section, f.key) end
+	end
+	for line = 1, 2 do
+		for _, def in ipairs(voice_line_sdk_defs) do
+			local section = voice_line_sdk_section(def, line)
+			for _, f in ipairs(def.fields or {}) do add(section, f.key) end
+		end
+		local account_section = "VoIPBasic_Entry" .. tostring(line - 1)
+		for _, key in ipairs(voice_line_account_tcapi_fields) do add(account_section, key) end
+	end
+	for pvc = 0, 1 do
+		local pvc_section = "VoIPCodecs_PVC" .. tostring(pvc)
+		add(pvc_section, "SIPPacketizationTime")
+		for i = 1, #voice_codec_names do
+			local section = pvc_section .. "_Entry" .. tostring(i - 1)
+			add(section, "codec")
+			add(section, "Enable")
+			add(section, "priority")
+		end
+	end
+	cmds[#cmds + 1] = "fi"
+	return table.concat(cmds, "; ")
+end
+
 local function save_voice(fv)
 	local u = uci_native.cursor()
 	local function save_line(index, section, legacy)
@@ -702,6 +1015,7 @@ local function save_voice(fv)
 		local enabled = value("enable") == "1" and "1" or "0"
 		local registrar, proxy = value("registrar"), value("proxy")
 		local domain, username = value("domain"), value("username")
+		local uri, register_username = value("uri"), value("register_username")
 		local auth_username, display_name = value("auth_username"), value("display_name")
 		local outbound_proxy, transport = value("outbound_proxy"), value("transport"):lower()
 		local port, expires = tonumber(value("port")), tonumber(value("expires"))
@@ -715,6 +1029,10 @@ local function save_voice(fv)
 		if not voice_host_ok(proxy, true) then return nil, "line" .. index .. "_proxy" end
 		if not voice_host_ok(domain, true) then return nil, "line" .. index .. "_domain" end
 		if not voice_host_ok(outbound_proxy, true) then return nil, "line" .. index .. "_outbound_proxy" end
+		if not voice_text_ok(uri, 128, true) then return nil, "line" .. index .. "_uri" end
+		if not voice_text_ok(register_username, 128, true) then return nil, "line" .. index .. "_register_username" end
+		if username == "" then username = register_username end
+		if auth_username == "" then auth_username = register_username ~= "" and register_username or username end
 		if enabled == "1" and not voice_text_ok(username, 128, false) then return nil, "line" .. index .. "_username" end
 		if not voice_text_ok(auth_username, 128, true) then return nil, "line" .. index .. "_auth_username" end
 		if not voice_text_ok(display_name, 64, true) then return nil, "line" .. index .. "_display_name" end
@@ -727,10 +1045,22 @@ local function save_voice(fv)
 		local fields = {
 			enable = enabled, registrar = registrar, proxy = proxy, domain = domain,
 			username = username, auth_username = auth_username, password = password,
+			uri = uri, register_username = register_username,
 			display_name = display_name, transport = transport, port = tostring(port),
 			expires = tostring(expires), outbound_proxy = outbound_proxy,
 		}
 		for name, field_value in pairs(fields) do u:set("xpon", section, name, field_value) end
+
+		local account_section = "VoIPBasic_Entry" .. tostring(index - 1)
+		if not ensure_section(u, "xpon", account_section, "VoIPBasic_Entry") then return nil, "voice_account_section" end
+		u:set("xpon", account_section, "SC_ACCT_NAT_TYPE", u:get("xpon", account_section, "SC_ACCT_NAT_TYPE") or "0")
+		u:set("xpon", account_section, "Enable", enabled == "1" and "Yes" or "No")
+		u:set("xpon", account_section, "SIPDisplayName", display_name ~= "" and display_name or uri)
+		u:set("xpon", account_section, "SIPAuthenticationName", auth_username)
+		u:set("xpon", account_section, "SIPPassword", password)
+		u:set("xpon", account_section, "SIPURI", uri)
+		u:set("xpon", account_section, "SIPRegisterUserName", register_username)
+		u:set("xpon", account_section, "SIPUserName", username)
 		return true
 	end
 
@@ -738,6 +1068,43 @@ local function save_voice(fv)
 	if not ok then return nil, why end
 	ok, why = save_line(2, "voice_auth_line2", "voice_auth")
 	if not ok then return nil, why end
+	if not ensure_section(u, "xpon", "voice", "service") then return nil, "voice_service" end
+	for _, def in ipairs(voice_sdk_common_defs) do
+		for _, f in ipairs(def.fields or {}) do
+			ok, why = save_voice_sdk_field(u, def.section, def.stype, f, fv)
+			if not ok then return nil, why end
+		end
+	end
+	if not ensure_section(u, "xpon", "VoIPBasic_Common", "VoIPBasic_Common") then return nil, "voice_sdk_section" end
+	u:set("xpon", "VoIPBasic_Common", "VoIPLine2Enable", fv("line2_enable") == "1" and "Yes" or "No")
+	for line = 1, 2 do
+		for _, def in ipairs(voice_line_sdk_defs) do
+			local section = voice_line_sdk_section(def, line)
+			for _, f in ipairs(def.fields or {}) do
+				ok, why = save_voice_sdk_field(u, section, def.stype, f, fv)
+				if not ok then return nil, why end
+			end
+		end
+	end
+	for pvc = 0, 1 do
+		local ptime = (fv("codec_pvc" .. pvc .. "_ptime") or "20"):gsub("^%s+", ""):gsub("%s+$", "")
+		local ptime_num = tonumber(ptime)
+		if not ptime_num or ptime_num < 10 or ptime_num > 200 then return nil, "codec_pvc" .. pvc .. "_ptime" end
+		local pvc_section = "VoIPCodecs_PVC" .. tostring(pvc)
+		if not ensure_section(u, "xpon", pvc_section, pvc_section) then return nil, "voice_codec_section" end
+		u:set("xpon", pvc_section, "SIPPacketizationTime", tostring(ptime_num))
+		for i, codec in ipairs(voice_codec_names) do
+			local idx = i - 1
+			local section = "VoIPCodecs_PVC" .. tostring(pvc) .. "_Entry" .. tostring(idx)
+			local enable = fv("codec_pvc" .. pvc .. "_entry" .. idx .. "_enable") == "Yes" and "Yes" or "No"
+			local priority = tonumber(fv("codec_pvc" .. pvc .. "_entry" .. idx .. "_priority") or "0")
+			if not priority or priority < 0 or priority > 9 then return nil, "codec_pvc" .. pvc .. "_entry" .. idx .. "_priority" end
+			if not ensure_section(u, "xpon", section, section) then return nil, "voice_codec_entry" end
+			u:set("xpon", section, "codec", codec)
+			u:set("xpon", section, "Enable", enable)
+			u:set("xpon", section, "priority", tostring(priority))
+		end
+	end
 	local ok, commit_ok = pcall(function()
 		u:save("xpon")
 		commit_ok = u:commit("xpon")
@@ -1356,9 +1723,11 @@ local function save_auth(fv)
 	local vendor_id = (#sn == 12) and sn:sub(1, 4) or ""
 	-- 空值表示恢复 DSD wan_mac。GPON 仅应用到 pon 业务接口；
 	-- EPON 还会把最终值同步为 U-Boot ethaddr/bootargs 中的 MPCP ONU MAC。
-	local pon_mac = (fv("pon_mac") or ""):gsub("%s+", ""):upper()
-	local effective_pon_mac = pon_mac ~= "" and pon_mac or dsd_wan_mac()
-	-- EPON OUI = 最终 PON MAC 前 3 字节，留空使用 DSD 时也保持联动。
+	local epon_pon_mac = (fv("epon_pon_mac") or fv("pon_mac") or ""):gsub("%s+", ""):upper()
+	local gpon_pon_mac = (fv("gpon_pon_mac") or fv("pon_mac") or ""):gsub("%s+", ""):upper()
+	local active_pon_mac = pmode == "EPON" and epon_pon_mac or gpon_pon_mac
+	local effective_pon_mac = active_pon_mac ~= "" and active_pon_mac or dsd_wan_mac()
+	-- EPON OUI = 最终 EPON 注册 MAC 前 3 字节，留空使用 DSD 时也保持联动。
 	local eoui = fv("epon_oui") or ""
 	if eoui == "" and ponmac_ok(effective_pon_mac) then
 		eoui = effective_pon_mac:gsub(":", ""):sub(1, 6):upper()
@@ -1461,10 +1830,15 @@ local function save_auth(fv)
 	if fv("onu_version") and fv("onu_version") ~= "" then u:set("xpon", "device", "onu_version", fv("onu_version")) end
 	if omcc_version ~= "" then u:set("xpon", "device", "omcc_version", omcc_version) end
 	if omci_spec_ver ~= "" then u:set("xpon", "device", "omci_spec_ver", omci_spec_ver) end
-	if pon_mac ~= "" then
-		u:set("xpon", "device", "pon_mac", pon_mac)
+	if epon_pon_mac ~= "" then
+		u:set("xpon", "device", "epon_pon_mac", epon_pon_mac)
 	else
-		u:delete("xpon", "device", "pon_mac")
+		u:delete("xpon", "device", "epon_pon_mac")
+	end
+	if gpon_pon_mac ~= "" then
+		u:set("xpon", "device", "gpon_pon_mac", gpon_pon_mac)
+	else
+		u:delete("xpon", "device", "gpon_pon_mac")
 	end
 	u:set("xpon", "device", "epon_oui", eoui)
 	u:set("xpon", "device", "epon_ctc_oui", ectc)
@@ -1522,11 +1896,17 @@ local function save_auth(fv)
 	if omcc_version ~= "" and check:get("network", "xpon_auth", "omcc_version") ~= omcc_version then
 		return nil, "persist_omcc_version"
 	end
-	if pon_mac ~= "" and check:get("xpon", "device", "pon_mac") ~= pon_mac then
-		return nil, "persist_pon_mac"
+	if epon_pon_mac ~= "" and check:get("xpon", "device", "epon_pon_mac") ~= epon_pon_mac then
+		return nil, "persist_epon_pon_mac"
 	end
-	if pon_mac == "" and (check:get("xpon", "device", "pon_mac") or "") ~= "" then
-		return nil, "persist_pon_mac_default"
+	if epon_pon_mac == "" and (check:get("xpon", "device", "epon_pon_mac") or "") ~= "" then
+		return nil, "persist_epon_pon_mac_default"
+	end
+	if gpon_pon_mac ~= "" and check:get("xpon", "device", "gpon_pon_mac") ~= gpon_pon_mac then
+		return nil, "persist_gpon_pon_mac"
+	end
+	if gpon_pon_mac == "" and (check:get("xpon", "device", "gpon_pon_mac") or "") ~= "" then
+		return nil, "persist_gpon_pon_mac_default"
 	end
 	if pmode == "EPON" then
 		if check:get("xpon", "device", "epon_oui") ~= eoui then return nil, "persist_epon_oui" end
@@ -1543,7 +1923,8 @@ end
 
 local function save_services(fv)
 	local rows, count = {}, tonumber(fv("vlan_count") or "0") or 0
-	local seen, ports, keys, mvids = {}, {}, {}, {}
+	local ports, keys, mvids = {}, {}, {}
+	local next_key = 1
 	local allowed_type = { internet=true, tr069=true, iptv=true, voice=true, other=true }
 	local allowed_proto = { pppoe=true, dhcp=true, static=true, none=true }
 	local allowed_port = { none=true, lan1=true, lan2=true, lan3=true, lan4=true }
@@ -1563,8 +1944,9 @@ local function save_services(fv)
 			local p = "vlan_" .. i .. "_"
 			local row = {
 				key=fv(p.."key") or "", interface=fv(p.."interface") or "", adopt=fv(p.."adopt") == "1",
+				access_mode=fv(p.."access_mode") == "untagged" and "untagged" or "tagged",
 				vlan_id=fv(p.."id") or "", priority=fv(p.."priority") or "0",
-				remark=fv(p.."remark") or "", enable=fv(p.."enable") == "1" and "1" or "0",
+				remark="", enable=fv(p.."enable") == "1" and "1" or "0",
 				service_type=fv(p.."service_type") or "internet", mode=fv(p.."mode") or "routed",
 				proto=fv(p.."proto") or "dhcp", mtu=fv(p.."mtu") or "1500",
 				username=fv(p.."username") or "", password=fv(p.."password") or "",
@@ -1574,12 +1956,20 @@ local function save_services(fv)
 			}
 			local vid = tonumber(row.vlan_id)
 			local pri, mtu, mvid = tonumber(row.priority), tonumber(row.mtu), tonumber(row.mcast_vlan)
-			if row.key == "" then row.key = "svc_" .. tostring(vid or i) end
-			if #row.key > 12 or not row.key:match("^[A-Za-z0-9_]+$") or keys[row.key] then return nil, "service_key" end
+			if row.key == "" or #row.key > 12 or not row.key:match("^[A-Za-z0-9_]+$") then
+				repeat row.key = "svc" .. tostring(next_key); next_key = next_key + 1 until not keys[row.key]
+			end
+			if keys[row.key] then return nil, "service_key" end
 			if row.interface ~= "" and not row.interface:match("^[A-Za-z0-9_]+$") then return nil, "interface_name" end
 			keys[row.key] = true
-			if not vid or vid < 1 or vid > 4094 or not pri or pri < 0 or pri > 7 then return nil, "vlan" end
-			if seen[vid] then return nil, "vlan_duplicate" end
+			if row.access_mode == "tagged" then
+				if not vid or vid < 1 or vid > 4094 then return nil, "vlan" end
+				row.vlan_id = tostring(vid)
+			else
+				row.vlan_id = ""
+				row.priority = "0"
+			end
+			if row.access_mode == "tagged" and (not pri or pri < 0 or pri > 7) then return nil, "vlan" end
 			if not allowed_type[row.service_type] or (row.mode ~= "routed" and row.mode ~= "bridged") or not allowed_proto[row.proto] then return nil, "service_mode" end
 			if row.mode == "bridged" then row.proto = "none" end
 			if row.mode == "routed" and row.proto == "none" then return nil, "service_proto" end
@@ -1591,10 +1981,9 @@ local function save_services(fv)
 			if not allowed_port[row.lan_port] then return nil, "lan_port" end
 			if row.lan_port ~= "none" and (row.mode ~= "bridged" or ports[row.lan_port]) then return nil, ports[row.lan_port] and "port_conflict" or "port_mode" end
 			if row.lan_port ~= "none" then ports[row.lan_port] = true end
-			if row.mcast_vlan ~= "" and (row.service_type ~= "iptv" or not mvid or mvid < 1 or mvid > 4094) then return nil, "mcast_vlan" end
+			if row.mcast_vlan ~= "" and (row.access_mode ~= "tagged" or row.service_type ~= "iptv" or not mvid or mvid < 1 or mvid > 4094) then return nil, "mcast_vlan" end
 			if mvid and mvids[mvid] then return nil, "mcast_duplicate" end
 			if mvid then mvids[mvid] = true end
-			seen[vid] = true
 			rows[#rows + 1] = row
 		end
 	end
@@ -1662,9 +2051,12 @@ local function save_services(fv)
 		if s.xpon_managed ~= "1" then
 			local dev = s.name or s.device
 			for _, row in ipairs(rows) do
-				local legacy_vlan = s[".type"] == "wan_vlan" and s.vlan_id == row.vlan_id
-				local adopt_this = row.adopt and s[".type"] == "interface" and s[".name"] == row.interface and s.device == "pon." .. row.vlan_id
-				if not adopt_this and (dev == "pon." .. row.vlan_id or legacy_vlan or s[".name"] == "xpon_" .. row.key) then conflict = row.vlan_id end
+				local target_dev = row.access_mode == "untagged" and "pon" or ("pon." .. row.vlan_id)
+				local legacy_vlan = row.access_mode == "tagged" and s[".type"] == "wan_vlan" and s.vlan_id == row.vlan_id
+				local adopt_this = row.adopt and s[".type"] == "interface" and s[".name"] == row.interface and s.device == target_dev
+				local device_conflict = row.access_mode == "tagged" and dev == target_dev
+				local untag_conflict = row.access_mode == "untagged" and s[".type"] == "interface" and dev == "pon"
+				if not adopt_this and (device_conflict or untag_conflict or legacy_vlan or s[".name"] == "xpon_" .. row.key) then conflict = row.access_mode == "untagged" and "untag" or row.vlan_id end
 			end
 		end
 	end)
@@ -1684,26 +2076,28 @@ local function save_services(fv)
 		end
 	end)
 	for _, s in ipairs(remove) do u:delete("network", s) end
-	local wan_ifaces = {}
+	local wan_ifaces, created_devices = {}, {}
 	for _, row in ipairs(rows) do
 		local meta = "xpon_service_" .. row.key
 		local iface = row.adopt and row.interface or ("xpon_" .. row.key)
-		local vlan_dev = "pon." .. row.vlan_id
+		local ifdev = row.access_mode == "untagged" and "pon" or ("pon." .. row.vlan_id)
 		u:section("network", "xpon_service", meta, {
-			service_key=row.key, vlan_id=row.vlan_id, priority=row.priority, remark=row.remark,
+			service_key=row.key, vlan_id=row.vlan_id, access_mode=row.access_mode, priority=row.priority, remark=row.remark,
 			enable=row.enable, service_type=row.service_type, mode=row.mode, proto=row.proto,
 			mtu=row.mtu, username=row.username, ipaddr=row.ipaddr, netmask=row.netmask,
 			gateway=row.gateway, dns1=row.dns1, dns2=row.dns2, lan_port=row.lan_port,
 			mcast_vlan=row.mcast_vlan
 		})
 		u:set("network", meta, "interface", iface); u:set("network", meta, "payload", row.mode); u:set("network", meta, "xpon_managed", "1")
-		local devsec = "xpon_vlan_" .. row.key
-		u:section("network", "device", devsec, { type="8021q", ifname="pon", vid=row.vlan_id, name=vlan_dev, mtu=row.mtu, xpon_managed="1", xpon_service=row.key })
-		local ifdev = vlan_dev
+		if row.access_mode == "tagged" and not created_devices[ifdev] then
+			local devsec = "xpon_vlan_" .. row.key
+			u:section("network", "device", devsec, { type="8021q", ifname="pon", vid=row.vlan_id, name=ifdev, mtu=row.mtu, xpon_managed="1", xpon_service=row.key })
+			created_devices[ifdev] = true
+		end
 		if row.mode == "bridged" then
 			local brsec, brname = "xpon_bridge_" .. row.key, "bx-" .. row.key
 			u:section("network", "device", brsec, { type="bridge", name=brname, xpon_managed="1", xpon_service=row.key })
-			local list = { vlan_dev }
+			local list = { ifdev }
 			if row.enable == "1" and row.lan_port ~= "none" then list[#list + 1] = lan_port_devices[row.lan_port] end
 			u:set_list("network", brsec, "ports", list); ifdev = brname
 		end
@@ -1711,9 +2105,8 @@ local function save_services(fv)
 		if row.mode == "routed" then wan_ifaces[#wan_ifaces + 1] = iface end
 		if row.proto == "pppoe" then
 			opts.username=row.username; opts.ipv6="auto"
-			-- netifd defaults to "pppoe-<UCI interface>". xpon_<service_key>
-			-- can exceed Linux IFNAMSIZ (15 visible bytes), so use the unique VID.
-			opts.pppname="pppoe-pon" .. row.vlan_id
+			-- 多个业务允许共用同一 VLAN/untag 接入，PPPoE 运行接口名必须按业务唯一。
+			opts.pppname="ppp" .. row.key
 		end
 		if row.proto == "static" then opts.ipaddr=row.ipaddr; opts.netmask=row.netmask; opts.gateway=row.gateway end
 		u:section("network", "interface", iface, opts)
@@ -1900,8 +2293,10 @@ function action_save()
 		local atg = (formvalue("auth_type_g") or ""):lower()
 		local ptech = formvalue("pon_tech") or "GPON"
 		local pmode = pon_engine_for(ptech)
-		local pon_mac = (formvalue("pon_mac") or ""):gsub("%s+", ""):upper()
-		local effective_pon_mac = pon_mac ~= "" and pon_mac or dsd_wan_mac()
+		local epon_pon_mac = (formvalue("epon_pon_mac") or formvalue("pon_mac") or ""):gsub("%s+", ""):upper()
+		local gpon_pon_mac = (formvalue("gpon_pon_mac") or formvalue("pon_mac") or ""):gsub("%s+", ""):upper()
+		local active_pon_mac = pmode == "EPON" and epon_pon_mac or gpon_pon_mac
+		local effective_pon_mac = active_pon_mac ~= "" and active_pon_mac or dsd_wan_mac()
 		local onu_low = formvalue("onu_low") or ""
 		-- EPON OAM 身份：localOui/ctcOui 为 3 字节 hex，localVenInfo 为
 		-- 4 字节 hex，onuVenID 为 4 字节可打印 ASCII。
@@ -1928,14 +2323,16 @@ function action_save()
 			err = "epon_onu_vendor_id"
 		elseif #epon_serial > 0 and not ponmac_ok(epon_serial) then
 			err = "epon_serial"
-		elseif #pon_mac > 0 and not ponmac_ok(pon_mac) then
-			err = "pon_mac"
+		elseif #epon_pon_mac > 0 and not ponmac_ok(epon_pon_mac) then
+			err = "epon_pon_mac"
+		elseif #gpon_pon_mac > 0 and not ponmac_ok(gpon_pon_mac) then
+			err = "gpon_pon_mac"
 		elseif #loid > 24 then
 			err = "loid"
 		elseif pmode == "EPON" and #loid == 0 then
 			err = "loid"
 		elseif pmode == "EPON" and not ponmac_ok(effective_pon_mac) then
-			err = "pon_mac"
+			err = "epon_pon_mac"
 		elseif atg == "loid" and #loid == 0 then
 			err = "loid"
 		elseif atg == "sn" or atg == "regid" then
@@ -2046,13 +2443,11 @@ function action_save()
 		-- sipclient 的配置接口由 SDK 私有实现；保存 UCI 后只重载 voice WAN，
 		-- 并按 SDK 监控程序的约定重启 sipclient（不存在时静默跳过）。
 		local voice_enabled = formvalue("line1_enable") == "1" or formvalue("line2_enable") == "1"
-		local line2_switch = formvalue("line2_enable") == "1" and "Yes" or "No"
 		local sip_action = voice_enabled
 			and "killall -HUP sipclient >/dev/null 2>&1 || true; if [ -x /userfs/bin/sipclient ]; then /userfs/bin/sipclient >/dev/null 2>&1 & fi"
 			or "killall -9 sipclient >/dev/null 2>&1 || true"
 		sys.call("( ifdown voice >/dev/null 2>&1; ifup voice >/dev/null 2>&1; " ..
-			"if [ -x /userfs/bin/tcapi ]; then /userfs/bin/tcapi set VoIPBasic_Common VoIPLine2Enable " ..
-			line2_switch .. " >/dev/null 2>&1; fi; " ..
+			voice_tcapi_apply_cmd() .. "; " ..
 			sip_action .. " ) " ..
 			">/tmp/xpon-voice-apply.log 2>&1 </dev/null &")
 	elseif page == "services" then
@@ -2086,11 +2481,25 @@ function action_voice()
 end
 
 function action_services()
+	local err = formvalue("err")
+	local err_text = {
+		vlan = "tag 业务的 VLAN ID 或优先级不合法",
+		mcast_vlan = "组播 VLAN 只能关联 tag IPTV 业务",
+		service_key = "业务内部序号冲突",
+		service_proto = "路由业务必须选择 DHCP、PPPoE 或静态 IPv4",
+		port_conflict = "LAN/STB 端口已被其它业务绑定",
+		port_mode = "LAN/STB 端口只能绑定到桥接业务",
+	}
+	if err and err:match("^unmanaged_conflict_") then
+		err = err:match("untag") and "未受管 untag 接口已占用 pon" or ("未受管 VLAN 配置冲突：" .. err:match("_(%d+)$"))
+	else
+		err = err_text[err] or err
+	end
 	ltemplate.render("xpon/services", {
 		services = service_values(), kernel_vlans = kernel_vlan_values(), multicast = multicast_values(),
 		iptv_businesses = iptv_business_values(),
 		saved = (formvalue("saved") == "1"),
-		err = formvalue("err"),
+		err = err,
 		vlan_cleaned = formvalue("vlan_cleaned"),
 	})
 end

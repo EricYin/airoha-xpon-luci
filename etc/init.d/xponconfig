@@ -183,7 +183,13 @@ start() {
         validate_xponauth_section
 
         [ -e /tmp/dsd.env ] && source /tmp/dsd.env
-        saved_pon_mac=`uci -q get xpon.device.pon_mac`
+        pon_mode=`uci -q get xpon.device.pon_mode`
+        if [ "$pon_mode" = "EPON" ]; then
+            saved_pon_mac=`uci -q get xpon.device.epon_pon_mac`
+        else
+            saved_pon_mac=`uci -q get xpon.device.gpon_pon_mac`
+        fi
+        [ -n "$saved_pon_mac" ] || saved_pon_mac=`uci -q get xpon.device.pon_mac`
         pon_mac=${saved_pon_mac:-$wan_mac}
         [ -n "${pon_mac}" ] && {
             ifconfig pon hw ether "${pon_mac}"
