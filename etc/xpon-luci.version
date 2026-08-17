@@ -1,4 +1,5 @@
-xpon-luci 2.7 2026-08-16
+xpon-luci 2.8 2026-08-18
+services: 允许相同 tag VLAN ID 与 untag pon 多业务复用；未受管 pon/pon.<VID> 不再阻断保存
 status: EPON 10 秒快速轮询改读守护刷新的 LLID 状态文件，修复正常注册时主标签误报“未检测到有效 LLID”
 epon: 同 PID 守护扩展到 ctcOui/loidPasswd0/ONUSN，漂移时仅轻量修复变化项；新 PID 才完整重放
 auth: EPON SN 增加显式的 PON MAC 末字节 +0x08 候选按钮，仅填表且提示必须核对原装 ONU

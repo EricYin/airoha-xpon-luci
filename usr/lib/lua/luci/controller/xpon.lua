@@ -593,8 +593,9 @@ local function service_values()
 		if s.xpon_managed == "1" and (access_mode == "untagged" or (vid and vid >= 1 and vid <= 4094)) then
 			local key = s.service_key or s[".name"]
 			if #key > 12 or not key:match("^[A-Za-z0-9_]+$") then key = "svc" .. tostring(#rows + 1) end
-			local owner = access_mode == "untagged" and untag_owner or owners[tostring(vid)]
-			local iface = s.interface or (owner and owner[".name"]) or ("xpon_" .. key)
+			local shared_owner = access_mode == "untagged" and untag_owner or owners[tostring(vid)]
+			local iface = s.interface or ("xpon_" .. key)
+			local owner = shared_owner and shared_owner[".name"] == iface and shared_owner or nil
 			local raw = sh("ubus call network.interface." .. iface .. " status 2>/dev/null")
 			local up = raw:match('"up"%s*:%s*true') ~= nil
 			local pending = raw:match('"pending"%s*:%s*true') ~= nil
@@ -2045,18 +2046,14 @@ local function save_services(fv)
 		if s.xpon_managed ~= "1" and mvids[tonumber(s.vlan_id or "")] then mcast_conflict = true end
 	end)
 	if mcast_conflict then return nil, "unmanaged_mcast_conflict" end
-	-- 拒绝覆盖任何未受管的同名接口或同 VLAN device。
+	-- 同一 tag VLAN / untag 入口允许多业务共用；这里只拒绝会被本页覆盖的同名接口。
 	local conflict
 	u:foreach("network", nil, function(s)
 		if s.xpon_managed ~= "1" then
-			local dev = s.name or s.device
 			for _, row in ipairs(rows) do
 				local target_dev = row.access_mode == "untagged" and "pon" or ("pon." .. row.vlan_id)
-				local legacy_vlan = row.access_mode == "tagged" and s[".type"] == "wan_vlan" and s.vlan_id == row.vlan_id
 				local adopt_this = row.adopt and s[".type"] == "interface" and s[".name"] == row.interface and s.device == target_dev
-				local device_conflict = row.access_mode == "tagged" and dev == target_dev
-				local untag_conflict = row.access_mode == "untagged" and s[".type"] == "interface" and dev == "pon"
-				if not adopt_this and (device_conflict or untag_conflict or legacy_vlan or s[".name"] == "xpon_" .. row.key) then conflict = row.access_mode == "untagged" and "untag" or row.vlan_id end
+				if not adopt_this and s[".name"] == "xpon_" .. row.key then conflict = "iface_" .. row.key end
 			end
 		end
 	end)
@@ -2077,6 +2074,11 @@ local function save_services(fv)
 	end)
 	for _, s in ipairs(remove) do u:delete("network", s) end
 	local wan_ifaces, created_devices = {}, {}
+	u:foreach("network", "device", function(s)
+		if s.xpon_managed ~= "1" and s.name and s.name:match("^pon%.%d+$") then
+			created_devices[s.name] = true
+		end
+	end)
 	for _, row in ipairs(rows) do
 		local meta = "xpon_service_" .. row.key
 		local iface = row.adopt and row.interface or ("xpon_" .. row.key)
@@ -2491,7 +2493,7 @@ function action_services()
 		port_mode = "LAN/STB 端口只能绑定到桥接业务",
 	}
 	if err and err:match("^unmanaged_conflict_") then
-		err = err:match("untag") and "未受管 untag 接口已占用 pon" or ("未受管 VLAN 配置冲突：" .. err:match("_(%d+)$"))
+		err = "未受管接口名冲突：xpon_" .. (err:match("^unmanaged_conflict_iface_(.+)$") or "")
 	else
 		err = err_text[err] or err
 	end
