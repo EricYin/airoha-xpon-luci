@@ -68,9 +68,9 @@ local pon_modes = {
 --   3=10G/1G-EPON、4=10G/10G-EPON 属 OAM 族（netifd 引擎 pon_mode=EPON）。
 -- 具体 HGU/SFU 形态（61/62/71/72/…）由“模式”页 onu_type 决定，本页只管技术族。
 local pon_techs = {
-	{ id = "GPON",         name = "GPON（OMCI 管理）",             desc = "bits[7:4]=1；OLT 为 GPON 口时选择" },
-	{ id = "XGPON",        name = "XGPON 10G/2.5G（OMCI 管理）",    desc = "bits[7:4]=6；本机 TTL 当前 61/62" },
-	{ id = "XGSPON",       name = "XGSPON 10G 对称（OMCI 管理）",   desc = "bits[7:4]=7；出厂默认 71/72" },
+	{ id = "GPON",         name = "GPON（实验性）",             desc = "bits[7:4]=1；OLT 为 GPON 口时选择" },
+	{ id = "XGPON",        name = "XGPON 10G/2.5G（XGPON 不对称）",    desc = "bits[7:4]=6；本机 TTL 当前 61/62" },
+	{ id = "XGSPON",       name = "XGSPON 10G 对称",              desc = "bits[7:4]=7；出厂默认 71/72" },
 	{ id = "EPON_10G_1G",  name = "10G/1G-EPON（XEPON 不对称）",    desc = "bits[7:4]=3；OAM 认证（pon_mode=EPON），实验" },
 	{ id = "EPON_10G_10G", name = "10G/10G-EPON（XEPON 对称）",     desc = "bits[7:4]=4；OAM 认证（pon_mode=EPON），实验" },
 }

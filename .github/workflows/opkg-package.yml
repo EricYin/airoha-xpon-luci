@@ -1,0 +1,176 @@
+name: Package xpon-luci opkg
+
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: opkg architecture
+        required: true
+        default: aarch64_cortex-a53
+      package_version:
+        description: Override package version, leave empty to read etc/xpon-luci.version
+        required: false
+        default: ""
+      package_revision:
+        description: opkg package revision
+        required: true
+        default: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build xpon-luci.ipk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate package files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d etc
+          test -d lib
+          test -d usr
+          test -d www
+          test -x usr/bin/xpon-cputemp
+          bash -n usr/bin/pon-multicast
+          bash -n usr/bin/xpon-apply.sh
+          bash -n usr/bin/xpon-auth-native.sh
+          bash -n usr/bin/xpon-bind-lan.sh
+          bash -n usr/bin/xpon-cputemp.sh
+          bash -n usr/bin/xpon-dsd-env.sh
+          bash -n usr/bin/xpon-epon-sn.sh
+          bash -n usr/bin/xpon-fallback.sh
+          bash -n usr/bin/xpon-iptv.sh
+          bash -n usr/bin/xpon-mode
+          bash -n usr/bin/xpon-mvlan-snap.sh
+          bash -n usr/bin/xpon-mvlan.sh
+          bash -n usr/bin/xpon-replay.sh
+          bash -n etc/init.d/pon-services
+          bash -n etc/init.d/xpon-app
+          bash -n etc/init.d/xponconfig
+          bash -n etc/uci-defaults/zzz-xpon
+
+      - name: Build opkg package
+        id: build
+        shell: bash
+        env:
+          INPUT_ARCHITECTURE: ${{ inputs.architecture }}
+          INPUT_PACKAGE_VERSION: ${{ inputs.package_version }}
+          INPUT_PACKAGE_REVISION: ${{ inputs.package_revision }}
+        run: |
+          set -euo pipefail
+
+          package="xpon-luci"
+          repo_dir="$PWD"
+          architecture="${INPUT_ARCHITECTURE}"
+          revision="${INPUT_PACKAGE_REVISION}"
+          source_date_epoch="$(git log -1 --format=%ct)"
+
+          if [ -n "${INPUT_PACKAGE_VERSION}" ]; then
+            version="${INPUT_PACKAGE_VERSION}"
+          else
+            version="$(awk 'NR == 1 && $1 == "xpon-luci" { print $2 }' etc/xpon-luci.version)"
+          fi
+
+          case "${version}" in
+            ""|*[!0-9A-Za-z.+:~_-]*)
+              echo "Invalid package version: ${version}" >&2
+              exit 1
+              ;;
+          esac
+          case "${revision}" in
+            ""|*[!0-9A-Za-z.+~]*)
+              echo "Invalid package revision: ${revision}" >&2
+              exit 1
+              ;;
+          esac
+          case "${architecture}" in
+            ""|*[!0-9A-Za-z._-]*)
+              echo "Invalid package architecture: ${architecture}" >&2
+              exit 1
+              ;;
+          esac
+
+          full_version="${version}-${revision}"
+          ipk="${package}_${full_version}_${architecture}.ipk"
+          workdir="$(mktemp -d)"
+          mkdir -p "${workdir}/control" "${workdir}/data"
+
+          cp -a etc lib usr www "${workdir}/data/"
+
+          cat > "${workdir}/control/control" <<EOF
+          Package: ${package}
+          Version: ${full_version}
+          Architecture: ${architecture}
+          Maintainer: xpon-luci maintainers
+          Section: luci
+          Priority: optional
+          Depends: libc
+          Description: LuCI xPON management panel for Airoha based devices.
+           Includes authentication, service VLAN, IPTV multicast, status, and
+           runtime replay helpers for XPON devices.
+          EOF
+          sed -i 's/^          //' "${workdir}/control/control"
+
+          cat > "${workdir}/control/postinst" <<'EOF'
+          #!/bin/sh
+          set -e
+
+          [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon || true
+          [ ! -x /etc/init.d/pon-services ] || /etc/init.d/pon-services enable || true
+          [ ! -x /etc/init.d/xpon-app ] || /etc/init.d/xpon-app enable || true
+
+          exit 0
+          EOF
+          sed -i 's/^          //' "${workdir}/control/postinst"
+          chmod 0755 "${workdir}/control/postinst"
+
+          printf '2.0\n' > "${workdir}/debian-binary"
+
+          tar \
+            --format=gnu \
+            --sort=name \
+            --mtime="@${source_date_epoch}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C "${workdir}/control" \
+            -czf "${workdir}/control.tar.gz" \
+            .
+
+          tar \
+            --format=gnu \
+            --sort=name \
+            --mtime="@${source_date_epoch}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C "${workdir}/data" \
+            -czf "${workdir}/data.tar.gz" \
+            .
+
+          (cd "${workdir}" && ar cr "${repo_dir}/${ipk}" debian-binary control.tar.gz data.tar.gz)
+
+          ar t "${ipk}"
+          tar -tzf "${workdir}/control.tar.gz"
+          tar -tzf "${workdir}/data.tar.gz" | sed -n '1,120p'
+
+          sha256="$(sha256sum "${ipk}" | awk '{print $1}')"
+          echo "ipk=${ipk}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          printf '### %s\n\n- Commit: `%s`\n- SHA256: `%s`\n- 覆盖安装: `opkg install --force-overwrite --force-reinstall /tmp/%s`\n' \
+            "${ipk}" "$GITHUB_SHA" "$sha256" "${ipk}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload opkg package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build.outputs.ipk }}
+          path: ${{ steps.build.outputs.ipk }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
