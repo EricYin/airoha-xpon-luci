@@ -23,7 +23,7 @@ uci_get() { uci -q get "$1"; }
 # xpon.device.pon_mode 只由 LuCI 认证页成功保存时写入，并作为“用户已保存”标志。
 # EPON 走 OAM（oamcfgCmd loid0），GPON 走 OMCI（omcicfgCmd）。
 restore_auth() {
-	local t p pt k v read_v factory_sn old_loid onu_type onu_high
+	local t p pt k v read_v factory_sn old_loid onu_type onu_high method
 	# env 是 ONU 形态/PON 技术的唯一权威来源。优先采用本次实际启动参数，
 	# 只有 /proc/cmdline 缺失时才读取 env；此函数永远不反写两者。
 	onu_type=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' /proc/cmdline 2>/dev/null)
@@ -72,6 +72,8 @@ restore_auth() {
 		return 0
 	fi
 	t=$(uci_get xpon.device.auth_type_g)
+	method=$(uci_get xpon.device.auth_method_g)
+	[ "$method" = "password" ] && t=SN
 	if [ "$p" = "EPON" ]; then
 		[ -n "$(uci_get xpon.device.loid)" ] || {
 			logger -t xpon "restore-auth: pon_mode=EPON 但 loid 为空，跳过覆盖"
@@ -86,7 +88,7 @@ restore_auth() {
 					return 0
 				}
 				;;
-			sn|SN) : ;;
+			sn|SN|password|PASSWORD) t=SN ;;
 			*) logger -t xpon "restore-auth: 未知 auth_type_g=$t，跳过"; return 0 ;;
 		esac
 	fi
@@ -98,8 +100,10 @@ restore_auth() {
 		te=$(uci_get xpon.device.auth_type_e); te=${te:-LOID}
 		uci set network.xpon_auth.auth_type_e="$te"
 		uci -q delete network.xpon_auth.auth_type_g
+		uci -q delete network.xpon_auth.auth_method_g
 	else
 		uci set network.xpon_auth.auth_type_g="$t"
+		[ -n "$method" ] && uci set network.xpon_auth.auth_method_g="$method" || uci -q delete network.xpon_auth.auth_method_g
 		uci -q delete network.xpon_auth.auth_type_e
 	fi
 	for k in loid def_sn sn xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
@@ -131,7 +135,7 @@ restore_auth() {
 }
 
 apply_auth() {
-	local mode auth sn_type loid loidpw defsn sn apwd hexpwd regpwd identity_sn identity_vendor
+	local mode auth auth_method sn_type loid loidpw defsn sn apwd hexpwd regpwd identity_sn identity_vendor
 	local epon_oui epon_ctc_oui epon_ven epon_onu_vendor tries
 	local equipment_val onuver_val omcc_val
 	identity_get() {
@@ -141,6 +145,9 @@ apply_auth() {
 	}
 	mode=$(uci_get network.xpon_auth.pon_mode); [ -z "$mode" ] && mode=GPON
 	auth=$(uci_get network.xpon_auth.auth_type_g); [ -z "$auth" ] && auth=LOID
+	auth_method=$(uci_get network.xpon_auth.auth_method_g)
+	[ -n "$auth_method" ] || auth_method=$(uci_get xpon.device.auth_method_g)
+	[ "$auth_method" = "password" ] && auth=sn
 	case "$auth" in loid|LOID) auth=loid ;; sn|SN) auth=sn ;; esac
 	sn=$(uci_get network.xpon_auth.sn)
 	sn=$(printf '%s' "$sn" | tr 'a-z' 'A-Z')
@@ -150,6 +157,7 @@ apply_auth() {
 	defsn=$(uci_get network.xpon_auth.def_sn)
 	defsn=$(printf '%s' "$defsn" | tr 'a-z' 'A-Z')
 	sn_type=$(uci_get network.xpon_auth.xpon_sn_auth_type); [ -z "$sn_type" ] && sn_type=ascii
+	[ "$auth_method" = "password" ] && sn_type=regid
 	apwd=$(uci_get network.xpon_auth.sn_ascii_password)
 	hexpwd=$(uci_get network.xpon_auth.sn_hex_password)
 	regpwd=$(uci_get network.xpon_auth.sn_regid_password)

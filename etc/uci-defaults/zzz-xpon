@@ -29,6 +29,7 @@ config auth 'device'
 	option epon_pon_mac ''
 	option gpon_pon_mac ''
 	option auth_type_g 'LOID'
+	option auth_method_g 'loid'
 	option loid ''
 	option loid_password ''
 	option def_sn ''
@@ -130,6 +131,7 @@ if ! uci -q get network.xpon_auth.pon_tech >/dev/null; then
 	uci set network.xpon_auth.pon_tech="$pt"
 fi
 uci -q get network.xpon_auth.auth_type_g >/dev/null || uci set network.xpon_auth.auth_type_g='LOID'
+uci -q get network.xpon_auth.auth_method_g >/dev/null || uci set network.xpon_auth.auth_method_g='loid'
 uci -q get network.xpon_auth.xpon_sn_auth_type >/dev/null || uci set network.xpon_auth.xpon_sn_auth_type='ascii'
 uci -q get network.xpon_auth.sn >/dev/null || uci set network.xpon_auth.sn="$factory_sn"
 uci -q get network.xpon_auth.def_sn >/dev/null || uci set network.xpon_auth.def_sn="$factory_sn"
@@ -144,6 +146,7 @@ uci -q get xpon.device.pon_tech >/dev/null || uci set xpon.device.pon_tech="$(uc
 uci -q get xpon.device.epon_pon_mac >/dev/null || uci set xpon.device.epon_pon_mac=''
 uci -q get xpon.device.gpon_pon_mac >/dev/null || uci set xpon.device.gpon_pon_mac=''
 uci -q get xpon.device.auth_type_g >/dev/null || uci set xpon.device.auth_type_g='LOID'
+uci -q get xpon.device.auth_method_g >/dev/null || uci set xpon.device.auth_method_g='loid'
 factory_vendor=${factory_sn%????????}
 [ "${#factory_vendor}" -eq 4 ] || factory_vendor=
 [ -n "$(uci -q get xpon.device.vendor_id)" ] || [ -z "$factory_vendor" ] || uci set xpon.device.vendor_id="$factory_vendor"

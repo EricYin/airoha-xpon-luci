@@ -1,4 +1,5 @@
 xpon-luci 2.8 2026-08-18
+auth: PASSWORD 认证新增 auth_method_g=password 持久标记；开机恢复和严格重放固定走 SN + REG_ID(regid)，避免重启后丢失 PASSWORD 语义
 status: EPON OLT 设备卡片改显示 MPCP OLT MAC，不再显示 OMCI ME131 提示
 xpon-luci: ImmortalWrt authentication requires the isolated airoha-xpon-vendor-tools package and its /userfs/bin compatibility links.
 services: 允许相同 tag VLAN ID 与 untag pon 多业务复用；未受管 pon/pon.<VID> 不再阻断保存

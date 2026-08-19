@@ -439,13 +439,15 @@ function auth_values()
 	end
 	v.pon_mode          = saved("pon_mode", "GPON")
 	v.auth_type_g       = saved("auth_type_g", "LOID")
+	v.auth_method_g     = saved("auth_method_g", "")
 	v.auth_type_e       = saved("auth_type_e", "LOID")
 	v.loid              = saved("loid", "")
 	v.loid_password     = saved("loid_password", "")
 	v.sn                = saved("sn", "")
 	v.xpon_sn_auth_type = saved("xpon_sn_auth_type", "ascii")
 	-- PASSWORD（移动 SN+Password）落库为 SN + regid，读回时还原成独立选项
-	if v.auth_type_g:lower() == "sn" and v.xpon_sn_auth_type:lower() == "regid" then
+	if v.auth_method_g:lower() == "password" or
+		(v.auth_type_g:lower() == "sn" and v.xpon_sn_auth_type:lower() == "regid") then
 		v.auth_type_g = "password"
 	end
 	v.sn_ascii_password = saved("sn_ascii_password", "")
@@ -1701,14 +1703,19 @@ local function save_auth(fv)
 	-- 只认 SN* 或 LOID 两种：REG_ID（移动 Password）= SN + regid 密码，落库为 SN + xpon_sn_auth_type=regid
 	local snf = (fv("xpon_sn_auth_type") or "ascii"):lower()
 	local ui_auth = auth_type:lower()
+	local auth_method = ui_auth
 	if ui_auth == "regid" then
 		auth_type, snf = "SN", "regid"
+		auth_method = "password"
 	elseif ui_auth == "password" then
 		auth_type, snf = "SN", "regid"
+		auth_method = "password"
 	elseif ui_auth == "loid" then
 		auth_type = "LOID"
+		auth_method = "loid"
 	else
 		auth_type = "SN"
+		auth_method = "sn"
 	end
 	local submitted_loid_password = fv("loid_password") or ""
 	local stored_loid_password = u:get("xpon", "device", "loid_password")
@@ -1769,8 +1776,10 @@ local function save_auth(fv)
 	if pmode == "EPON" then
 		u:set("network", "xpon_auth", "auth_type_e", auth_type_e)
 		u:delete("network", "xpon_auth", "auth_type_g")
+		u:delete("network", "xpon_auth", "auth_method_g")
 	else
 		u:set("network", "xpon_auth", "auth_type_g", auth_type)
+		u:set("network", "xpon_auth", "auth_method_g", auth_method)
 		u:delete("network", "xpon_auth", "auth_type_e")
 	end
 	if fv("loid") and fv("loid") ~= "" then u:set("network", "xpon_auth", "loid", fv("loid")) end
@@ -1812,8 +1821,10 @@ local function save_auth(fv)
 	if pmode == "EPON" then
 		u:set("xpon", "device", "auth_type_e", auth_type_e)
 		u:delete("xpon", "device", "auth_type_g")
+		u:delete("xpon", "device", "auth_method_g")
 	else
 		u:set("xpon", "device", "auth_type_g", auth_type)
+		u:set("xpon", "device", "auth_method_g", auth_method)
 		u:delete("xpon", "device", "auth_type_e")
 	end
 	if fv("loid") and fv("loid") ~= "" then u:set("xpon", "device", "loid", fv("loid")) end
@@ -1884,6 +1895,12 @@ local function save_auth(fv)
 	local check = uci_native.cursor()
 	local equipment = fv("equipment_id") or ""
 	local onu_version = fv("onu_version") or ""
+	if pmode ~= "EPON" and check:get("network", "xpon_auth", "auth_method_g") ~= auth_method then
+		return nil, "persist_network_auth_method"
+	end
+	if pmode ~= "EPON" and check:get("xpon", "device", "auth_method_g") ~= auth_method then
+		return nil, "persist_device_auth_method"
+	end
 	if sn ~= "" then
 		if check:get("network", "xpon_auth", "sn") ~= sn
 			or check:get("network", "xpon_auth", "def_sn") ~= sn then

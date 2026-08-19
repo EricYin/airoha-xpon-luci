@@ -117,6 +117,8 @@ hex_ascii4() {
 }
 
 auth=$(get auth_type_g)
+auth_method=$(get auth_method_g)
+[ "$auth_method" = "password" ] && auth=SN
 
 # 启动重放只读取本次实际启动的 onu_type，绝不根据 UCI 改写 env。
 # /proc/cmdline 是当前内核模式；仅在取不到时才读取 U-Boot env。
@@ -149,6 +151,7 @@ fi
 [ -n "$pmac" ] || pmac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
 regid=$(get sn_regid_password)
 sn_type=$(get xpon_sn_auth_type); asciipw=$(get sn_ascii_password); hexpw=$(get sn_hex_password)
+[ "$auth_method" = "password" ] && sn_type=regid
 epon_oui=$(get epon_oui); epon_ctc_oui=$(get epon_ctc_oui); epon_ven=$(get epon_ven_info)
 epon_onu_vendor=$(get epon_onu_vendor_id)
 epon_serial=$(get epon_serial)
