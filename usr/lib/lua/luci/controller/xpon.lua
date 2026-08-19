@@ -1729,6 +1729,7 @@ local function save_auth(fv)
 		return u:get("xpon", "device", field)
 			or u:get("network", "xpon_auth", field) or ""
 	end
+	local stored_regid_password = stored_sn_password("regid")
 	-- EPON/XEPON 用 auth_type_e（TYPE_EPON_AUTH），EPON 只支持 LOID 认证，必须大写
 	local auth_type_e = "LOID"
 	-- 页面只接收完整 PON SN；Vendor ID 始终由前 4 位派生，避免两个配置源不一致。
@@ -1791,9 +1792,14 @@ local function save_auth(fv)
 	if fv("equipment_id") and fv("equipment_id") ~= "" then u:set("network", "xpon_auth", "equipment_id", fv("equipment_id")) end
 	if fv("onu_version") and fv("onu_version") ~= "" then u:set("network", "xpon_auth", "onu_version", fv("onu_version")) end
 	if omcc_version ~= "" then u:set("network", "xpon_auth", "omcc_version", omcc_version) end
-	-- 移动 Password = 只填 REG_ID（regid ≤36）；SN 认证 = ascii/hex 密码（可空）
-	local snpwd = (ui_auth == "password") and (fv("reg_id") or "") or (fv("sn_password") or "")
-	if snpwd == "" then
+	-- 移动 Password = 只填 REG_ID（regid ≤36）；留空保持旧值，避免只切换认证类型却丢失密码。
+	local submitted_regid = fv("reg_id") or ""
+	local snpwd = (ui_auth == "password") and
+		(submitted_regid ~= "" and submitted_regid or stored_regid_password) or
+		(fv("sn_password") or "")
+	if ui_auth == "password" and snpwd == "" then
+		return nil, "reg_id"
+	elseif snpwd == "" then
 		snpwd = stored_sn_password(snf)
 	end
 	if snpwd ~= "" then
@@ -2392,7 +2398,12 @@ function action_save()
 		elseif atg == "password" then
 			-- 移动 Password：PON SN + REG_ID。
 			local rp = formvalue("reg_id") or ""
-			if #rp > 36 then
+			local u = uci.cursor()
+			local stored_rp = u:get("xpon", "device", "sn_regid_password")
+				or u:get("network", "xpon_auth", "sn_regid_password") or ""
+			if #rp == 0 and stored_rp == "" then
+				err = "reg_id"
+			elseif #rp > 36 then
 				err = "reg_id"
 			end
 		end
@@ -3297,7 +3308,12 @@ local function collect_status(include_details)
 			body = epon_llid_out ~= "" and epon_llid_out
 				or "（ponmgr、状态文件、/proc 与内核日志均无有效 LLID 输出）" }
 			or sec("认证参数 (omcicfgCmd)",
-				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat"),
+				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat; " ..
+				"echo '---- PASSWORD/REG_ID 保存状态（明文） ----'; " ..
+				"am=$(uci -q get network.xpon_auth.auth_method_g); [ -n \"$am\" ] || am=$(uci -q get xpon.device.auth_method_g); echo \"auth_method_g=${am:-未知}\"; " ..
+				"st=$(uci -q get network.xpon_auth.xpon_sn_auth_type); [ -n \"$st\" ] || st=$(uci -q get xpon.device.xpon_sn_auth_type); echo \"xpon_sn_auth_type=${st:-未知}\"; " ..
+				"rp=$(uci -q get network.xpon_auth.sn_regid_password); [ -n \"$rp\" ] || rp=$(uci -q get xpon.device.sn_regid_password); [ -n \"$rp\" ] && echo \"sn_regid_password=$rp\" || echo 'sn_regid_password=（空）'; " ..
+				"echo '---- 最近严格下发日志（若使用应用按钮） ----'; sed -n '/ponmgr gpon set passwd/,$p' /tmp/xpon-auth-native.log 2>/dev/null | tail -20"),
 		is_epon and { title = "OLT MAC（EPON/MPCP）",
 			body = olt_mac and ("OLT MAC " .. olt_mac)
 				or "OLT MAC 未读取到（需设备提供 devmem；寄存器 0x1FB66390/0x1FB66394）。" }

@@ -15,7 +15,7 @@ run() {
 run_secret() {
 	label=$1
 	shift
-	echo "+ $label <已隐藏>" >> "$LOG"
+	echo "+ $*" >> "$LOG"
 	"$@" >> "$LOG" 2>&1
 	rc=$?
 	[ "$rc" -eq 0 ] || { echo "失败：$label exit_code=$rc" >> "$LOG"; exit "$rc"; }
@@ -54,10 +54,10 @@ verify_secret() {
 	want=$2
 	have=$(omci_read "$attr")
 	if [ "$have" != "$want" ]; then
-		echo "回读校验失败：$attr（密码值已隐藏）" >> "$LOG"
+		echo "回读校验失败：$attr want='$want' have='$have'" >> "$LOG"
 		exit 65
 	fi
-	echo "回读校验成功：$attr（密码值已隐藏）" >> "$LOG"
+	echo "回读校验成功：$attr='$have'" >> "$LOG"
 }
 
 verify_mac() {
@@ -87,18 +87,10 @@ verify_oam() {
 			;;
 	esac
 	if [ "$cmp_have" != "$cmp_want" ]; then
-		if [ "$secret" = "1" ]; then
-			echo "回读校验失败：$attr（密码值已隐藏）" >> "$LOG"
-		else
-			echo "回读校验失败：$attr want='$want' have='$have'" >> "$LOG"
-		fi
+		echo "回读校验失败：$attr want='$want' have='$have'" >> "$LOG"
 		exit 65
 	fi
-	if [ "$secret" = "1" ]; then
-		echo "回读校验成功：$attr（密码值已隐藏）" >> "$LOG"
-	else
-		echo "回读校验成功：$attr='$have'" >> "$LOG"
-	fi
+	echo "回读校验成功：$attr='$have'" >> "$LOG"
 }
 
 hex_ascii4() {

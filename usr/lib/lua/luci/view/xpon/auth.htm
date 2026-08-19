@@ -155,14 +155,14 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="loid_password">LOID 密码</label>
 			<div class="cbi-value-field">
 				<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-					<input type="password" id="loid_password" name="loid_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持当前选择" />
+					<input type="text" id="loid_password" name="loid_password" class="cbi-input-text" autocomplete="new-password" placeholder="留空 = 保持当前选择" />
 					<label style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
 						<input type="checkbox" id="loid_password_clear" name="loid_password_clear" value="1"<% if not v.loid_password_set then %> checked="checked"<% end %> />
 						使用空 LOID 密码（LOID-only默认值）
 					</label>
 				</div>
 				<div class="cbi-value-description">多数省份为空；LOID 密码 ≠ GPON PWD，别搞混了。<br />
-					当前已配置：<code><%=v.loid_password_set and "已设置（不显示明文）" or "（空）"%></code></div>
+					当前已配置：<code><%=esc(v.loid_password ~= "" and v.loid_password or "（空）")%></code></div>
 			</div>
 		</div>
 
@@ -181,9 +181,9 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-sn">
 			<label class="cbi-value-title" for="sn_password">SN 密码</label>
 			<div class="cbi-value-field">
-				<input type="password" id="sn_password" name="sn_password" class="cbi-input-text" autocomplete="new-password" maxlength="36" placeholder="留空 = 保持原值（按上面格式填）" />
+				<input type="text" id="sn_password" name="sn_password" class="cbi-input-text" autocomplete="new-password" maxlength="36" placeholder="留空 = 保持原值（按上面格式填）" />
 				<div class="cbi-value-description">ascii ≤10 / hex ≤20；留空不改。家宽一般不需要 PWD，政企专线可能开启 SN+PWD。<br />
-					当前已配置：<code><%=esc(v.sn_password ~= "" and "已设置（不显示明文）" or "（空）")%></code></div>
+					当前已配置：<code><%=esc(v.sn_password ~= "" and v.sn_password or "（空）")%></code></div>
 			</div>
 		</div>
 

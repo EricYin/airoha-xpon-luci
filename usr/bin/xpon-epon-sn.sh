@@ -79,9 +79,10 @@ repair_runtime_drift() {
 		[ "$desired_password" = '""' ] && desired_password=
 		have_password=$(oam_value loidPasswd0)
 		if [ "$have_password" != "$desired_password" ]; then
+			logger -t xpon "EPON OAM 漂移：loidPasswd0 want='$desired_password' have='$have_password'"
 			if /userfs/bin/oamcfgCmd set loidPasswd0 "$desired_password" >/dev/null 2>&1 &&
 			   [ "$(oam_value loidPasswd0)" = "$desired_password" ]; then
-				repaired="$repaired loidPasswd0"
+				repaired="$repaired loidPasswd0='$desired_password'"
 			else
 				failed=1
 			fi

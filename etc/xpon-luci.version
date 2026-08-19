@@ -1,4 +1,5 @@
-xpon-luci 2.8 2026-08-18
+xpon-luci 2.8 2026-08-19
+auth: PASSWORD 认证要求 REG_ID 已填写或已有旧值；认证页、保存详情、严格下发日志与启动恢复日志均明文显示 passwd/REG_ID，区分“未保存/未下发/SDK 不回显”
 auth: PASSWORD 认证新增 auth_method_g=password 持久标记；开机恢复和严格重放固定走 SN + REG_ID(regid)，避免重启后丢失 PASSWORD 语义
 status: EPON OLT 设备卡片改显示 MPCP OLT MAC，不再显示 OMCI ME131 提示
 xpon-luci: ImmortalWrt authentication requires the isolated airoha-xpon-vendor-tools package and its /userfs/bin compatibility links.
@@ -6,7 +7,7 @@ services: 允许相同 tag VLAN ID 与 untag pon 多业务复用；未受管 pon
 status: EPON 10 秒快速轮询改读守护刷新的 LLID 状态文件，修复正常注册时主标签误报“未检测到有效 LLID”
 epon: 同 PID 守护扩展到 ctcOui/loidPasswd0/ONUSN，漂移时仅轻量修复变化项；新 PID 才完整重放
 auth: EPON SN 增加显式的 PON MAC 末字节 +0x08 候选按钮，仅填表且提示必须核对原装 ONU
-epon: OMCI sn/equipmentId/版本重启恢复 AXON/BVMN 属出厂 GPON 链；EPON 页面停止读取并隐藏这些非认证字段
+epon: OMCI sn/equipmentId/版本重启恢复 AXON/BVMN 属出厂 GPON 链；EPON 页面停止读取并不展示这些非认证字段
 epon: LOID-only 在首次应用和守护重放中都显式下发空 loidPasswd0，并对空值执行真实回读校验
 epon: 增加 OAM 身份守护；按 epon_oam PID 变化自动重放，且每 30 秒只读校验 ONUSN，漂移时才修复
 epon: ctcOui 与 localOui 解耦，默认及空值回退改为抓包验证的 111111；迁移旧版自动复制值并保留手动覆盖
@@ -35,7 +36,7 @@ auth: GPON/EPON 逐项严格下发与运行态回读；OMCC 同步原厂 gpon �
 auth: 修复后端误用正则 {n,m} 导致 OMCC/PON MAC/EPON OUI 合法值被拒绝
 auth: OMCC 改为数值解析并规范化为 0xNN；错误页显示 auth-r4 便于识别 LuCI 旧缓存
 auth: r5 将 OMCC 改为非阻断可选项；不可解析时保持原值，不再拒绝整张认证表单
-auth: 修复 native_write_64：SN 校验改为 BusyBox ash 原生检查、清理隐藏空白并增加 network UCI 回退
+auth: 修复 native_write_64：SN 校验改为 BusyBox ash 原生检查、清理不可见空白并增加 network UCI 回退
 auth: 修复 ensure_section 错用 cursor:add 导致 xpon.device 身份字段静默保存失败；提交后强制 UCI 回读
 auth: 缺少 /etc/config/xpon 时由 nixio.fs 创建最小合法配置；检查 UCI section/commit 返回值
 auth: Equipment ID 放宽为 1~24 个可打印 ASCII，移除额外格式限制与冗余说明

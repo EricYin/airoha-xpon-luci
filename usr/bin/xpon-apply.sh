@@ -189,6 +189,7 @@ apply_auth() {
 			set_sn "${defsn:-$sn}"
 			[ -n "$loid" ] && $OMCI set loid "$loid" >/dev/null 2>&1
 			# 空字符串是有效配置，表示 LOID-only；不能保留 netifd 的 ECONET 默认值。
+			logger -t xpon "apply_auth: $OMCI set loidPasswd '$loidpw'"
 			$OMCI set loidPasswd "$loidpw" >/dev/null 2>&1
 		else
 			set_sn "$sn"
@@ -198,11 +199,20 @@ apply_auth() {
 			#   ascii ≤10 字符、hex ≤20 位（=10 字节的十六进制编码）、regid ≤36（移动 Password / 电信注册码）
 			# 按 xpon_sn_auth_type 三选一（hex->hex，regid->regid，其它->ascii）
 			if [ "$sn_type" = "hex" ]; then
-				[ -n "$hexpwd" ] && $PONMGRCLI gpon set passwd hex "$hexpwd" >/dev/null 2>&1
+				[ -n "$hexpwd" ] && {
+					logger -t xpon "apply_auth: $PONMGRCLI gpon set passwd hex '$hexpwd'"
+					$PONMGRCLI gpon set passwd hex "$hexpwd" >/dev/null 2>&1
+				}
 			elif [ "$sn_type" = "regid" ]; then
-				[ -n "$regpwd" ] && $PONMGRCLI gpon set passwd regid "$regpwd" >/dev/null 2>&1
+				[ -n "$regpwd" ] && {
+					logger -t xpon "apply_auth: $PONMGRCLI gpon set passwd regid '$regpwd'"
+					$PONMGRCLI gpon set passwd regid "$regpwd" >/dev/null 2>&1
+				}
 			else
-				[ -n "$apwd" ] && $PONMGRCLI gpon set passwd ascii "$apwd" >/dev/null 2>&1
+				[ -n "$apwd" ] && {
+					logger -t xpon "apply_auth: $PONMGRCLI gpon set passwd ascii '$apwd'"
+					$PONMGRCLI gpon set passwd ascii "$apwd" >/dev/null 2>&1
+				}
 			fi
 		fi
 		# 厂商信息（netifd 引擎不管）。pon_mode 同时作为认证页已成功保存标志；
@@ -243,7 +253,10 @@ apply_auth() {
 		# XEPON 需“模式”页切到 42/41/32/31 且 OLT 为 10G-EPON 口，实验性。
 		$OAM set mode 2 >/dev/null 2>&1
 		[ -n "$loid" ] && $OAM set loid0 "$loid" >/dev/null 2>&1
-		[ -n "$loid" ] && $OAM set loidPasswd0 "$loidpw" >/dev/null 2>&1
+		[ -n "$loid" ] && {
+			logger -t xpon "apply_auth: $OAM set loidPasswd0 '$loidpw'"
+			$OAM set loidPasswd0 "$loidpw" >/dev/null 2>&1
+		}
 		# OAM 身份均为运行态；这里先写只是兼容旧引擎，重启后的新进程
 		# 还必须由 xpon-auth-native.sh 再写一次并逐项回读。
 		epon_oui=$(uci_get xpon.device.epon_oui)
