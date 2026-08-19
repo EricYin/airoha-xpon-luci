@@ -1,4 +1,5 @@
 xpon-luci 2.8 2026-08-18
+status: EPON OLT 设备卡片改显示 MPCP OLT MAC，不再显示 OMCI ME131 提示
 xpon-luci: ImmortalWrt authentication requires the isolated airoha-xpon-vendor-tools package and its /userfs/bin compatibility links.
 services: 允许相同 tag VLAN ID 与 untag pon 多业务复用；未受管 pon/pon.<VID> 不再阻断保存
 status: EPON 10 秒快速轮询改读守护刷新的 LLID 状态文件，修复正常注册时主标签误报“未检测到有效 LLID”
@@ -51,11 +52,9 @@ mode: 组播新增“驱动实际登记”（xponigmpcmd mvlan show）回显
 vlan: ctl_ver=2 (manual GEM write)
 status: optical DDM (bob_info) + PON traffic bars
 auth: LOID default note
-status: CPU temp via /usr/bin/xpon-cputemp.sh (thermal_zone -> cputemp_cmd -> devmem ThermalGetT_7581)
 auth: read-back runtime values (omcicfgCmd get + PON MAC + onu_type + sys_xpon_mode)
 status: DDM cards Vcc/Ibias/Imod
 vlan: no-OMCI (pure manual) guidance box
-cputemp: static aarch64 /usr/bin/xpon-cputemp (mmap /dev/mem, no busybox devmem needed)
 auth: 认证方式仅 LOID/PASSWORD；移动 Password 独立 REG_ID（无需 SN 密码）；各字段回显当前生效值
 mode: PON VLAN 接口管理（pon.<VID> 添加/删除 + xpon_vlan 持久化）
 vlan: 页面改名 OLT 下发情况

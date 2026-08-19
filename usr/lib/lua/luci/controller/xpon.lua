@@ -2897,6 +2897,27 @@ local function ktail(cmd)
 		" | sed 's/^\\[ *[0-9][0-9]*\\.[0-9][0-9]*\\] //'")
 end
 
+local function hexword(s)
+	local h = s and s:match("0[xX]([0-9a-fA-F]+)") or nil
+	if not h then h = s and s:match("^%s*([0-9a-fA-F]+)%s*$") end
+	return h and tonumber(h, 16) or nil
+end
+
+local function epon_olt_mac()
+	local function read_reg(addr)
+		return sh("for b in /usr/sbin/devmem /sbin/devmem /usr/bin/devmem /bin/devmem /userfs/bin/devmem; do [ -x $b ] && exec $b " .. addr .. " 32; done")
+	end
+	local hi = hexword(read_reg("0x1FB66390"))
+	local lo = hexword(read_reg("0x1FB66394"))
+	if hi and lo and (hi ~= 0 or lo ~= 0) and hi <= 0xffff then
+		return string.format("%02X:%02X:%02X:%02X:%02X:%02X",
+			math.floor(hi / 0x100) % 0x100, hi % 0x100,
+			math.floor(lo / 0x1000000) % 0x100, math.floor(lo / 0x10000) % 0x100,
+			math.floor(lo / 0x100) % 0x100, lo % 0x100)
+	end
+	return nil
+end
+
 -- 汇总光模块 DDM 原始输出（无 /proc/lddla/debug 时返回空）
 local function optical_diag()
 	local notes = {}
@@ -3166,6 +3187,9 @@ local function collect_status(include_details)
 	local olt_label = olt_vendor
 	if olt_names[olt_vendor] then olt_label = olt_names[olt_vendor] end
 	if olt_equip ~= "" and olt_equip ~= "0" then olt_label = olt_label .. " / " .. olt_equip end
+	local olt_mac = is_epon and epon_olt_mac() or nil
+	local olt_device_label = is_epon and (olt_mac and ("OLT MAC " .. olt_mac) or "OLT MAC 未读取到")
+		or ((olt_label ~= "" and olt_label) or "N/A（未收到 ME131 OLT-G）")
 
 	local onu_env_raw = sh("fw_printenv onu_type 2>/dev/null")
 	local onu_env   = onu_env_raw:match("=([0-9a-fA-F]+)$") or onu_env_raw
@@ -3222,9 +3246,8 @@ local function collect_status(include_details)
 	local summary = {
 		{ label = is_epon and "MPCP 注册" or "ONU 状态", value = state_label, level = level, group = "reg", wide = true },
 		{ label = is_epon and "OAM 认证" or "OMCI 认证", value = auth_label, level = auth_level, group = "reg" },
-		{ label = "OLT 设备", value = is_epon and "EPON/OAM 模式不查询 OMCI ME131"
-			or ((olt_label ~= "" and olt_label) or "N/A（未收到 ME131 OLT-G）"),
-		  level = (olt_vendor ~= "") and "ok" or "info", group = "reg" },
+		{ label = "OLT 设备", value = olt_device_label,
+		  level = (is_epon and olt_mac or olt_vendor ~= "") and "ok" or "info", group = "reg" },
 		{ label = "PON 模式（驱动 sys_xpon_mode）", value = (sys_mode ~= "" and (sys_mode .. " → " .. (pon_mode_names[tonumber(sys_mode)] or "未知"))) or "N/A", group = "reg" },
 		{ label = "ONU 形态（env / 本次启动）", value = (onu_env_dec.form .. " / " .. onu_cmd_dec.form), group = "reg" },
 		{ label = "OMCC 分配（alloc / gemport）", value = ((alloc_id or "?") .. " / " .. (gem_id or "?")), group = "reg" },
@@ -3258,7 +3281,9 @@ local function collect_status(include_details)
 				or "（ponmgr、状态文件、/proc 与内核日志均无有效 LLID 输出）" }
 			or sec("认证参数 (omcicfgCmd)",
 				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat"),
-		is_epon and { title = "OLT-G", body = "EPON/OAM 模式不查询 OMCI ME 131。" }
+		is_epon and { title = "OLT MAC（EPON/MPCP）",
+			body = olt_mac and ("OLT MAC " .. olt_mac)
+				or "OLT MAC 未读取到（需设备提供 devmem；寄存器 0x1FB66390/0x1FB66394）。" }
 			or sec("OLT-G (ME 131, OLT 标识/型号)",
 				"timeout 3 /usr/sbin/gmtk_omci_dbg me 131 2>&1"),
 		sec("PON 接口",
