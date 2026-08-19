@@ -201,11 +201,11 @@ uci -q get pon.multicast.proxy_port >/dev/null || uci set pon.multicast.proxy_po
 [ -n "$(uci -q get pon.multicast.proxy_port)" ] || uci set pon.multicast.proxy_port='1'
 uci commit pon
 
-# 专用 init 脚本持久重放驱动组播配置；不修改 rc.local，避免重复执行。
-# 原厂 S99uenv_update 会修改 env 后重启。保留 init 文件供 S96bootloader
-# 检查，无条件移除自动启动链接，避免不同版本的脚本绕过内容匹配。
+# PON 驱动和认证启动顺序保持原厂 S00xponconfig 管理。辅助脚本只供
+# LuCI 手工调用，不在开机时自动重启 OAM、重放 MAC 或重载网络。
+# 原厂 S99uenv_update 会修改 env 后重启，继续移除其自动启动链接。
 rm -f /etc/rc.d/S99uenv_update /etc/rc.d/K99uenv_update
-[ -x /etc/init.d/pon-services ] && /etc/init.d/pon-services enable
-[ -x /etc/init.d/xpon-app ] && /etc/init.d/xpon-app enable
+rm -f /etc/rc.d/S95pon-services /etc/rc.d/K95pon-services
+rm -f /etc/rc.d/S11xpon-app /etc/rc.d/K89xpon-app
 
 exit 0

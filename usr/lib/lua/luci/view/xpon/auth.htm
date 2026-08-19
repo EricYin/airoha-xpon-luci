@@ -3,7 +3,7 @@
 <%
 local rt = v.rt or {}
 local function esc(s)
-	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+	return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub("\"", "&quot;"):gsub("'", "&#39;"))
 end
 %>
 <script type="text/javascript" src="<%=resource%>/view/xpon.js?v=<%=devstamp or "20260816-epon-onusn"%>"></script>
@@ -190,9 +190,9 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-regid">
 			<label class="cbi-value-title xpon-required" for="reg_id">REG_ID（Password认证码）</label>
 			<div class="cbi-value-field">
-				<input type="password" id="reg_id" name="reg_id" class="cbi-input-text" autocomplete="new-password" maxlength="36" placeholder="留空 = 保持原值" />
+				<input type="text" id="reg_id" name="reg_id" class="cbi-input-text" autocomplete="off" maxlength="36" value="<%=esc(v.reg_id)%>" placeholder="移动 Password 认证码" />
 				<div class="cbi-value-description">仅移动 Password 认证需要，只填这一个（≤36 位），旧猫认证页「密码/REG_ID」直接抄。<br />
-					当前已配置：<code><%=esc(v.reg_id ~= "" and "已设置（不显示明文）" or "（空）")%></code></div>
+					当前已配置：<code><%=esc(v.reg_id ~= "" and v.reg_id or "（空）")%></code></div>
 			</div>
 		</div>
 	</fieldset>

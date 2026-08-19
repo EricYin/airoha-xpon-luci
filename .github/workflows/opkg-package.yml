@@ -110,7 +110,7 @@ jobs:
           Maintainer: xpon-luci maintainers
           Section: luci
           Priority: optional
-          Depends: libc
+          Depends: libc, airoha-xpon-vendor-tools
           Description: LuCI xPON management panel for Airoha based devices.
            Includes authentication, service VLAN, IPTV multicast, status, and
            runtime replay helpers for XPON devices.

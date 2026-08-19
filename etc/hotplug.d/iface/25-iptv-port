@@ -1,6 +1,5 @@
 #!/bin/sh
-# 将受管桥接业务交给统一后端核对。保存逻辑已持久化修改 br-lan，
-# 此处负责接口即时启动以及兼容升级前仍存在双重归属的配置。
-
+# Bridge membership is persistent UCI state managed by netifd. Do not move
+# ports from iface hotplug: doing so recursively retriggers interface events.
 [ "$ACTION" = "ifup" ] || exit 0
-/usr/bin/xpon-bind-lan.sh bind "$INTERFACE"
+exit 0

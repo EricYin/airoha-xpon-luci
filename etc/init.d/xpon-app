@@ -41,6 +41,52 @@ normalize_pppoe_names() {
 	[ "$changed" = 0 ] || uci commit network
 }
 
+normalize_managed_lan_ports() {
+	local meta port dev brsec current item kept changed=0
+	local managed=" "
+
+	# Upgrade configurations written by older releases before S20network reads
+	# them. A physical port must belong to either br-lan or an Access bridge,
+	# never both. Runtime brctl changes race netifd and can restart eth0 forever.
+	for meta in $(uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=xpon_service$/\1/p"); do
+		[ "$(uci -q get "network.$meta.xpon_managed")" = 1 ] || continue
+		[ "$(uci -q get "network.$meta.enable")" = 1 ] || continue
+		[ "$(uci -q get "network.$meta.mode")" = bridged ] || continue
+		port=$(uci -q get "network.$meta.lan_port")
+		case "$port" in
+			lan1) dev=eth0.8 ;;
+			lan2) dev=eth0.7 ;;
+			lan3) dev=eth0.5 ;;
+			lan4) dev=eth0.4 ;;
+			*) continue ;;
+		esac
+		case "$managed" in *" $dev "*) ;; *) managed="$managed$dev " ;; esac
+	done
+	[ "$managed" != " " ] || return 0
+
+	for brsec in $(uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=device$/\1/p"); do
+		[ "$(uci -q get "network.$brsec.type")" = bridge ] || continue
+		[ "$(uci -q get "network.$brsec.name")" = br-lan ] && break
+		brsec=
+	done
+	[ -n "$brsec" ] || return 0
+
+	current=$(uci -q get "network.$brsec.ports")
+	kept=
+	for item in $current; do
+		case "$managed" in
+			*" $item "*) changed=1 ;;
+			*) kept="$kept $item" ;;
+		esac
+	done
+	[ "$changed" = 1 ] || return 0
+
+	uci -q delete "network.$brsec.ports"
+	for item in $kept; do uci add_list "network.$brsec.ports=$item"; done
+	uci commit network
+	logger -t xpon "已从 br-lan 持久配置移除受管端口，避免 netifd 桥成员循环"
+}
+
 refresh_epon_status() {
 	local mode tmp=/tmp/epon_reg_auth_status.$$
 	while true; do
@@ -75,6 +121,7 @@ start() {
 	disable_factory_uenv_autostart
 	[ -f /etc/config/xpon ] || [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon
 	[ -f /etc/config/xpon ] || return 0
+	normalize_managed_lan_ports
 	normalize_pppoe_names
 	# preinit 未能读取 DSD 时再补建一次。
 	[ -s /tmp/dsd.env ] || /usr/bin/xpon-dsd-env.sh

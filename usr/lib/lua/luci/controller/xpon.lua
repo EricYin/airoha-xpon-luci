@@ -1716,6 +1716,12 @@ local function save_auth(fv)
 	if stored_loid_password == '""' then stored_loid_password = "" end
 	local loid_password = submitted_loid_password ~= "" and submitted_loid_password
 		or (fv("loid_password_clear") == "1" and "" or stored_loid_password)
+	local function stored_sn_password(fmt)
+		local field = fmt == "hex" and "sn_hex_password"
+			or fmt == "regid" and "sn_regid_password" or "sn_ascii_password"
+		return u:get("xpon", "device", field)
+			or u:get("network", "xpon_auth", field) or ""
+	end
 	-- EPON/XEPON 用 auth_type_e（TYPE_EPON_AUTH），EPON 只支持 LOID 认证，必须大写
 	local auth_type_e = "LOID"
 	-- 页面只接收完整 PON SN；Vendor ID 始终由前 4 位派生，避免两个配置源不一致。
@@ -1778,6 +1784,9 @@ local function save_auth(fv)
 	if omcc_version ~= "" then u:set("network", "xpon_auth", "omcc_version", omcc_version) end
 	-- 移动 Password = 只填 REG_ID（regid ≤36）；SN 认证 = ascii/hex 密码（可空）
 	local snpwd = (ui_auth == "password") and (fv("reg_id") or "") or (fv("sn_password") or "")
+	if snpwd == "" then
+		snpwd = stored_sn_password(snf)
+	end
 	if snpwd ~= "" then
 		if snf == "hex" then
 			u:set("network", "xpon_auth", "sn_hex_password", snpwd)
@@ -1896,6 +1905,16 @@ local function save_auth(fv)
 	end
 	if omcc_version ~= "" and check:get("network", "xpon_auth", "omcc_version") ~= omcc_version then
 		return nil, "persist_omcc_version"
+	end
+	if snpwd ~= "" then
+		local pw_field = snf == "hex" and "sn_hex_password"
+			or snf == "regid" and "sn_regid_password" or "sn_ascii_password"
+		if check:get("network", "xpon_auth", pw_field) ~= snpwd then
+			return nil, "persist_network_" .. pw_field
+		end
+		if check:get("xpon", "device", pw_field) ~= snpwd then
+			return nil, "persist_device_" .. pw_field
+		end
 	end
 	if epon_pon_mac ~= "" and check:get("xpon", "device", "epon_pon_mac") ~= epon_pon_mac then
 		return nil, "persist_epon_pon_mac"

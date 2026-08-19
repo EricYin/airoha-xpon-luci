@@ -3,26 +3,10 @@
 
 START=00
 PROFILE_CFG=/userfs/profile.cfg
-XPON_AUTH_READY=/tmp/.xponconfig-persistent-auth
 
 validate_xponauth_section()
 {
     local fsan xpon_auth serialnumber
-
-    rm -f "$XPON_AUTH_READY"
-
-    # xpon.device is the persistent user configuration. Apply it here, before
-    # S20network/netifd reads network.xpon_auth, so startup does not need a
-    # later overwrite to undo the factory DSD defaults.
-    if [ -x /usr/bin/xpon-apply.sh ] &&
-       uci -q get xpon.device.pon_mode >/dev/null 2>&1; then
-        if /usr/bin/xpon-apply.sh restore-auth; then
-            touch "$XPON_AUTH_READY"
-            logger -t XPON "persistent xPON authentication restored before netifd"
-            return 0
-        fi
-        logger -t XPON "persistent xPON authentication restore failed; using compatibility defaults"
-    fi
 
     fsan="NoNumber"
     [ -r /tmp/dsd.env ] && fsan=`awk -F \' '/^fsan=/ {print $2; exit}' /tmp/dsd.env`
@@ -183,17 +167,8 @@ start() {
         validate_xponauth_section
 
         [ -e /tmp/dsd.env ] && source /tmp/dsd.env
-        pon_mode=`uci -q get xpon.device.pon_mode`
-        if [ "$pon_mode" = "EPON" ]; then
-            saved_pon_mac=`uci -q get xpon.device.epon_pon_mac`
-        else
-            saved_pon_mac=`uci -q get xpon.device.gpon_pon_mac`
-        fi
-        [ -n "$saved_pon_mac" ] || saved_pon_mac=`uci -q get xpon.device.pon_mac`
-        pon_mac=${saved_pon_mac:-$wan_mac}
-        [ -n "${pon_mac}" ] && {
-            ifconfig pon hw ether "${pon_mac}"
-            logger -t XPON "pon interface MAC initialized from $([ -n "$saved_pon_mac" ] && echo persistent-config || echo dsd-wan_mac)"
+        [ -n "${wan_mac}" ] && {
+            ifconfig pon hw ether "${wan_mac}"
         }
 
         echo "ifconfig pon up"
