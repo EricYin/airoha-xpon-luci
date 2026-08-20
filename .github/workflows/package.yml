@@ -47,8 +47,52 @@ jobs:
           tar -tzf xpon-luci.tar.gz
           sha256="$(sha256sum xpon-luci.tar.gz | awk '{print $1}')"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
-          printf '### xpon-luci.tar.gz\n\n- Commit: `%s`\n- SHA256: `%s`\n' \
-            "$GITHUB_SHA" "$sha256" >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '### xpon-luci.tar.gz\n\n'
+            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- SHA256: `%s`\n\n' "$sha256"
+            cat <<'EOF'
+          #### 下载说明
+
+          GitHub Actions 页面下载 artifact 时，浏览器通常会先得到一个 zip 包。请先解压，确认里面的 `xpon-luci.tar.gz` 才是真正要上传到设备的压缩包。
+
+          本机检查下载文件；GitHub 可能下载成 `xpon-luci.tar.gz.zip`，也可能文件名仍是 `xpon-luci.tar.gz` 但内容是 zip：
+
+          ```sh
+          file xpon-luci.tar.gz xpon-luci.tar.gz.zip 2>/dev/null || true
+          unzip xpon-luci.tar.gz.zip 2>/dev/null || unzip xpon-luci.tar.gz
+          file xpon-luci.tar.gz
+          tar -tzf xpon-luci.tar.gz | sed -n '1,80p'
+          sha256sum xpon-luci.tar.gz
+          ```
+
+          解压后的 `xpon-luci.tar.gz` 应显示 `gzip compressed data`，并且 `tar -tzf` 能列出 `etc/`、`lib/`、`usr/`、`www/`。
+
+          #### 上传到设备
+
+          ```sh
+          scp xpon-luci.tar.gz root@192.168.1.1:/tmp/
+          ```
+
+          #### 覆盖解压安装并清 LuCI 缓存
+
+          ```sh
+          cd /tmp
+          tar -tzf xpon-luci.tar.gz | sed -n '1,40p'
+          tar -xzf xpon-luci.tar.gz -C /
+          chmod +x /usr/bin/pon-multicast /usr/bin/xpon-*.sh /usr/bin/xpon-mode /etc/init.d/pon-services /etc/init.d/xpon-app /etc/init.d/xponconfig /etc/uci-defaults/zzz-xpon 2>/dev/null || true
+          /etc/uci-defaults/zzz-xpon 2>/dev/null || true
+          /etc/init.d/pon-services enable 2>/dev/null || true
+          /etc/init.d/xpon-app enable 2>/dev/null || true
+          rm -f /tmp/luci-indexcache
+          rm -rf /tmp/luci-modulecache
+          /etc/init.d/uhttpd restart
+          /etc/init.d/xpon-app restart
+          ```
+
+          `tar -tzf` 如果报错，说明上传的不是 tar.gz 本体，通常是 artifact zip 或网页下载结果。
+          EOF
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload archive
         uses: actions/upload-artifact@v7
