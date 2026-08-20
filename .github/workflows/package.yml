@@ -43,7 +43,7 @@ jobs:
             --group=0 \
             --numeric-owner \
             -czf xpon-luci.tar.gz \
-            docs etc lib tools usr www
+            etc lib usr www
           tar -tzf xpon-luci.tar.gz
           sha256="$(sha256sum xpon-luci.tar.gz | awk '{print $1}')"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
