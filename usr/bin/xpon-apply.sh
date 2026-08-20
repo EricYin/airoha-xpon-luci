@@ -4,7 +4,7 @@
 # 读 UCI -> omcicfgCmd/oamcfgCmd 下发 -> 重启 OMCI -> reload network
 # 按设备原生认证流程执行：
 #   GPON SN  : set sn + ponmgr gpon set passwd ascii|hex <pwd>
-#   GPON LOID: set sn <def_sn> + set loid + set loidPasswd
+#   GPON LOID: set sn <def_sn> + set loid + set loid_password
 #   /tmp/load_process 存在则只发 `omci set reconfig`，否则重启 omci/ponmgr_cfg
 
 OMCI=/userfs/bin/omcicfgCmd
@@ -16,6 +16,22 @@ EPON_OAM=/userfs/bin/epon_oam
 
 uci_get() { uci -q get "$1"; }
 
+current_pon_mode() {
+	local onu_type onu_high
+	onu_type=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' /proc/cmdline 2>/dev/null)
+	case "$onu_type" in
+		[0-9A-Fa-f][0-9A-Fa-f]) : ;;
+		*) onu_type=$(fw_printenv -n onu_type 2>/dev/null) ;;
+	esac
+	case "$onu_type" in [0-9A-Fa-f][0-9A-Fa-f]) : ;; *) return 1 ;; esac
+	onu_high=${onu_type%?}
+	case "$onu_high" in
+		2|3|4|5|c|C) printf '%s' EPON ;;
+		1|6|7) printf '%s' GPON ;;
+		*) return 1 ;;
+	esac
+}
+
 # 开机恢复：新版 S00xponconfig 在驱动初始化阶段直接调用本函数；旧固件
 # 仍由 S11xpon-app 在 S20network/netifd 读取配置前调用。两条路径都从
 # LuCI 持久源 /etc/config/xpon（auth 类型段 device）镜像 network.xpon_auth，
@@ -23,7 +39,8 @@ uci_get() { uci -q get "$1"; }
 # xpon.device.pon_mode 只由 LuCI 认证页成功保存时写入，并作为“用户已保存”标志。
 # EPON 走 OAM（oamcfgCmd loid0），GPON 走 OMCI（omcicfgCmd）。
 restore_auth() {
-	local t p pt k v read_v factory_sn old_loid onu_type onu_high method
+	local t p pt k v read_v factory_sn legacy_sn legacy_vendor legacy_serial
+	local old_loid old_loidpw old_type old_method old_sn_type old_password old_loid_auth onu_type onu_high method
 	# env 是 ONU 形态/PON 技术的唯一权威来源。优先采用本次实际启动参数，
 	# 只有 /proc/cmdline 缺失时才读取 env；此函数永远不反写两者。
 	onu_type=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' /proc/cmdline 2>/dev/null)
@@ -35,10 +52,13 @@ restore_auth() {
 	onu_high=${onu_type%?}
 	case "$onu_high" in
 		1) p=GPON; pt=GPON ;;
+		2) p=EPON; pt=EPON ;;
 		3) p=EPON; pt=EPON_10G_1G ;;
 		4) p=EPON; pt=EPON_10G_10G ;;
+		5) p=EPON; pt=EPON_1G_1G ;;
 		6) p=GPON; pt=XGPON ;;
 		7) p=GPON; pt=XGSPON ;;
+		c|C) p=EPON; pt=EPON_TURBO ;;
 		*)
 			logger -t xpon "restore-auth: 无法识别 env onu_type=$onu_type，保留现有 PON 引擎且不写 env"
 			p=$(uci_get network.xpon_auth.pon_mode); [ "$p" = EPON ] || p=GPON
@@ -47,33 +67,101 @@ restore_auth() {
 	esac
 	if ! uci -q get xpon.device.pon_mode >/dev/null; then
 		# 旧包/覆盖安装没有“已保存”标志时，不把模板默认冒充用户配置。
-		# 保留 network 中已有 LOID，并用 DSD 的合法 FSAN 替换 NoNumber。
+		# 认证类型优先取 network 旧配置，再取 xpon.device；不能只靠 LOID
+		# 是否存在猜测，否则 PASSWORD 残留 mtk1111 会被误当成 LOID。
 		factory_sn=$(sed -n "s/^fsan='\(.*\)'/\1/p" /tmp/dsd.env 2>/dev/null | head -1)
+		legacy_sn=$(uci_get network.xpon_auth.sn)
+		[ -n "$legacy_sn" ] || legacy_sn=$(uci_get xpon.device.sn)
 		old_loid=$(uci_get network.xpon_auth.loid)
+		[ -n "$old_loid" ] || old_loid=$(uci_get xpon.device.loid)
+		[ "$old_loid" = mtk1111 ] && old_loid=
+		old_loidpw=$(uci_get network.xpon_auth.loid_password)
+		[ -n "$old_loidpw" ] || old_loidpw=$(uci_get xpon.device.loid_password)
+		[ "$old_loidpw" = '""' ] && old_loidpw=
+		old_type=$(uci_get network.xpon_auth.auth_type_g)
+		old_method=$(uci_get network.xpon_auth.auth_method_g)
+		old_sn_type=$(uci_get network.xpon_auth.xpon_sn_auth_type)
+		[ -n "$old_type" ] || old_type=$(uci_get xpon.device.auth_type_g)
+		[ -n "$old_method" ] || old_method=$(uci_get xpon.device.auth_method_g)
+		[ -n "$old_sn_type" ] || old_sn_type=$(uci_get xpon.device.xpon_sn_auth_type)
+		old_type=$(printf '%s' "$old_type" | tr 'a-z' 'A-Z')
+		old_method=$(printf '%s' "$old_method" | tr 'A-Z' 'a-z')
+		old_sn_type=$(printf '%s' "$old_sn_type" | tr 'A-Z' 'a-z')
+		old_password=
+		old_loid_auth=
+		if [ "$old_method" = password ] || [ "$old_type" = PASSWORD ] || \
+		   { [ "$old_type" = SN ] && [ "$old_sn_type" = regid ]; }; then
+			old_password=1
+		fi
 		uci set network.xpon_auth='xpon_auth'
 		uci set network.xpon_auth.pon_mode="$p"
 		[ -n "$pt" ] && uci set network.xpon_auth.pon_tech="$pt"
-		[ "${#factory_sn}" -eq 12 ] && {
-			uci set network.xpon_auth.sn="$factory_sn"
-			uci set network.xpon_auth.def_sn="$factory_sn"
+		legacy_sn=$(printf '%s' "$legacy_sn" | tr -d '[:space:]' | tr 'a-z' 'A-Z')
+		if [ "${#legacy_sn}" -ne 12 ]; then
+			legacy_sn=
+		else
+			legacy_vendor=${legacy_sn%????????}
+			legacy_serial=${legacy_sn#????}
+			case "$legacy_vendor" in *[!A-Z0-9]*|'') legacy_sn= ;; esac
+			case "$legacy_serial" in *[!0-9A-F]*|'') legacy_sn= ;; esac
+		fi
+		[ -n "$legacy_sn" ] || legacy_sn=$factory_sn
+		[ "${#legacy_sn}" -eq 12 ] && {
+			uci set network.xpon_auth.sn="$legacy_sn"
+			uci set network.xpon_auth.def_sn="$legacy_sn"
 		}
 		if [ "$p" = EPON ]; then
+			old_loid_auth=1
 			uci set network.xpon_auth.auth_type_e='LOID'
 			uci -q delete network.xpon_auth.auth_type_g
-		elif [ -n "$old_loid" ]; then
+			uci -q delete network.xpon_auth.auth_method_g
+		elif [ "$old_password" = 1 ]; then
+			uci set network.xpon_auth.auth_type_g='sn'
+			uci set network.xpon_auth.auth_method_g='password'
+			uci -q delete network.xpon_auth.auth_type_e
+		elif [ "$old_method" = loid ] || [ "$old_type" = LOID ]; then
+			old_loid_auth=1
 			uci set network.xpon_auth.auth_type_g='LOID'
+			uci set network.xpon_auth.auth_method_g='loid'
+			uci -q delete network.xpon_auth.auth_type_e
+		elif [ "$old_method" = sn ] || [ "$old_type" = SN ]; then
+			uci set network.xpon_auth.auth_type_g='sn'
+			uci set network.xpon_auth.auth_method_g='sn'
+			uci -q delete network.xpon_auth.auth_type_e
+		elif [ -n "$old_loid" ]; then
+			old_loid_auth=1
+			uci set network.xpon_auth.auth_type_g='LOID'
+			uci set network.xpon_auth.auth_method_g='loid'
 			uci -q delete network.xpon_auth.auth_type_e
 		else
-			uci set network.xpon_auth.auth_type_g='SN'
+			uci set network.xpon_auth.auth_type_g='sn'
+			uci set network.xpon_auth.auth_method_g='sn'
 			uci -q delete network.xpon_auth.auth_type_e
 		fi
+		if [ "$old_loid_auth" = 1 ]; then
+			[ -n "$old_loid" ] && uci set network.xpon_auth.loid="$old_loid"
+			if [ -n "$old_loidpw" ]; then
+				uci set network.xpon_auth.loid_password="$old_loidpw"
+			else
+				uci set 'network.xpon_auth.loid_password=""'
+			fi
+		else
+			uci -q delete network.xpon_auth.loid
+			uci -q delete network.xpon_auth.loid_password
+		fi
+		for k in xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
+			v=$(uci_get network.xpon_auth.$k)
+			[ -n "$v" ] || v=$(uci_get xpon.device.$k)
+			[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
+		done
 		uci commit network
-		logger -t xpon "restore-auth: 未找到已保存标志，使用 DSD/现存 LOID 初始化（sn=$factory_sn）"
+		logger -t xpon "restore-auth: 未找到已保存标志，按旧配置恢复 pon_mode=$p auth_type=$(uci_get network.xpon_auth.auth_type_g) sn=$(uci_get network.xpon_auth.sn)"
 		return 0
 	fi
 	t=$(uci_get xpon.device.auth_type_g)
 	method=$(uci_get xpon.device.auth_method_g)
-	[ "$method" = "password" ] && t=SN
+	method=$(printf '%s' "$method" | tr 'A-Z' 'a-z')
+	[ "$method" = "password" ] && t=sn
 	if [ "$p" = "EPON" ]; then
 		[ -n "$(uci_get xpon.device.loid)" ] || {
 			logger -t xpon "restore-auth: pon_mode=EPON 但 loid 为空，跳过覆盖"
@@ -88,7 +176,7 @@ restore_auth() {
 					return 0
 				}
 				;;
-			sn|SN|password|PASSWORD) t=SN ;;
+			sn|SN|password|PASSWORD) t=sn ;;
 			*) logger -t xpon "restore-auth: 未知 auth_type_g=$t，跳过"; return 0 ;;
 		esac
 	fi
@@ -103,20 +191,31 @@ restore_auth() {
 		uci -q delete network.xpon_auth.auth_method_g
 	else
 		uci set network.xpon_auth.auth_type_g="$t"
-		[ -n "$method" ] && uci set network.xpon_auth.auth_method_g="$method" || uci -q delete network.xpon_auth.auth_method_g
+		if [ -n "$method" ]; then
+			uci set network.xpon_auth.auth_method_g="$method"
+		else
+			uci -q delete network.xpon_auth.auth_method_g
+		fi
 		uci -q delete network.xpon_auth.auth_type_e
 	fi
-	for k in loid def_sn sn xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
+	for k in def_sn sn xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
 		v=$(uci_get xpon.device.$k)
 		[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
 	done
-	# libuci 不保留真正的空字符串。字面值 "" 对 UCI 是已配置值，
-	# netifd 拼接原生命令后则由 shell 解析为空参数，避免回退到 ECONET。
-	v=$(uci_get xpon.device.loid_password)
-	if [ -n "$v" ]; then
-		uci set network.xpon_auth.loid_password="$v"
+	if [ "$p" = EPON ] || [ "$t" = LOID ] || [ "$t" = loid ]; then
+		v=$(uci_get xpon.device.loid)
+		[ -n "$v" ] && uci set network.xpon_auth.loid="$v"
+		# libuci 不保留真正的空字符串。字面值 "" 对 UCI 是已配置值，
+		# netifd 拼接原生命令后则由 shell 解析为空参数，避免回退到 ECONET。
+		v=$(uci_get xpon.device.loid_password)
+		if [ -n "$v" ]; then
+			uci set network.xpon_auth.loid_password="$v"
+		else
+			uci set 'network.xpon_auth.loid_password=""'
+		fi
 	else
-		uci set 'network.xpon_auth.loid_password=""'
+		uci -q delete network.xpon_auth.loid
+		uci -q delete network.xpon_auth.loid_password
 	fi
 	uci commit network || {
 		logger -t xpon "restore-auth: network 提交失败，持久认证未恢复"
@@ -135,7 +234,7 @@ restore_auth() {
 }
 
 apply_auth() {
-	local mode auth auth_method sn_type loid loidpw defsn sn apwd hexpwd regpwd identity_sn identity_vendor
+	local mode configured_mode auth auth_method sn_type loid loidpw sn apwd hexpwd regpwd identity_sn identity_vendor
 	local epon_oui epon_ctc_oui epon_ven epon_onu_vendor tries
 	local equipment_val onuver_val omcc_val
 	identity_get() {
@@ -143,19 +242,28 @@ apply_auth() {
 		[ -n "$iv" ] || iv=$(uci_get xpon.device.$1)
 		printf '%s' "$iv"
 	}
-	mode=$(uci_get network.xpon_auth.pon_mode); [ -z "$mode" ] && mode=GPON
+	configured_mode=$(uci_get network.xpon_auth.pon_mode)
+	mode=$(current_pon_mode 2>/dev/null)
+	if [ -z "$mode" ]; then
+		mode=$configured_mode; [ "$mode" = EPON ] || mode=GPON
+	elif [ -n "$configured_mode" ] && [ "$configured_mode" != "$mode" ]; then
+		logger -t xpon "apply_auth: network pon_mode=$configured_mode 与当前 onu_type 引擎=$mode 不一致，以当前引擎为准"
+	fi
 	auth=$(uci_get network.xpon_auth.auth_type_g); [ -z "$auth" ] && auth=LOID
 	auth_method=$(uci_get network.xpon_auth.auth_method_g)
 	[ -n "$auth_method" ] || auth_method=$(uci_get xpon.device.auth_method_g)
+	auth_method=$(printf '%s' "$auth_method" | tr 'A-Z' 'a-z')
 	[ "$auth_method" = "password" ] && auth=sn
-	case "$auth" in loid|LOID) auth=loid ;; sn|SN) auth=sn ;; esac
+	case "$auth" in
+		loid|LOID) auth=loid ;;
+		sn|SN|password|PASSWORD) auth=sn ;;
+	esac
 	sn=$(uci_get network.xpon_auth.sn)
+	[ -n "$sn" ] || sn=$(uci_get network.xpon_auth.def_sn)
 	sn=$(printf '%s' "$sn" | tr 'a-z' 'A-Z')
 	loid=$(uci_get network.xpon_auth.loid)
 	loidpw=$(uci_get network.xpon_auth.loid_password)
 	[ "$loidpw" = '""' ] && loidpw=
-	defsn=$(uci_get network.xpon_auth.def_sn)
-	defsn=$(printf '%s' "$defsn" | tr 'a-z' 'A-Z')
 	sn_type=$(uci_get network.xpon_auth.xpon_sn_auth_type); [ -z "$sn_type" ] && sn_type=ascii
 	[ "$auth_method" = "password" ] && sn_type=regid
 	apwd=$(uci_get network.xpon_auth.sn_ascii_password)
@@ -186,11 +294,11 @@ apply_auth() {
 
 	if [ "$mode" = "GPON" ]; then
 		if [ "$auth" = "loid" ]; then
-			set_sn "${defsn:-$sn}"
+			set_sn "$sn"
 			[ -n "$loid" ] && $OMCI set loid "$loid" >/dev/null 2>&1
 			# 空字符串是有效配置，表示 LOID-only；不能保留 netifd 的 ECONET 默认值。
-			logger -t xpon "apply_auth: $OMCI set loidPasswd '$loidpw'"
-			$OMCI set loidPasswd "$loidpw" >/dev/null 2>&1
+			logger -t xpon "apply_auth: $OMCI set loid_password '$loidpw'"
+			$OMCI set loid_password "$loidpw" >/dev/null 2>&1
 		else
 			set_sn "$sn"
 			# SN 密码：本固件 omcicfgCmd 无 passwdAscii/passwdHex 子命令
@@ -217,22 +325,23 @@ apply_auth() {
 		fi
 		# 厂商信息（netifd 引擎不管）。pon_mode 同时作为认证页已成功保存标志；
 		# 没有标志时不能把旧安装包的模板默认当成用户配置下发。
-		# omcicfgCmd 子命令为驼峰：vendorId / equipmentId / onuVersion / omccVersion
-		# （snake_case 会打印 valid subcommands 帮助并静默失败）
+		# 固件 omcicfgCmd 的 set/get 参数名是下划线形式：
+		# vendor_id / equipment_id / onu_version / omcc_version / spec_version。
 		if [ -n "$(uci_get xpon.device.pon_mode)" ]; then
-			identity_sn=${defsn:-$sn}
+			identity_sn=$sn
 			identity_vendor=
 			if valid_pon_sn "$identity_sn"; then
 				identity_vendor=${identity_sn%????????}
 			fi
-			[ -n "$identity_vendor" ] && $OMCI set vendorId "$identity_vendor" >/dev/null 2>&1
-			[ -n "$equipment_val" ] && $OMCI set equipmentId "$equipment_val" >/dev/null 2>&1
-			[ -n "$onuver_val" ] && $OMCI set onuVersion "$onuver_val" >/dev/null 2>&1
-			[ -n "$omcc_val" ] && $OMCI set omccVersion "$omcc_val" >/dev/null 2>&1
+			logger -t xpon "apply_auth: GPON identity auth=$auth sn=$identity_sn vendor_id=$identity_vendor onu_version=${onuver_val:-skip}"
+			[ -n "$identity_vendor" ] && $OMCI set vendor_id "$identity_vendor" >/dev/null 2>&1
+			[ -n "$equipment_val" ] && $OMCI set equipment_id "$equipment_val" >/dev/null 2>&1
+			[ -n "$onuver_val" ] && $OMCI set onu_version "$onuver_val" >/dev/null 2>&1
+			[ -n "$omcc_val" ] && $OMCI set omcc_version "$omcc_val" >/dev/null 2>&1
 			# 记录实际回读值，区分 UCI 保存成功与 OMCI 下发成功。
-			for attr in vendorId equipmentId onuVersion omccVersion; do
-				want=$(identity_get "$(printf '%s' "$attr" | sed 's/vendorId/vendor_id/;s/equipmentId/equipment_id/;s/onuVersion/onu_version/;s/omccVersion/omcc_version/')")
-				[ "$attr" = vendorId ] && want=$identity_vendor
+			for attr in vendor_id equipment_id onu_version omcc_version; do
+				want=$(identity_get "$attr")
+				[ "$attr" = vendor_id ] && want=$identity_vendor
 				[ -n "$want" ] || continue
 				have=$($OMCI get "$attr" 2>/dev/null | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1)
 				[ "$have" = "$want" ] || logger -t xpon "apply_auth: $attr 下发不一致 want='$want' have='$have'"
@@ -241,16 +350,20 @@ apply_auth() {
 			# 未保存状态采用 DSD/网络 SN 的前四字节，避免旧模板 MTKG 与 AXON SN 不一致。
 			factory_vendor=${sn%????????}
 			[ "${#sn}" -eq 12 ] && [ "${#factory_vendor}" -eq 4 ] && \
-				$OMCI set vendorId "$factory_vendor" >/dev/null 2>&1
+				$OMCI set vendor_id "$factory_vendor" >/dev/null 2>&1
 		fi
-		# OMCI 消息交互协议版本（specVer，uint8；与 G.988 标准 2 字节版本的映射需真机验证）
-		[ -n "$(uci_get xpon.device.omci_spec_ver)" ] && $OMCI set specVer "$(uci_get xpon.device.omci_spec_ver)" >/dev/null 2>&1
+		# OMCI 消息交互协议版本（spec_version，uint8；与 G.988 标准 2 字节版本的映射需真机验证）
+		[ -n "$(uci_get xpon.device.omci_spec_ver)" ] && $OMCI set spec_version "$(uci_get xpon.device.omci_spec_ver)" >/dev/null 2>&1
 	elif [ "$mode" = "EPON" ]; then
-		# 10G-EPON（XEPON，onu_type bits[7:4]=3/4）OAM 认证。
+		# EPON（onu_type bits[7:4]=2/3/4/5/C）统一走 OAM 认证。
 		# 按 stock netifd 的 EPON 激活流程执行：
 		#   oamcfgCmd set mode 2（LINK_MODE_EPON）
 		#   oamcfgCmd set loid0 <loid> / set loidPasswd0 <pwd>
-		# XEPON 需“模式”页切到 42/41/32/31 且 OLT 为 10G-EPON 口，实验性。
+		# 具体速率模式必须与 OLT 端口能力一致。
+		if [ "${#loidpw}" -gt 12 ]; then
+			logger -t xpon "apply_auth: EPON LOID 密码为 ${#loidpw} 字节，超过 oamcfgCmd loidPasswd0 的 12 字节限制"
+			return 1
+		fi
 		$OAM set mode 2 >/dev/null 2>&1
 		[ -n "$loid" ] && $OAM set loid0 "$loid" >/dev/null 2>&1
 		[ -n "$loid" ] && {
@@ -295,7 +408,7 @@ apply_auth() {
 			return 1
 		}
 	else
-		# GPON：认证属性（尤其 vendorId/equipmentId）写入共享配置后只需 reconfig。
+		# GPON：认证属性（尤其 vendor_id/equipment_id）写入共享配置后只需 reconfig。
 		# 不能在 LuCI 保存请求中 kill/restart omci/ponmgr，否则 PON 短断并导致页面登出。
 		# 设备未运行时由 xpon-app 开机流程负责拉起，不在这里强制重启。
 		[ -x "$OMCID" ] && $OMCID set reconfig >/dev/null 2>&1

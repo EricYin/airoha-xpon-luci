@@ -7,8 +7,32 @@ OMCI=/userfs/bin/omcicfgCmd
 OAM=/userfs/bin/oamcfgCmd
 tries=0
 mac_applied=0
-# S00 主路径或 S11 兼容路径已把实际引擎镜像到 network。
-mode=$(uci -q get network.xpon_auth.pon_mode)
+
+current_pon_mode() {
+	local onu_type onu_high
+	onu_type=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' /proc/cmdline 2>/dev/null)
+	case "$onu_type" in
+		[0-9A-Fa-f][0-9A-Fa-f]) : ;;
+		*) onu_type=$(fw_printenv -n onu_type 2>/dev/null) ;;
+	esac
+	case "$onu_type" in [0-9A-Fa-f][0-9A-Fa-f]) : ;; *) return 1 ;; esac
+	onu_high=${onu_type%?}
+	case "$onu_high" in
+		2|3|4|5|c|C) printf '%s' EPON ;;
+		1|6|7) printf '%s' GPON ;;
+		*) return 1 ;;
+	esac
+}
+
+# 当前启动参数决定实际认证引擎；network 只用于缺少启动参数时的兼容回退。
+configured_mode=$(uci -q get network.xpon_auth.pon_mode)
+mode=$(current_pon_mode 2>/dev/null)
+if [ -z "$mode" ]; then
+	mode=$configured_mode
+	[ "$mode" = EPON ] || mode=GPON
+elif [ -n "$configured_mode" ] && [ "$configured_mode" != "$mode" ]; then
+	logger -t xpon "replay: network pon_mode=$configured_mode 与当前 onu_type 引擎=$mode 不一致，以当前引擎为准"
+fi
 
 while [ "$tries" -lt 90 ]; do
 	# GPON 系列的 PON MAC 只是 pon 业务接口地址，不必等待 OMCI。

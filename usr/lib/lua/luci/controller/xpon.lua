@@ -44,7 +44,7 @@ local service_ifaces = {
 --   bits[7:4]=PON 模式：1=GPON 2=EPON(1G) 3=10G/1G-EPON 4=10G/10G-EPON 5=1G/1G-EPON
 --               6=XGPON(10G/2.5G) 7=XGSPON(10G 对称) 8~A=NGPON2 B=GPON-SYM C=TURBO-EPON
 -- 设备 PON MAC 支持 XEPON 的 10G LLID/MPCP/FEC/DPoE 路径，
--- module_sel.c 把 3/4 映射到 SYS_10G_1G_EPON_MODE / SYS_10G_10G_EPON_MODE；
+-- module_sel.c 按高半字节选择固定 PON 模式；2/3/4/5/C 均为 EPON 引擎。
 -- 光模块 EN7572 BOB 为 10G PON 模块（1577/1270nm 与 XEPON 同波长），
 -- 但固件 S00 无 XEPON 专用分支（按 XGSPON 加载），且 OAM 引擎需 pon_mode=EPON 才拉起——
 -- 故 XEPON 标记为实验性，需 10G-EPON OLT 实测。
@@ -64,21 +64,23 @@ local pon_modes = {
 }
 
 -- 认证页“PON 模式”技术选型（onu_type bits[7:4]）：
---   1=GPON、6=XGPON、7=XGSPON 属 OMCI 族（netifd 引擎 pon_mode=GPON）；
---   3=10G/1G-EPON、4=10G/10G-EPON 属 OAM 族（netifd 引擎 pon_mode=EPON）。
+--   2=EPON、3=10G/1G-EPON、4=10G/10G-EPON、5=1G/1G-EPON、C=TURBO-EPON 属 OAM 族。
 -- 具体 HGU/SFU 形态（61/62/71/72/…）由“模式”页 onu_type 决定，本页只管技术族。
 local pon_techs = {
 	{ id = "GPON",         name = "GPON（实验性）",             desc = "bits[7:4]=1；OLT 为 GPON 口时选择" },
 	{ id = "XGPON",        name = "XGPON 10G/2.5G（XGPON 不对称）",    desc = "bits[7:4]=6；本机 TTL 当前 61/62" },
 	{ id = "XGSPON",       name = "XGSPON 10G 对称",              desc = "bits[7:4]=7；出厂默认 71/72" },
+	{ id = "EPON",         name = "1G-EPON",                    desc = "bits[7:4]=2；EPON OAM 认证" },
 	{ id = "EPON_10G_1G",  name = "10G/1G-EPON（XEPON 不对称）",    desc = "bits[7:4]=3；OAM 认证（pon_mode=EPON），实验" },
 	{ id = "EPON_10G_10G", name = "10G/10G-EPON（XEPON 对称）",     desc = "bits[7:4]=4；OAM 认证（pon_mode=EPON），实验" },
+	{ id = "EPON_1G_1G",   name = "1G/1G-EPON",                 desc = "bits[7:4]=5；EPON OAM 认证" },
+	{ id = "EPON_TURBO",   name = "TURBO-EPON",                 desc = "bits[7:4]=C；EPON OAM 认证" },
 }
 
 -- 技术 ID <-> onu_type bits[7:4]
 local pon_tech_bits = {
-	GPON = 1, XGPON = 6, XGSPON = 7,
-	EPON_10G_1G = 3, EPON_10G_10G = 4,
+	GPON = 1, EPON = 2, XGPON = 6, XGSPON = 7,
+	EPON_10G_1G = 3, EPON_10G_10G = 4, EPON_1G_1G = 5, EPON_TURBO = 12,
 }
 local pon_tech_by_bits = {}
 for _id, _bits in pairs(pon_tech_bits) do pon_tech_by_bits[_bits] = _id end
@@ -86,8 +88,11 @@ local pon_tech_short_names = {
 	GPON = "GPON",
 	XGPON = "XGPON",
 	XGSPON = "XGSPON",
+	EPON = "1G-EPON",
 	EPON_10G_1G = "10G/1G-EPON",
 	EPON_10G_10G = "10G/10G-EPON",
+	EPON_1G_1G = "1G/1G-EPON",
+	EPON_TURBO = "TURBO-EPON",
 }
 
 -- 组合 onu_type = (技术 bits << 4) | ONU 类型（1=SFU 2=HGU）
@@ -98,7 +103,9 @@ end
 
 -- 技术族 -> netifd 引擎值（netifd 二进制只认 GPON/EPON 两个字符串）
 local function pon_engine_for(ptech)
-	if ptech == "EPON_10G_1G" or ptech == "EPON_10G_10G" then
+	if ptech == "EPON" or ptech == "EPON_10G_1G" or
+		ptech == "EPON_10G_10G" or ptech == "EPON_1G_1G" or
+		ptech == "EPON_TURBO" then
 		return "EPON"
 	end
 	return "GPON"
@@ -106,7 +113,6 @@ end
 
 -- PON 模式名（sys_xpon_mode 取值）
 local pon_mode_names = {
-	[0]  = "AUTO",
 	[1]  = "GPON",
 	[2]  = "1G-EPON",
 	[3]  = "10G/1G-EPON（XEPON 不对称）",
@@ -487,11 +493,11 @@ function auth_values()
 	local rt = {
 		loid         = is_epon and oam_get("loid0") or omci_get("loid"),
 		sn           = is_epon and "" or omci_get("sn"),
-		vendor_id    = is_epon and "" or omci_get("vendorId"),
-		equipment_id = is_epon and "" or omci_get("equipmentId"),
-		onu_version  = is_epon and "" or omci_get("onuVersion"),
-		omcc_version = is_epon and "" or omci_get("omccVersion"),
-		spec_ver     = is_epon and "" or (sh("/userfs/bin/omcicfgCmd get specVer 2>&1"):match("(%d+)") or ""),
+		vendor_id    = is_epon and "" or omci_get("vendor_id"),
+		equipment_id = is_epon and "" or omci_get("equipment_id"),
+		onu_version  = is_epon and "" or omci_get("onu_version"),
+		omcc_version = is_epon and "" or omci_get("omcc_version"),
+		spec_ver     = is_epon and "" or (sh("/userfs/bin/omcicfgCmd get spec_version 2>&1"):match("(%d+)") or ""),
 		epon_oui     = is_epon and oam_get("localOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ctc_oui = is_epon and oam_get("ctcOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ven_info = is_epon and oam_get("localVenInfo"):gsub("^0[xX]", ""):upper() or "",
@@ -513,8 +519,8 @@ function auth_values()
 	if rt.epon_mac == "" then
 		rt.epon_mac = runtime_mac(sh("fw_printenv -n ethaddr 2>/dev/null"))
 	end
-	-- 打开页面默认读取系统现有值：UCI 未显式保存（或保存值为空）时，
-	-- 表单回退到 OMCI/驱动实际生效值（rt）——用户看到即现状，改完保存才写入 UCI。
+	-- 打开页面时，PON SN 是唯一的 GPON Vendor ID 输入源。OMCI 运行态中的
+	-- AXON/XG2010G 等出厂值只作为“当前系统生效”展示，不能回填到表单后再保存。
 	-- 密码类不回显（留空 = 保持原值）。
 	local function sys_fb(field, run, dflt)
 		local s
@@ -532,9 +538,13 @@ function auth_values()
 		return (run ~= nil and run ~= "") and run or dflt
 	end
 	-- 输入框表示“下次启动仍要使用的值”，运行态在下方独立展示。
-	v.vendor_id     = sys_fb("vendor_id", rt.vendor_id, "")
-	v.equipment_id  = identity_fb("equipment_id", rt.equipment_id, "")
-	v.onu_version   = identity_fb("onu_version", rt.onu_version, "")
+	if #v.sn == 12 then
+		v.vendor_id = v.sn:sub(1, 4):upper()
+	elseif #v.vendor_id == 4 then
+		v.vendor_id = v.vendor_id:upper()
+	end
+	v.equipment_id  = identity_fb("equipment_id", "", "")
+	v.onu_version   = identity_fb("onu_version", "", "")
 	v.omcc_version  = identity_fb("omcc_version", rt.omcc_version, "")
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
 	if v.epon_ctc_oui == "" then
@@ -563,17 +573,24 @@ function auth_values()
 	v.epon_pon_mac_saved = saved_epon_pon_mac
 	v.gpon_pon_mac_saved = saved_gpon_pon_mac
 	v.pon_mac_saved = legacy_pon_mac
-	if v.loid == "" and rt.loid ~= "" then v.loid = rt.loid end
+	if v.loid == "" and rt.loid ~= "" and rt.loid ~= "mtk1111" then v.loid = rt.loid end
 	if (v.sn == "" or v.sn == "NoNumber") and rt.sn ~= "" then v.sn = rt.sn end
 	v.pon_mac_default = dsd_mac
 	v.rt = rt
+	local pmv = ponmode_values()
 	local pt = saved("pon_tech", "")
-	if pt == "" then
-		pt = (v.pon_mode == "EPON") and "EPON_10G_10G" or "GPON"
+	local pt_valid = false
+	for _, t in ipairs(pon_techs) do
+		if pt == t.id then pt_valid = true; break end
+	end
+	if not pt_valid then
+		-- Upgrade/旧配置可能没有 pon_tech；优先按当前 onu_type 恢复
+		-- 实际技术，避免所有 EPON 设备都被页面误显示成 10G/10G-EPON。
+		pt = pon_tech_bits[pmv.run_tech] and pmv.run_tech
+			or ((v.pon_mode == "EPON") and "EPON" or "GPON")
 	end
 	v.pon_tech          = pt
 	v.pon_techs         = pon_techs
-	local pmv = ponmode_values()
 	v.onu_low           = pmv.cur_low
 	v.onu_mode_run      = pmv.run_dec.label
 	v.onu_mode_next     = pmv.env_dec.label
@@ -1338,12 +1355,12 @@ function ponmode_values()
 
 	-- sys_xpon_mode 枚举，供“技术详情”展开
 	local sys_mode_names = {
-		[0] = "AUTO", [1] = "GPON", [2] = "EPON", [3] = "10G_1G_EPON", [4] = "10G_10G_EPON",
+		[1] = "GPON", [2] = "EPON", [3] = "10G_1G_EPON", [4] = "10G_10G_EPON",
 		[5] = "1G_1G_EPON", [6] = "XGPON", [7] = "XGSPON", [8] = "NGPON2_10G_10G",
 		[9] = "NGPON2_10G_2G", [10] = "NGPON2_2G_2G", [11] = "GPON_SYM", [12] = "TURBO_EPON",
 	}
 	local sys_modes = {}
-	for i = 0, 12 do
+	for i = 1, 12 do
 		sys_modes[#sys_modes + 1] = {
 			id = i,
 			name = pon_mode_names[i] or ("未知(" .. i .. ")"),
@@ -1705,16 +1722,16 @@ local function save_auth(fv)
 	local ui_auth = auth_type:lower()
 	local auth_method = ui_auth
 	if ui_auth == "regid" then
-		auth_type, snf = "SN", "regid"
+		auth_type, snf = "sn", "regid"
 		auth_method = "password"
 	elseif ui_auth == "password" then
-		auth_type, snf = "SN", "regid"
+		auth_type, snf = "sn", "regid"
 		auth_method = "password"
 	elseif ui_auth == "loid" then
 		auth_type = "LOID"
 		auth_method = "loid"
 	else
-		auth_type = "SN"
+		auth_type = "sn"
 		auth_method = "sn"
 	end
 	local submitted_loid_password = fv("loid_password") or ""
@@ -1723,6 +1740,9 @@ local function save_auth(fv)
 	if stored_loid_password == '""' then stored_loid_password = "" end
 	local loid_password = submitted_loid_password ~= "" and submitted_loid_password
 		or (fv("loid_password_clear") == "1" and "" or stored_loid_password)
+	if (pmode == "EPON" or auth_type == "LOID") and #loid_password > 12 then
+		return nil, "loid_password"
+	end
 	local function stored_sn_password(fmt)
 		local field = fmt == "hex" and "sn_hex_password"
 			or fmt == "regid" and "sn_regid_password" or "sn_ascii_password"
@@ -1748,14 +1768,16 @@ local function save_auth(fv)
 		eoui = effective_pon_mac:gsub(":", ""):sub(1, 6):upper()
 	end
 	local ectc = (fv("epon_ctc_oui") or ""):gsub("%s+", ""):upper()
-	if ectc == "" then ectc = eoui end
+	if ectc == "" then ectc = "111111" end
 	local eonu_vendor = fv("epon_onu_vendor_id") or ""
 	local epon_serial = (fv("epon_serial") or ""):gsub("%s+", ""):upper()
 	local even = (fv("epon_ven_info") or ""):gsub("%s+", ""):upper()
 	if eonu_vendor == "" then
 		eonu_vendor = vendor_id ~= "" and vendor_id or hex_ascii4(even)
 	end
-	-- OMCI 协议版本（specVer）：固件存 uint8；omcicfgCmd 用 atoi 解析 -> 统一落库为十进制
+	-- OMCI 协议版本（spec_version）：固件存 uint8；omcicfgCmd 用 atoi 解析 -> 统一落库为十进制
+	local equipment_id = (fv("equipment_id") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	local onu_version = (fv("onu_version") or ""):gsub("^%s+", ""):gsub("%s+$", "")
 	local omci_spec_ver = (fv("omci_spec_ver") or ""):gsub("%s+", "")
 	local omcc_version = normalize_omccver(fv("omcc_version")) or ""
 	if omci_spec_ver ~= "" then
@@ -1783,14 +1805,21 @@ local function save_auth(fv)
 		u:set("network", "xpon_auth", "auth_method_g", auth_method)
 		u:delete("network", "xpon_auth", "auth_type_e")
 	end
-	if fv("loid") and fv("loid") ~= "" then u:set("network", "xpon_auth", "loid", fv("loid")) end
+	if pmode == "EPON" or auth_type == "LOID" then
+		if fv("loid") and fv("loid") ~= "" then u:set("network", "xpon_auth", "loid", fv("loid")) end
+	else
+		u:delete("network", "xpon_auth", "loid")
+		u:delete("network", "xpon_auth", "loid_password")
+	end
 	-- libuci 会把空字符串保存为“选项不存在”；启动恢复会在 network 镜像中
 	-- 编码为 shell 空参数，使 netifd 首次下发就是 LOID-only。
-	u:set("network", "xpon_auth", "loid_password", loid_password)
+	if pmode == "EPON" or auth_type == "LOID" then
+		u:set("network", "xpon_auth", "loid_password", loid_password)
+	end
 	if sn ~= "" then u:set("network", "xpon_auth", "def_sn", sn); u:set("network", "xpon_auth", "sn", sn) end
 	u:set("network", "xpon_auth", "xpon_sn_auth_type", snf)
-	if fv("equipment_id") and fv("equipment_id") ~= "" then u:set("network", "xpon_auth", "equipment_id", fv("equipment_id")) end
-	if fv("onu_version") and fv("onu_version") ~= "" then u:set("network", "xpon_auth", "onu_version", fv("onu_version")) end
+	if equipment_id ~= "" then u:set("network", "xpon_auth", "equipment_id", equipment_id) else u:delete("network", "xpon_auth", "equipment_id") end
+	if onu_version ~= "" then u:set("network", "xpon_auth", "onu_version", onu_version) else u:delete("network", "xpon_auth", "onu_version") end
 	if omcc_version ~= "" then u:set("network", "xpon_auth", "omcc_version", omcc_version) end
 	-- 移动 Password = 只填 REG_ID（regid ≤36）；留空保持旧值，避免只切换认证类型却丢失密码。
 	local submitted_regid = fv("reg_id") or ""
@@ -1833,8 +1862,13 @@ local function save_auth(fv)
 		u:set("xpon", "device", "auth_method_g", auth_method)
 		u:delete("xpon", "device", "auth_type_e")
 	end
-	if fv("loid") and fv("loid") ~= "" then u:set("xpon", "device", "loid", fv("loid")) end
-	u:set("xpon", "device", "loid_password", loid_password)
+	if pmode == "EPON" or auth_type == "LOID" then
+		if fv("loid") and fv("loid") ~= "" then u:set("xpon", "device", "loid", fv("loid")) end
+		u:set("xpon", "device", "loid_password", loid_password)
+	else
+		u:delete("xpon", "device", "loid")
+		u:delete("xpon", "device", "loid_password")
+	end
 	if sn ~= "" then u:set("xpon", "device", "def_sn", sn); u:set("xpon", "device", "sn", sn) end
 	u:set("xpon", "device", "xpon_sn_auth_type", snf)
 	if snpwd ~= "" then
@@ -1853,8 +1887,8 @@ local function save_auth(fv)
 		end
 	end
 	if vendor_id ~= "" then u:set("xpon", "device", "vendor_id", vendor_id) end
-	if fv("equipment_id") and fv("equipment_id") ~= "" then u:set("xpon", "device", "equipment_id", fv("equipment_id")) end
-	if fv("onu_version") and fv("onu_version") ~= "" then u:set("xpon", "device", "onu_version", fv("onu_version")) end
+	if equipment_id ~= "" then u:set("xpon", "device", "equipment_id", equipment_id) else u:delete("xpon", "device", "equipment_id") end
+	if onu_version ~= "" then u:set("xpon", "device", "onu_version", onu_version) else u:delete("xpon", "device", "onu_version") end
 	if omcc_version ~= "" then u:set("xpon", "device", "omcc_version", omcc_version) end
 	if omci_spec_ver ~= "" then u:set("xpon", "device", "omci_spec_ver", omci_spec_ver) end
 	if epon_pon_mac ~= "" then
@@ -1899,8 +1933,7 @@ local function save_auth(fv)
 	-- UCI Lua API 的写操作可能只返回 nil 而不抛异常；提交后使用新 cursor
 	-- 回读关键身份字段，禁止“页面提示成功但持久配置没写进去”。
 	local check = uci_native.cursor()
-	local equipment = fv("equipment_id") or ""
-	local onu_version = fv("onu_version") or ""
+	local equipment = equipment_id
 	if pmode ~= "EPON" and check:get("network", "xpon_auth", "auth_method_g") ~= auth_method then
 		return nil, "persist_network_auth_method"
 	end
@@ -1923,8 +1956,26 @@ local function save_auth(fv)
 	if equipment ~= "" and check:get("network", "xpon_auth", "equipment_id") ~= equipment then
 		return nil, "persist_equipment_id"
 	end
+	if equipment ~= "" and check:get("xpon", "device", "equipment_id") ~= equipment then
+		return nil, "persist_device_equipment_id"
+	end
+	if equipment == "" and (check:get("network", "xpon_auth", "equipment_id") or "") ~= "" then
+		return nil, "persist_equipment_id_clear"
+	end
+	if equipment == "" and (check:get("xpon", "device", "equipment_id") or "") ~= "" then
+		return nil, "persist_device_equipment_id_clear"
+	end
 	if onu_version ~= "" and check:get("network", "xpon_auth", "onu_version") ~= onu_version then
 		return nil, "persist_onu_version"
+	end
+	if onu_version ~= "" and check:get("xpon", "device", "onu_version") ~= onu_version then
+		return nil, "persist_device_onu_version"
+	end
+	if onu_version == "" and (check:get("network", "xpon_auth", "onu_version") or "") ~= "" then
+		return nil, "persist_onu_version_clear"
+	end
+	if onu_version == "" and (check:get("xpon", "device", "onu_version") or "") ~= "" then
+		return nil, "persist_device_onu_version_clear"
 	end
 	if omcc_version ~= "" and check:get("network", "xpon_auth", "omcc_version") ~= omcc_version then
 		return nil, "persist_omcc_version"
@@ -2333,6 +2384,7 @@ function action_save()
 
 	if page == "auth" then
 		local loid = formvalue("loid") or ""
+		local loid_password = formvalue("loid_password") or ""
 		local sn = (formvalue("sn") or ""):gsub("%s+", "")
 		local atg = (formvalue("auth_type_g") or ""):lower()
 		local ptech = formvalue("pon_tech") or "GPON"
@@ -2373,6 +2425,8 @@ function action_save()
 			err = "gpon_pon_mac"
 		elseif #loid > 24 then
 			err = "loid"
+		elseif #loid_password > 12 then
+			err = "loid_password"
 		elseif pmode == "EPON" and #loid == 0 then
 			err = "loid"
 		elseif pmode == "EPON" and not ponmac_ok(effective_pon_mac) then
@@ -3199,7 +3253,8 @@ local function collect_status(include_details)
 	local pt_tail = sh("dmesg 2>/dev/null | grep ponTime | tail -8")
 	if pt_tail == "" then pt_tail = sh("logread 2>/dev/null | grep ponTime | tail -8") end
 
-	local auth_out = is_epon and epon_auth_out or sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
+	-- authStat is the firmware's output label; its CLI subcommand is auth_status.
+	local auth_out = is_epon and epon_auth_out or sh("/userfs/bin/omcicfgCmd get auth_status 2>&1")
 	local auth_raw = is_epon and (epon_auth_status ~= nil and tostring(epon_auth_status) or "")
 		or (auth_out:match("authStat%s*=%s*(%d+)") or "")
 	-- OLT 标识：/tmp/ponstatus/olt_info（OMCI ME131 OLT-G 运行信息）
@@ -3308,7 +3363,7 @@ local function collect_status(include_details)
 			body = epon_llid_out ~= "" and epon_llid_out
 				or "（ponmgr、状态文件、/proc 与内核日志均无有效 LLID 输出）" }
 			or sec("认证参数 (omcicfgCmd)",
-				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get authStat; " ..
+				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get loid_password; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendor_id; /userfs/bin/omcicfgCmd get equipment_id; /userfs/bin/omcicfgCmd get onu_version; /userfs/bin/omcicfgCmd get omcc_version; /userfs/bin/omcicfgCmd get spec_version; /userfs/bin/omcicfgCmd get auth_status; " ..
 				"echo '---- PASSWORD/REG_ID 保存状态（明文） ----'; " ..
 				"am=$(uci -q get network.xpon_auth.auth_method_g); [ -n \"$am\" ] || am=$(uci -q get xpon.device.auth_method_g); echo \"auth_method_g=${am:-未知}\"; " ..
 				"st=$(uci -q get network.xpon_auth.xpon_sn_auth_type); [ -n \"$st\" ] || st=$(uci -q get xpon.device.xpon_sn_auth_type); echo \"xpon_sn_auth_type=${st:-未知}\"; " ..

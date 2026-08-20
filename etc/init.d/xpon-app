@@ -133,7 +133,7 @@ start() {
 		logger -t xpon "S00 已恢复持久认证，跳过 S11 兼容覆盖"
 	fi
 	/usr/bin/xpon-apply.sh leds
-	# vendorId/equipmentId/onuVersion 等只存在共享内存，必须等 OMCI 启动后重放。
+	# vendor_id/equipment_id/onu_version 等只存在共享内存，必须等 OMCI 启动后重放。
 	/usr/bin/xpon-replay.sh >/dev/null 2>&1 &
 	# netifd/vendor control paths may restart epon_oam again after the initial
 	# replay. Track process changes and restore the complete OAM identity.

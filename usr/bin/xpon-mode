@@ -9,10 +9,10 @@
 # 原理：PON 模式来自 U-Boot 的 onu_type bootarg 字节（非 DTS），
 #   onu_type 字节定义：
 #     bits[1:0]：ONU 类型 1=SFU  2=HGU
-#     bits[7:4]：PON 模式 1=GPON  2=1G-EPON  3=10G/1G-EPON  4=10G/10G-EPON
-#               5=1G/1G-EPON  6=XGPON(10G/2.5G 不对称)  7=XGSPON(10G 对称)
-#   10G-EPON（XEPON，模式 3/4）：设备支持 10G LLID/MPCP/FEC，
-#   光模块 EN7572 BOB 为 10G PON（1577/1270nm 与 XEPON 同波长），实验性，需 10G-EPON OLT。
+#     bits[7:4]：PON 模式 1=GPON  2=1G-EPON  3=10G/1G-EPON
+#               4=10G/10G-EPON  5=1G/1G-EPON  6=XGPON(10G/2.5G 不对称)
+#               7=XGSPON(10G 对称) C=TURBO-EPON
+#   EPON 模式 2/3/4/5/C 均使用 OAM 认证；具体速率必须与 OLT 端口能力一致。
 #   出厂 71=SFU+XGSPON；本机 TTL 当前 61=SFU+XGPON；
 #   联通 HGU 家庭网关（LAN 桥接+VEIP+组播）应切 62=HGU+XGPON。
 
@@ -33,7 +33,8 @@ status() {
 	echo "  12=HGU+GPON(实验)   11=SFU+GPON(实验)"
 	echo "  42=HGU+10G/10G-EPON 41=SFU+10G/10G-EPON（实验：XEPON 对称，需 10G-EPON OLT+OAM）"
 	echo "  32=HGU+10G/1G-EPON  31=SFU+10G/1G-EPON （实验：XEPON 不对称）"
-	echo "  22/21=1G-EPON 勿选（1G EPON 需独立 EPON PHY，本机无）"
+	echo "  22/21=1G-EPON"
+	echo "  52/51=1G/1G-EPON   c2/c1=TURBO-EPON"
 }
 
 apply() {

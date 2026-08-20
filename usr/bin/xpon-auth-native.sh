@@ -20,12 +20,14 @@ run_secret() {
 	rc=$?
 	[ "$rc" -eq 0 ] || { echo "失败：$label exit_code=$rc" >> "$LOG"; exit "$rc"; }
 }
-get() { uci -q get "xpon.device.$1"; }
-identity_get() {
+device_get() { uci -q get "xpon.device.$1"; }
+get() {
+	# restore-auth 已把持久配置镜像到 network；旧安装则可能只有 network。
 	v=$(uci -q get "network.xpon_auth.$1")
-	[ -n "$v" ] || v=$(get "$1")
+	[ -n "$v" ] || v=$(device_get "$1")
 	printf '%s' "$v"
 }
+identity_get() { get "$1"; }
 omci_read() {
 	$OMCI get "$1" 2>>"$LOG" | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1
 }
@@ -35,12 +37,12 @@ oam_read() {
 verify() {
 	attr=$1
 	want=$2
-	[ -n "$want" ] || [ "$secret" = "1" ] || return 0
+	[ -n "$want" ] || return 0
 	have=$(omci_read "$attr")
 	cmp_have=$have
 	cmp_want=$want
 	case "$attr" in
-		vendorId|sn|omccVersion) cmp_have=$(printf '%s' "$have" | tr 'a-f' 'A-F'); cmp_want=$(printf '%s' "$want" | tr 'a-f' 'A-F') ;;
+		vendor_id|sn|omcc_version) cmp_have=$(printf '%s' "$have" | tr 'a-f' 'A-F'); cmp_want=$(printf '%s' "$want" | tr 'a-f' 'A-F') ;;
 	esac
 	if [ "$cmp_have" != "$cmp_want" ]; then
 		echo "回读校验失败：$attr want='$want' have='$have'" >> "$LOG"
@@ -110,7 +112,9 @@ hex_ascii4() {
 
 auth=$(get auth_type_g)
 auth_method=$(get auth_method_g)
+auth_method=$(printf '%s' "$auth_method" | tr 'A-Z' 'a-z')
 [ "$auth_method" = "password" ] && auth=SN
+case "$auth" in password|PASSWORD|sn|SN) auth=SN ;; esac
 
 # 启动重放只读取本次实际启动的 onu_type，绝不根据 UCI 改写 env。
 # /proc/cmdline 是当前内核模式；仅在取不到时才读取 U-Boot env。
@@ -122,7 +126,7 @@ esac
 case "$onu_type" in [0-9A-Fa-f][0-9A-Fa-f]) : ;; *) onu_type= ;; esac
 onu_high=${onu_type%?}
 case "$onu_high" in
-	3|4) mode=EPON ;;
+	2|3|4|5|c|C) mode=EPON ;;
 	1|6|7) mode=GPON ;;
 	*)
 		mode=$(uci -q get network.xpon_auth.pon_mode)
@@ -131,7 +135,8 @@ case "$onu_high" in
 		;;
 esac
 loid=$(get loid); loidpw=$(get loid_password); sn=$(get sn)
-[ -n "$sn" ] || sn=$(uci -q get network.xpon_auth.sn)
+[ "$loidpw" = '""' ] && loidpw=
+[ -n "$sn" ] || sn=$(get def_sn)
 equipment=$(identity_get equipment_id); onuver=$(identity_get onu_version); omcc=$(identity_get omcc_version)
 spec=$(get omci_spec_ver)
 if [ "$mode" = "EPON" ]; then
@@ -168,6 +173,10 @@ if [ "$mode" != "EPON" ] && [ -z "$valid_sn" ]; then
 	echo "PON SN 非法：读取值='$sn' 长度=${#sn}；必须为 4 位厂商代码 + 8 位十六进制序列号" >> "$LOG"
 	exit 64
 fi
+if [ "$mode" = "EPON" ] && [ "${#loidpw}" -gt 12 ]; then
+	echo "EPON LOID 密码过长：${#loidpw} 字节；oamcfgCmd loidPasswd0 最多接受 12 字节" >> "$LOG"
+	exit 64
+fi
 
 # 一般留空字段跳过；LOID 密码例外，空字符串表示明确使用 LOID-only。
 # ONU 形态/PON 技术只允许由显式的 `xpon-apply.sh ponmode` 写入 env。
@@ -189,28 +198,30 @@ if [ "$mode" = "EPON" ]; then
 	verify_oam onuVenID "$epon_onu_vendor" 0
 else
 	[ -x "$OMCI" ] || { echo "omcicfgCmd 不存在或不可执行" >> "$LOG"; exit 127; }
-	[ -n "$vendor" ] && run "$OMCI" set vendorId "$vendor"
+	echo "GPON identity: auth=$auth auth_method=${auth_method:-none} sn=$valid_sn vendor_id=$vendor onu_version=${onuver:-skip}" >> "$LOG"
+	[ -n "$vendor" ] && run "$OMCI" set vendor_id "$vendor"
 	[ -n "$valid_sn" ] && run "$OMCI" set sn "$valid_sn"
-	[ -n "$loid" ] && run "$OMCI" set loid "$loid"
 	case "$auth" in
-		LOID|loid) run_secret "omcicfgCmd set loidPasswd" "$OMCI" set loidPasswd "$loidpw" ;;
+		LOID|loid)
+			[ -n "$loid" ] && run "$OMCI" set loid "$loid"
+			run_secret "omcicfgCmd set loid_password" "$OMCI" set loid_password "$loidpw"
+			;;
 	esac
-	[ -n "$equipment" ] && run "$OMCI" set equipmentId "$equipment"
-	[ -n "$onuver" ] && run "$OMCI" set onuVersion "$onuver"
-	[ -n "$omcc" ] && run "$OMCI" set omccVersion "$omcc"
-	[ -n "$spec" ] && run "$OMCI" set specVer "$spec"
+	[ -n "$equipment" ] && run "$OMCI" set equipment_id "$equipment"
+	[ -n "$onuver" ] && run "$OMCI" set onu_version "$onuver"
+	[ -n "$omcc" ] && run "$OMCI" set omcc_version "$omcc"
+	[ -n "$spec" ] && run "$OMCI" set spec_version "$spec"
 
 	# 命令返回 0 不足以证明共享配置已更新；重启前必须核对当前生效值。
-	verify vendorId "$vendor"
+	verify vendor_id "$vendor"
 	verify sn "$valid_sn"
-	verify loid "$loid"
 	case "$auth" in
-		LOID|loid) verify_secret loidPasswd "$loidpw" ;;
+		LOID|loid) verify loid "$loid"; verify_secret loid_password "$loidpw" ;;
 	esac
-	verify equipmentId "$equipment"
-	verify onuVersion "$onuver"
-	verify omccVersion "$omcc"
-	verify specVer "$spec"
+	verify equipment_id "$equipment"
+	verify onu_version "$onuver"
+	verify omcc_version "$omcc"
+	verify spec_version "$spec"
 
 	case "$auth" in
 		SN|sn)

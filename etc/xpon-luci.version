@@ -1,4 +1,6 @@
-xpon-luci 2.8 2026-08-19
+xpon-luci 2.8 2026-08-20
+boot: 重启恢复按当前 onu_type 统一选择 EPON/OAM 或 GPON/OMCI；旧配置优先读取 auth_method_g，PASSWORD 清除残留 LOID，sn 作为唯一 Vendor ID 来源
+auth: PASSWORD/SN 严格重放不再写入残留 LOID；GPON Vendor ID 始终由 PON SN 前四位派生，ONU 软件版本/Equipment ID 留空则清除覆盖并不下发
 auth: PASSWORD 认证要求 REG_ID 已填写或已有旧值；认证页、保存详情、严格下发日志与启动恢复日志均明文显示 passwd/REG_ID，区分“未保存/未下发/SDK 不回显”
 auth: PASSWORD 认证新增 auth_method_g=password 持久标记；开机恢复和严格重放固定走 SN + REG_ID(regid)，避免重启后丢失 PASSWORD 语义
 status: EPON OLT 设备卡片改显示 MPCP OLT MAC，不再显示 OMCI ME131 提示

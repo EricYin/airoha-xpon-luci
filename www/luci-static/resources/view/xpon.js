@@ -4,6 +4,9 @@
 // 用户修改后提交前弹窗确认“将重启 OMCI 重新注册”。
 var xponAuthInit = {};
 var xponVoiceInit = {};
+function xponIsFixedEponTech(value) {
+	return ['EPON', 'EPON_10G_1G', 'EPON_10G_10G', 'EPON_1G_1G', 'EPON_TURBO'].indexOf(value) >= 0;
+}
 function xponVoiceCaptureInit(form) {
 	if (!form) return;
 	[1, 2].forEach(function (line) {
@@ -82,7 +85,7 @@ function xponAuthChanged(form) {
 function xponAuthToggle() {
 	var sel = document.getElementById('auth_type_g');
 	var pm = document.getElementById('pon_tech');
-	var epon = pm && (pm.value === 'EPON_10G_1G' || pm.value === 'EPON_10G_10G');
+	var epon = pm && xponIsFixedEponTech(pm.value);
 	var auth = (sel ? sel.value : 'LOID').toUpperCase();
 	var loid = epon || auth === 'LOID';
 	var pwd = auth === 'PASSWORD';
@@ -141,10 +144,14 @@ function xponProtoToggle(sel) {
 
 function xponAuthCheck(form) {
 	var pm = form.pon_tech.value;
-	var epon = (pm === 'EPON_10G_1G' || pm === 'EPON_10G_10G');
+	var epon = xponIsFixedEponTech(pm);
 	var auth = (form.auth_type_g.value || '').toUpperCase();
 	if ((epon || auth === 'LOID') && form.loid.value.length > 24) {
 		alert('LOID 不能超过 24 字节');
+		return false;
+	}
+	if ((epon || auth === 'LOID') && form.loid_password.value.length > 12) {
+		alert('LOID 密码不能超过 12 字节');
 		return false;
 	}
 	if (epon && form.loid.value.trim().length === 0) {
@@ -168,7 +175,7 @@ function xponAuthCheck(form) {
 		var sv = form.omci_spec_ver.value.trim();
 		var svn = /^0[xX][0-9a-fA-F]+$/.test(sv) ? parseInt(sv, 16) : parseInt(sv, 10);
 		if (isNaN(svn) || svn < 0 || svn > 255) {
-			alert('OMCI 协议版本（specVer）需为 0~255 的十进制或 0x 十六进制');
+			alert('OMCI 协议版本（spec_version）需为 0~255 的十进制或 0x 十六进制');
 			return false;
 		}
 	}

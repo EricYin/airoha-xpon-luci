@@ -57,11 +57,17 @@ normalize_oui() {
 	printf '%s' "$1" | sed 's/^0[xX]//' | tr 'a-f' 'A-F'
 }
 
+auth_get() {
+	v=$(uci -q get "network.xpon_auth.$1")
+	[ -n "$v" ] || v=$(uci -q get "xpon.device.$1")
+	printf '%s' "$v"
+}
+
 repair_runtime_drift() {
 	repaired=
 	failed=0
 
-	desired_ctc=$(uci -q get xpon.device.epon_ctc_oui)
+	desired_ctc=$(auth_get epon_ctc_oui)
 	desired_ctc=${desired_ctc:-111111}
 	have_ctc=$(oam_value ctcOui)
 	if [ "$(normalize_oui "$have_ctc")" != "$(normalize_oui "$desired_ctc")" ]; then
@@ -73,12 +79,18 @@ repair_runtime_drift() {
 		fi
 	fi
 
-	desired_loid=$(uci -q get xpon.device.loid)
+	desired_loid=$(auth_get loid)
 	if [ -n "$desired_loid" ]; then
-		desired_password=$(uci -q get xpon.device.loid_password)
+		desired_password=$(auth_get loid_password)
 		[ "$desired_password" = '""' ] && desired_password=
+		password_valid=1
+		if [ "${#desired_password}" -gt 12 ]; then
+			logger -t xpon "EPON OAM 漂移修复跳过：LOID 密码为 ${#desired_password} 字节，超过 loidPasswd0 的 12 字节限制"
+			failed=1
+			password_valid=0
+		fi
 		have_password=$(oam_value loidPasswd0)
-		if [ "$have_password" != "$desired_password" ]; then
+		if [ "$password_valid" -eq 1 ] && [ "$have_password" != "$desired_password" ]; then
 			logger -t xpon "EPON OAM 漂移：loidPasswd0 want='$desired_password' have='$have_password'"
 			if /userfs/bin/oamcfgCmd set loidPasswd0 "$desired_password" >/dev/null 2>&1 &&
 			   [ "$(oam_value loidPasswd0)" = "$desired_password" ]; then
@@ -89,7 +101,7 @@ repair_runtime_drift() {
 		fi
 	fi
 
-	desired_serial=$(uci -q get xpon.device.epon_serial)
+	desired_serial=$(auth_get epon_serial)
 	if [ -n "$desired_serial" ]; then
 		desired_hex=$(normalize_mac "$desired_serial")
 		case "$desired_hex" in
