@@ -72,9 +72,9 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<div class="cbi-value-field">
 				<select id="auth_type_g" name="auth_type_g" class="cbi-input-select" onchange="xponAuthToggle()">
 					<option value="loid"<% if atg == "loid" then %> selected="selected"<% end %>>LOID（大多数：电信/联通）</option>
-					<option value="password"<% if atg == "password" then %> selected="selected"<% end %>>PASSWORD（移动：SN+Password 认证）</option>
+					<option value="password"<% if atg == "password" then %> selected="selected"<% end %>>PASSWORD（大多数：移动）</option>
 				</select>
-				<div class="cbi-value-description"><b>LOID（默认）</b>：电信/联通；<b>PASSWORD</b>：移动，填「PON SN」+「REG_ID」。出厂固件开机可能打回 sn，保存一次即持久化。</div>
+				<div class="cbi-value-description"><b>LOID（默认）</b>：大多数电信/联通认证方案；<b>PASSWORD</b>：大部分移动，配合「PON SN」+「REG_ID」。保存一次即持久化。</div>
 			</div>
 		</div>
 
@@ -84,7 +84,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 				<span class="cbi-input-text" style="padding:4px 8px;">MPCP（PON MAC）＋ OAM 扩展</span>
 				<div class="cbi-value-description">
 					EPON 系列注册分两步：<b>① MPCP</b> —— OLT 校验 <b>PON MAC</b> 并分配 LLID（MAC 未放行则拿不到 LLID）；<b>② OAM 扩展</b> —— 上报 <b>OUI / 厂商信息 / LOID</b>，运营商按区域校验其一或组合。<br />
-					北京联通 EPON 仅校验 PON MAC；电信部分区域校验 LOID；移动为 SN+Password（对应 GPON 模式）。
+					部分地区仅校验 PON MAC；部分区域还需校验 LOID。
 				</div>
 			</div>
 		</div>
@@ -93,14 +93,14 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title xpon-required" for="epon_pon_mac">EPON 注册 MAC（MPCP/LLID）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_pon_mac" name="epon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.epon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">EPON SDK 通过 EPON ONU devMac / LLID MAC 注册，保存后会备份并同步 U-Boot <code>ethaddr</code>/<code>bootargs</code>，重启后作为 MPCP ONU 注册 MAC。</div>
+				<div class="cbi-value-description">EPON通过 EPON ONU devMac / LLID MAC 注册，保存后会读取设备 <code>ethaddr</code>/<code>bootargs</code>，重启后作为 MPCP ONU 注册 MAC。</div>
 				<div class="cbi-value-description">已保存 EPON：<code><%=esc(v.epon_pon_mac_saved ~= "" and v.epon_pon_mac_saved or "（未保存，使用 DSD 默认/旧 pon_mac）")%></code>；本次启动 EPON 注册基准 MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code>；DSD 默认：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
 				<div class="cbi-value-description">注意：EPON 修改 <code>ethaddr</code> 后，下次启动还会联动改变 <code>eth0</code>、<code>br-lan</code>、<code>oam</code> 等基础接口地址。</div>
 			</div>
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title xpon-required" for="epon_oui">EPON OUI（必填，EPON 模式）</label>
+			<label class="cbi-value-title xpon-required" for="epon_oui">EPON OUI（必填）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_oui" name="epon_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_oui%>" placeholder="089AC7" pattern="[0-9A-Fa-f]{6}" />
 				<div class="cbi-value-description">OAM 发现阶段上报的厂商标识（OUI，3 字节 hex），须与 PON MAC 前 3 字节一致（填写 MAC 自动提取）。当前 OAM 生效：<code><%=esc(rt.epon_oui ~= "" and rt.epon_oui or "（空）")%></code></div>
@@ -108,15 +108,15 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_ven_info">EPON 厂商信息（可选）</label>
+			<label class="cbi-value-title" for="epon_ven_info">EPON Vendor（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_ven_info" name="epon_ven_info" class="cbi-input-text" maxlength="8" value="<%=v.epon_ven_info%>" placeholder="4D150100" pattern="[0-9A-Fa-f]{8}" />
-				<div class="cbi-value-description">OAM 扩展的 Vendor-Specific 信息（4 字节 hex）；克隆旧猫时按旧猫值填写，多数运营商不校验。当前 OAM 生效：<code><%=esc(rt.epon_ven_info ~= "" and rt.epon_ven_info or "（空）")%></code></div>
+				<div class="cbi-value-description">OAM 扩展的 厂商Vendor-Specific 信息（4 字节 hex）；克隆旧猫时按旧猫值填写，多数运营商不校验。当前 OAM 生效：<code><%=esc(rt.epon_ven_info ~= "" and rt.epon_ven_info or "（空）")%></code></div>
 			</div>
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title xpon-required" for="epon_ctc_oui">CTC OUI（EPON 必填）</label>
+			<label class="cbi-value-title xpon-required" for="epon_ctc_oui">CTC OUI（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_ctc_oui" name="epon_ctc_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_ctc_oui%>" placeholder="111111" pattern="[0-9A-Fa-f]{6}" />
 				<div class="cbi-value-description">CTC OAM 扩展组织标识，与 ONU 的 EPON OUI 独立；中兴 OLT 抓包验证值为 <code>111111</code>。留空也按 <code>111111</code> 下发。当前 OAM 生效：<code><%=esc(rt.epon_ctc_oui ~= "" and rt.epon_ctc_oui or "（空）")%></code></div>
@@ -124,7 +124,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_onu_vendor_id">ONU Vendor ID</label>
+			<label class="cbi-value-title" for="epon_onu_vendor_id">ONU Vendor ID（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_onu_vendor_id" name="epon_onu_vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.epon_onu_vendor_id%>" placeholder="例如 HWTC" pattern="[\x20-\x7E]{4}" />
 				<div class="cbi-value-description">OAM <code>onuVenID</code>，独立于 EPON OUI 和 GPON PON SN，固定 4 字节可打印 ASCII；留空则不下发。当前 OAM 生效：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
@@ -244,7 +244,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title" for="omcc_version">OMCC 版本（可选，芯片能力标识）</label>
+			<label class="cbi-value-title" for="omcc_version">OMCC 版本（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="omcc_version" name="omcc_version" class="cbi-input-text" value="<%=v.omcc_version%>" list="omcc_version_list" placeholder="0xA3" />
 				<datalist id="omcc_version_list">
@@ -252,7 +252,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 					<option value="0xA4">0xA4</option>
 					<option value="0xB0">0xB0</option>
 				</datalist>
-				<div class="cbi-value-description">芯片能力标识，出厂默认 0xA3；典型 0xA3 / 0xA4 / 0xB0，通常无需改动。<br />
+				<div class="cbi-value-description">OMCC控制通道版本，出厂默认 0xA3；典型 0xA3 / 0xA4 / 0xB0，通常无需改动。<br />
 					当前系统生效：<code><%=esc(rt.omcc_version ~= "" and rt.omcc_version or "（空）")%></code></div>
 			</div>
 		</div>
