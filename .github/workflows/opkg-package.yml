@@ -165,22 +165,22 @@ jobs:
             printf '### %s\n\n' "${ipk}"
             printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
             printf -- '- SHA256: `%s`\n\n' "$sha256"
-            cat <<EOF
+            cat <<'EOF' | sed "s#__IPK__#${ipk}#g"
           #### 下载说明
 
-          GitHub Actions 页面下载 artifact 时，浏览器通常会先得到一个 zip 包。请先解压，确认里面的 `${ipk}` 才是真正给 opkg 安装的文件。
+          GitHub Actions 页面下载 artifact 时，浏览器通常会先得到一个 zip 包。请先解压，确认里面的 `__IPK__` 才是真正给 opkg 安装的文件。
 
-          本机检查下载文件；GitHub 可能下载成 `${ipk}.zip`，也可能文件名仍是 `${ipk}` 但内容是 zip：
+          本机检查下载文件；GitHub 可能下载成 `__IPK__.zip`，也可能文件名仍是 `__IPK__` 但内容是 zip：
 
           ```sh
-          file ${ipk} ${ipk}.zip 2>/dev/null || true
-          unzip ${ipk}.zip 2>/dev/null || unzip ${ipk}
-          file ${ipk}
-          ar t ${ipk}
-          sha256sum ${ipk}
+          file __IPK__ __IPK__.zip 2>/dev/null || true
+          unzip __IPK__.zip 2>/dev/null || unzip __IPK__
+          file __IPK__
+          ar t __IPK__
+          sha256sum __IPK__
           ```
 
-          解压后的 `${ipk}` 应显示 `current ar archive`，`ar t` 应输出：
+          解压后的 `__IPK__` 应显示 `current ar archive`，`ar t` 应输出：
 
           ```text
           debian-binary
@@ -191,15 +191,15 @@ jobs:
           #### 上传到设备
 
           ```sh
-          scp ${ipk} root@192.168.1.1:/tmp/
+          scp __IPK__ root@192.168.1.1:/tmp/
           ```
 
           #### 覆盖安装并清 LuCI 缓存
 
           ```sh
           cd /tmp
-          head -c 8 ${ipk}
-          opkg install --force-reinstall --force-overwrite ./${ipk}
+          head -c 8 __IPK__
+          opkg install --force-reinstall --force-overwrite ./__IPK__
           rm -f /tmp/luci-indexcache
           rm -rf /tmp/luci-modulecache
           /etc/init.d/uhttpd restart
