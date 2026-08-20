@@ -51,12 +51,12 @@ local service_ifaces = {
 -- 本机 TTL 当前 61 = SFU+XGPON（uboot 仓库 README 的“61=HGU”有误）；
 -- 联通 HGU 家庭网关（LAN 桥接+VEIP+IPTV 组播）应切 62。
 local pon_modes = {
-	{ id = "62", name = "HGU + XGPON",  desc = "推荐（联通 HGU 家庭网关）：10G/2.5G 不对称，LAN 桥接+VEIP+组播完整" },
+	{ id = "62", name = "HGU + XGPON",  desc = "推荐（HGU 家庭网关）：10G/2.5G 不对称，LAN 桥接+VEIP+组播完整" },
 	{ id = "61", name = "SFU + XGPON",  desc = "本机 TTL 当前值：SFU 桥形态，无 VEIP/组播引擎，仅适合纯桥/实验" },
 	{ id = "72", name = "HGU + XGSPON", desc = "10G 对称（XGS-PON 端口）；出厂默认 71 的 HGU 对应值" },
-	{ id = "71", name = "SFU + XGSPON", desc = "出厂默认：SFU 桥形态 + 10G 对称（uboot README 误标为 HGU）" },
-	{ id = "12", name = "HGU + GPON",   desc = "GPON-only 端口（实验，需 OLT 为 GPON）" },
-	{ id = "11", name = "SFU + GPON",   desc = "GPON-only 端口（实验，需 OLT 为 GPON）" },
+	{ id = "71", name = "SFU + XGSPON", desc = "出厂默认：SFU 桥形态 + 10G 对称" },
+	{ id = "12", name = "HGU + GPON",   desc = "GPON-only 端口（需 OLT 为 GPON）" },
+	{ id = "11", name = "SFU + GPON",   desc = "GPON-only 端口（需 OLT 为 GPON）" },
 	{ id = "42", name = "HGU + 10G/10G-EPON", desc = "实验：XEPON 对称（IEEE 802.3av 10G-EPON），需 OLT 10G-EPON 口 + OAM 认证" },
 	{ id = "41", name = "SFU + 10G/10G-EPON", desc = "实验：XEPON 对称 SFU 形态" },
 	{ id = "32", name = "HGU + 10G/1G-EPON",  desc = "实验：XEPON 不对称（10G 下行/1G 上行）" },
@@ -67,13 +67,13 @@ local pon_modes = {
 --   2=EPON、3=10G/1G-EPON、4=10G/10G-EPON、5=1G/1G-EPON、C=TURBO-EPON 属 OAM 族。
 -- 具体 HGU/SFU 形态（61/62/71/72/…）由“模式”页 onu_type 决定，本页只管技术族。
 local pon_techs = {
-	{ id = "GPON",         name = "GPON（实验性）",             desc = "bits[7:4]=1；OLT 为 GPON 口时选择" },
-	{ id = "XGPON",        name = "XGPON 10G/2.5G（XGPON 不对称）",    desc = "bits[7:4]=6；本机 TTL 当前 61/62" },
-	{ id = "XGSPON",       name = "XGSPON 10G 对称",              desc = "bits[7:4]=7；出厂默认 71/72" },
-	{ id = "EPON",         name = "1G-EPON",                    desc = "bits[7:4]=2；EPON OAM 认证" },
-	{ id = "EPON_10G_1G",  name = "10G/1G-EPON（XEPON 不对称）",    desc = "bits[7:4]=3；OAM 认证（pon_mode=EPON），实验" },
-	{ id = "EPON_10G_10G", name = "10G/10G-EPON（XEPON 对称）",     desc = "bits[7:4]=4；OAM 认证（pon_mode=EPON），实验" },
-	{ id = "EPON_1G_1G",   name = "1G/1G-EPON",                 desc = "bits[7:4]=5；EPON OAM 认证" },
+	{ id = "GPON",         name = "GPON 2.5G/1.25G不对称",             desc = "bits[7:4]=1；OLT 为 GPON 口时选择" },
+	{ id = "XGPON",        name = "XGPON 10G/2.5G不对称",    desc = "bits[7:4]=6；本机 TTL 当前 61/62" },
+	{ id = "XGSPON",       name = "XGSPON 10G/10G 对称",              desc = "bits[7:4]=7；出厂默认 71/72" },
+	{ id = "EPON",         name = "EPON 1G/1G（常用）",                    desc = "bits[7:4]=2；EPON OAM 认证" },
+	{ id = "EPON_10G_1G",  name = "10G/1G-EPON 10G/1G不对称",    desc = "bits[7:4]=3；EPON OAM 认证" },
+	{ id = "EPON_10G_10G", name = "10G/10G-EPON 10G/10G对称",     desc = "bits[7:4]=4；EPON OAM 认证" },
+	{ id = "EPON_1G_1G",   name = "EPON 1G/1G（备用）",                 desc = "bits[7:4]=5；EPON OAM 认证，备用/兼容枚举" },
 	{ id = "EPON_TURBO",   name = "TURBO-EPON",                 desc = "bits[7:4]=C；EPON OAM 认证" },
 }
 
@@ -118,8 +118,8 @@ local pon_mode_names = {
 	[3]  = "10G/1G-EPON（XEPON 不对称）",
 	[4]  = "10G/10G-EPON（XEPON 对称）",
 	[5]  = "1G/1G-EPON",
-	[6]  = "XGPON",
-	[7]  = "XGSPON",
+	[6]  = "XGPON（X-GPON 不对称）",
+	[7]  = "XGSPON（X-GPON 对称）",
 	[8]  = "NGPON2 10G/10G",
 	[9]  = "NGPON2 10G/2G",
 	[10] = "NGPON2 2G/2G",
@@ -413,18 +413,6 @@ local function encode_json(t)
 	return table.concat(out)
 end
 
-local function hex_ascii4(s)
-	s = (s or ""):gsub("%s+", "")
-	if #s ~= 8 or not s:match("^%x+$") then return "" end
-	local out = {}
-	for i = 1, 8, 2 do
-		local b = tonumber(s:sub(i, i + 1), 16)
-		if not b or b < 32 or b > 126 then return "" end
-		out[#out + 1] = string.char(b)
-	end
-	return table.concat(out)
-end
-
 function auth_values()
 	local u = uci.cursor()
 	local v = {}
@@ -493,11 +481,11 @@ function auth_values()
 	local rt = {
 		loid         = is_epon and oam_get("loid0") or omci_get("loid"),
 		sn           = is_epon and "" or omci_get("sn"),
-		vendor_id    = is_epon and "" or omci_get("vendor_id"),
-		equipment_id = is_epon and "" or omci_get("equipment_id"),
-		onu_version  = is_epon and "" or omci_get("onu_version"),
-		omcc_version = is_epon and "" or omci_get("omcc_version"),
-		spec_ver     = is_epon and "" or (sh("/userfs/bin/omcicfgCmd get spec_version 2>&1"):match("(%d+)") or ""),
+		vendor_id    = is_epon and "" or omci_get("vendorId"),
+		equipment_id = is_epon and "" or omci_get("equipmentId"),
+		onu_version  = is_epon and "" or omci_get("onuVersion"),
+		omcc_version = is_epon and "" or omci_get("omccVersion"),
+		spec_ver     = is_epon and "" or (sh("/userfs/bin/omcicfgCmd get specVer 2>&1"):match("(%d+)") or ""),
 		epon_oui     = is_epon and oam_get("localOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ctc_oui = is_epon and oam_get("ctcOui"):gsub("^0[xX]", ""):upper() or "",
 		epon_ven_info = is_epon and oam_get("localVenInfo"):gsub("^0[xX]", ""):upper() or "",
@@ -549,14 +537,6 @@ function auth_values()
 	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
 	if v.epon_ctc_oui == "" then
 		v.epon_ctc_oui = "111111"
-	end
-	if v.epon_onu_vendor_id == "" then
-		local migrated_vendor = ""
-		-- Older versions only stored localVenInfo. When those four bytes are
-		-- printable ASCII, they are also a safe migration source for onuVenID.
-		if #v.vendor_id == 4 then migrated_vendor = v.vendor_id end
-		if migrated_vendor == "" then migrated_vendor = hex_ascii4(v.epon_ven_info) end
-		v.epon_onu_vendor_id = migrated_vendor ~= "" and migrated_vendor or rt.epon_onu_vendor_id
 	end
 	if v.epon_serial == "" then v.epon_serial = rt.epon_serial end
 	local dsd_mac = dsd_wan_mac()
@@ -1752,7 +1732,7 @@ local function save_auth(fv)
 	local stored_regid_password = stored_sn_password("regid")
 	-- EPON/XEPON 用 auth_type_e（TYPE_EPON_AUTH），EPON 只支持 LOID 认证，必须大写
 	local auth_type_e = "LOID"
-	-- 页面只接收完整 PON SN；Vendor ID 始终由前 4 位派生，避免两个配置源不一致。
+	-- 页面只接收完整 PON SN；GPON Vendor ID 始终由前 4 位派生。
 	local sn = (fv("sn") or ""):gsub("%s+", ""):upper()
 	if sn == "NONUMBER" then sn = "" end
 	local vendor_id = (#sn == 12) and sn:sub(1, 4) or ""
@@ -1772,9 +1752,6 @@ local function save_auth(fv)
 	local eonu_vendor = fv("epon_onu_vendor_id") or ""
 	local epon_serial = (fv("epon_serial") or ""):gsub("%s+", ""):upper()
 	local even = (fv("epon_ven_info") or ""):gsub("%s+", ""):upper()
-	if eonu_vendor == "" then
-		eonu_vendor = vendor_id ~= "" and vendor_id or hex_ascii4(even)
-	end
 	-- OMCI 协议版本（spec_version）：固件存 uint8；omcicfgCmd 用 atoi 解析 -> 统一落库为十进制
 	local equipment_id = (fv("equipment_id") or ""):gsub("^%s+", ""):gsub("%s+$", "")
 	local onu_version = (fv("onu_version") or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -3253,8 +3230,8 @@ local function collect_status(include_details)
 	local pt_tail = sh("dmesg 2>/dev/null | grep ponTime | tail -8")
 	if pt_tail == "" then pt_tail = sh("logread 2>/dev/null | grep ponTime | tail -8") end
 
-	-- authStat is the firmware's output label; its CLI subcommand is auth_status.
-	local auth_out = is_epon and epon_auth_out or sh("/userfs/bin/omcicfgCmd get auth_status 2>&1")
+	-- authStat is both the firmware's output label and CLI subcommand on this SDK.
+	local auth_out = is_epon and epon_auth_out or sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
 	local auth_raw = is_epon and (epon_auth_status ~= nil and tostring(epon_auth_status) or "")
 		or (auth_out:match("authStat%s*=%s*(%d+)") or "")
 	-- OLT 标识：/tmp/ponstatus/olt_info（OMCI ME131 OLT-G 运行信息）
@@ -3363,7 +3340,7 @@ local function collect_status(include_details)
 			body = epon_llid_out ~= "" and epon_llid_out
 				or "（ponmgr、状态文件、/proc 与内核日志均无有效 LLID 输出）" }
 			or sec("认证参数 (omcicfgCmd)",
-				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get loid_password; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendor_id; /userfs/bin/omcicfgCmd get equipment_id; /userfs/bin/omcicfgCmd get onu_version; /userfs/bin/omcicfgCmd get omcc_version; /userfs/bin/omcicfgCmd get spec_version; /userfs/bin/omcicfgCmd get auth_status; " ..
+				"/userfs/bin/omcicfgCmd get loid; /userfs/bin/omcicfgCmd get loidPasswd; /userfs/bin/omcicfgCmd get sn; /userfs/bin/omcicfgCmd get vendorId; /userfs/bin/omcicfgCmd get equipmentId; /userfs/bin/omcicfgCmd get onuVersion; /userfs/bin/omcicfgCmd get omccVersion; /userfs/bin/omcicfgCmd get specVer; /userfs/bin/omcicfgCmd get authStat; " ..
 				"echo '---- PASSWORD/REG_ID 保存状态（明文） ----'; " ..
 				"am=$(uci -q get network.xpon_auth.auth_method_g); [ -n \"$am\" ] || am=$(uci -q get xpon.device.auth_method_g); echo \"auth_method_g=${am:-未知}\"; " ..
 				"st=$(uci -q get network.xpon_auth.xpon_sn_auth_type); [ -n \"$st\" ] || st=$(uci -q get xpon.device.xpon_sn_auth_type); echo \"xpon_sn_auth_type=${st:-未知}\"; " ..

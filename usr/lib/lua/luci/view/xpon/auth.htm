@@ -127,7 +127,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title" for="epon_onu_vendor_id">ONU Vendor ID</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_onu_vendor_id" name="epon_onu_vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.epon_onu_vendor_id%>" placeholder="例如 HWTC" pattern="[\x20-\x7E]{4}" />
-				<div class="cbi-value-description">OAM <code>onuVenID</code>，固定 4 字节可打印 ASCII。当前 OAM 生效：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
+				<div class="cbi-value-description">OAM <code>onuVenID</code>，独立于 EPON OUI 和 GPON PON SN，固定 4 字节可打印 ASCII；留空则不下发。当前 OAM 生效：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
 			</div>
 		</div>
 

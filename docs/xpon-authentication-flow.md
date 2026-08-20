@@ -33,6 +33,12 @@ oamcfgCmd set onuVenID <epon_onu_vendor_id>
 xpon-epon-sn.sh set <epon_serial>
 ```
 
+These EPON fields are independent: `localOui` is a 3-byte OUI,
+`localVenInfo` is separate 4-byte hexadecimal vendor information, and
+`onuVenID` is a separate 4-byte printable ASCII value. The project does not
+derive `onuVenID` from the GPON `vendor_id` or from `localVenInfo`; an empty
+EPON Vendor ID is left unset.
+
 `loid0` is limited to 24 bytes and `loidPasswd0` to 12 bytes by the firmware
 CLI. An empty `epon_ctc_oui` is normalized to the verified default `111111`.
 

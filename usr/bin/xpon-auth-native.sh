@@ -42,7 +42,7 @@ verify() {
 	cmp_have=$have
 	cmp_want=$want
 	case "$attr" in
-		vendor_id|sn|omcc_version) cmp_have=$(printf '%s' "$have" | tr 'a-f' 'A-F'); cmp_want=$(printf '%s' "$want" | tr 'a-f' 'A-F') ;;
+		vendorId|sn|omccVersion) cmp_have=$(printf '%s' "$have" | tr 'a-f' 'A-F'); cmp_want=$(printf '%s' "$want" | tr 'a-f' 'A-F') ;;
 	esac
 	if [ "$cmp_have" != "$cmp_want" ]; then
 		echo "回读校验失败：$attr want='$want' have='$have'" >> "$LOG"
@@ -95,21 +95,6 @@ verify_oam() {
 	echo "回读校验成功：$attr='$have'" >> "$LOG"
 }
 
-hex_ascii4() {
-	hex=$(printf '%s' "$1" | tr 'a-f' 'A-F')
-	case "$hex" in ????????) : ;; *) return 1 ;; esac
-	case "$hex" in *[!0-9A-F]*) return 1 ;; esac
-	out=
-	for pos in 1 3 5 7; do
-		pair=$(printf '%s' "$hex" | cut -c "$pos-$((pos + 1))")
-		dec=$((0x$pair))
-		[ "$dec" -ge 32 ] && [ "$dec" -le 126 ] || return 1
-		oct=$(printf '%03o' "$dec")
-		out="$out$(printf "\\$oct")"
-	done
-	printf '%s' "$out"
-}
-
 auth=$(get auth_type_g)
 auth_method=$(get auth_method_g)
 auth_method=$(printf '%s' "$auth_method" | tr 'A-Z' 'a-z')
@@ -153,8 +138,6 @@ epon_oui=$(get epon_oui); epon_ctc_oui=$(get epon_ctc_oui); epon_ven=$(get epon_
 epon_onu_vendor=$(get epon_onu_vendor_id)
 epon_serial=$(get epon_serial)
 [ -n "$epon_ctc_oui" ] || epon_ctc_oui=111111
-[ -n "$epon_onu_vendor" ] || epon_onu_vendor=$(identity_get vendor_id)
-[ -n "$epon_onu_vendor" ] || epon_onu_vendor=$(hex_ascii4 "$epon_ven" 2>/dev/null)
 
 # PON SN 是唯一输入源；SDK 仍要求分别设置 ME 256 SN 与 ME 7 Vendor ID。
 sn=$(printf '%s' "$sn" | tr -d '[:space:]' | tr 'a-z' 'A-Z')
@@ -199,29 +182,29 @@ if [ "$mode" = "EPON" ]; then
 else
 	[ -x "$OMCI" ] || { echo "omcicfgCmd 不存在或不可执行" >> "$LOG"; exit 127; }
 	echo "GPON identity: auth=$auth auth_method=${auth_method:-none} sn=$valid_sn vendor_id=$vendor onu_version=${onuver:-skip}" >> "$LOG"
-	[ -n "$vendor" ] && run "$OMCI" set vendor_id "$vendor"
+	[ -n "$vendor" ] && run "$OMCI" set vendorId "$vendor"
 	[ -n "$valid_sn" ] && run "$OMCI" set sn "$valid_sn"
 	case "$auth" in
 		LOID|loid)
 			[ -n "$loid" ] && run "$OMCI" set loid "$loid"
-			run_secret "omcicfgCmd set loid_password" "$OMCI" set loid_password "$loidpw"
+			run_secret "omcicfgCmd set loidPasswd" "$OMCI" set loidPasswd "$loidpw"
 			;;
 	esac
-	[ -n "$equipment" ] && run "$OMCI" set equipment_id "$equipment"
-	[ -n "$onuver" ] && run "$OMCI" set onu_version "$onuver"
-	[ -n "$omcc" ] && run "$OMCI" set omcc_version "$omcc"
-	[ -n "$spec" ] && run "$OMCI" set spec_version "$spec"
+	[ -n "$equipment" ] && run "$OMCI" set equipmentId "$equipment"
+	[ -n "$onuver" ] && run "$OMCI" set onuVersion "$onuver"
+	[ -n "$omcc" ] && run "$OMCI" set omccVersion "$omcc"
+	[ -n "$spec" ] && run "$OMCI" set specVer "$spec"
 
 	# 命令返回 0 不足以证明共享配置已更新；重启前必须核对当前生效值。
-	verify vendor_id "$vendor"
+	verify vendorId "$vendor"
 	verify sn "$valid_sn"
 	case "$auth" in
-		LOID|loid) verify loid "$loid"; verify_secret loid_password "$loidpw" ;;
+		LOID|loid) verify loid "$loid"; verify_secret loidPasswd "$loidpw" ;;
 	esac
-	verify equipment_id "$equipment"
-	verify onu_version "$onuver"
-	verify omcc_version "$omcc"
-	verify spec_version "$spec"
+	verify equipmentId "$equipment"
+	verify onuVersion "$onuver"
+	verify omccVersion "$omcc"
+	verify specVer "$spec"
 
 	case "$auth" in
 		SN|sn)

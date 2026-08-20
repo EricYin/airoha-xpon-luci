@@ -4,7 +4,7 @@
 # 读 UCI -> omcicfgCmd/oamcfgCmd 下发 -> 重启 OMCI -> reload network
 # 按设备原生认证流程执行：
 #   GPON SN  : set sn + ponmgr gpon set passwd ascii|hex <pwd>
-#   GPON LOID: set sn <def_sn> + set loid + set loid_password
+#   GPON LOID: set sn <def_sn> + set loid + set loidPasswd
 #   /tmp/load_process 存在则只发 `omci set reconfig`，否则重启 omci/ponmgr_cfg
 
 OMCI=/userfs/bin/omcicfgCmd
@@ -297,8 +297,8 @@ apply_auth() {
 			set_sn "$sn"
 			[ -n "$loid" ] && $OMCI set loid "$loid" >/dev/null 2>&1
 			# 空字符串是有效配置，表示 LOID-only；不能保留 netifd 的 ECONET 默认值。
-			logger -t xpon "apply_auth: $OMCI set loid_password '$loidpw'"
-			$OMCI set loid_password "$loidpw" >/dev/null 2>&1
+			logger -t xpon "apply_auth: $OMCI set loidPasswd '$loidpw'"
+			$OMCI set loidPasswd "$loidpw" >/dev/null 2>&1
 		else
 			set_sn "$sn"
 			# SN 密码：本固件 omcicfgCmd 无 passwdAscii/passwdHex 子命令
@@ -325,8 +325,8 @@ apply_auth() {
 		fi
 		# 厂商信息（netifd 引擎不管）。pon_mode 同时作为认证页已成功保存标志；
 		# 没有标志时不能把旧安装包的模板默认当成用户配置下发。
-		# 固件 omcicfgCmd 的 set/get 参数名是下划线形式：
-		# vendor_id / equipment_id / onu_version / omcc_version / spec_version。
+		# 固件 omcicfgCmd 的 set/get 参数名是 camelCase：
+		# vendorId / equipmentId / onuVersion / omccVersion / specVer。
 		if [ -n "$(uci_get xpon.device.pon_mode)" ]; then
 			identity_sn=$sn
 			identity_vendor=
@@ -334,26 +334,28 @@ apply_auth() {
 				identity_vendor=${identity_sn%????????}
 			fi
 			logger -t xpon "apply_auth: GPON identity auth=$auth sn=$identity_sn vendor_id=$identity_vendor onu_version=${onuver_val:-skip}"
-			[ -n "$identity_vendor" ] && $OMCI set vendor_id "$identity_vendor" >/dev/null 2>&1
-			[ -n "$equipment_val" ] && $OMCI set equipment_id "$equipment_val" >/dev/null 2>&1
-			[ -n "$onuver_val" ] && $OMCI set onu_version "$onuver_val" >/dev/null 2>&1
-			[ -n "$omcc_val" ] && $OMCI set omcc_version "$omcc_val" >/dev/null 2>&1
+			[ -n "$identity_vendor" ] && $OMCI set vendorId "$identity_vendor" >/dev/null 2>&1
+			[ -n "$equipment_val" ] && $OMCI set equipmentId "$equipment_val" >/dev/null 2>&1
+			[ -n "$onuver_val" ] && $OMCI set onuVersion "$onuver_val" >/dev/null 2>&1
+			[ -n "$omcc_val" ] && $OMCI set omccVersion "$omcc_val" >/dev/null 2>&1
 			# 记录实际回读值，区分 UCI 保存成功与 OMCI 下发成功。
-			for attr in vendor_id equipment_id onu_version omcc_version; do
-				want=$(identity_get "$attr")
-				[ "$attr" = vendor_id ] && want=$identity_vendor
+			for pair in vendor_id:vendorId equipment_id:equipmentId onu_version:onuVersion omcc_version:omccVersion; do
+				uci_attr=${pair%%:*}
+				omci_attr=${pair#*:}
+				want=$(identity_get "$uci_attr")
+				[ "$uci_attr" = vendor_id ] && want=$identity_vendor
 				[ -n "$want" ] || continue
-				have=$($OMCI get "$attr" 2>/dev/null | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1)
-				[ "$have" = "$want" ] || logger -t xpon "apply_auth: $attr 下发不一致 want='$want' have='$have'"
+				have=$($OMCI get "$omci_attr" 2>/dev/null | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1)
+				[ "$have" = "$want" ] || logger -t xpon "apply_auth: $uci_attr 下发不一致 want='$want' have='$have'"
 			done
 		else
 			# 未保存状态采用 DSD/网络 SN 的前四字节，避免旧模板 MTKG 与 AXON SN 不一致。
 			factory_vendor=${sn%????????}
 			[ "${#sn}" -eq 12 ] && [ "${#factory_vendor}" -eq 4 ] && \
-				$OMCI set vendor_id "$factory_vendor" >/dev/null 2>&1
+				$OMCI set vendorId "$factory_vendor" >/dev/null 2>&1
 		fi
 		# OMCI 消息交互协议版本（spec_version，uint8；与 G.988 标准 2 字节版本的映射需真机验证）
-		[ -n "$(uci_get xpon.device.omci_spec_ver)" ] && $OMCI set spec_version "$(uci_get xpon.device.omci_spec_ver)" >/dev/null 2>&1
+		[ -n "$(uci_get xpon.device.omci_spec_ver)" ] && $OMCI set specVer "$(uci_get xpon.device.omci_spec_ver)" >/dev/null 2>&1
 	elif [ "$mode" = "EPON" ]; then
 		# EPON（onu_type bits[7:4]=2/3/4/5/C）统一走 OAM 认证。
 		# 按 stock netifd 的 EPON 激活流程执行：
