@@ -161,9 +161,54 @@ jobs:
           sha256="$(sha256sum "${ipk}" | awk '{print $1}')"
           echo "ipk=${ipk}" >> "$GITHUB_OUTPUT"
           echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
-          printf '### %s\n\n- Commit: `%s`\n- SHA256: `%s`\n- 覆盖安装: `opkg install --force-overwrite --force-reinstall /tmp/%s`\n' \
-            "${ipk}" "$GITHUB_SHA" "$sha256" "${ipk}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '### %s\n\n' "${ipk}"
+            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- SHA256: `%s`\n\n' "$sha256"
+            cat <<EOF
+          #### 下载说明
 
+          GitHub Actions 页面下载 artifact 时，浏览器通常会先得到一个 zip 包。请先解压，确认里面的 `${ipk}` 才是真正给 opkg 安装的文件。
+
+          本机检查下载文件；GitHub 可能下载成 `${ipk}.zip`，也可能文件名仍是 `${ipk}` 但内容是 zip：
+
+          ```sh
+          file ${ipk} ${ipk}.zip 2>/dev/null || true
+          unzip ${ipk}.zip 2>/dev/null || unzip ${ipk}
+          file ${ipk}
+          ar t ${ipk}
+          sha256sum ${ipk}
+          ```
+
+          解压后的 `${ipk}` 应显示 `current ar archive`，`ar t` 应输出：
+
+          ```text
+          debian-binary
+          control.tar.gz
+          data.tar.gz
+          ```
+
+          #### 上传到设备
+
+          ```sh
+          scp ${ipk} root@192.168.1.1:/tmp/
+          ```
+
+          #### 覆盖安装并清 LuCI 缓存
+
+          ```sh
+          cd /tmp
+          head -c 8 ${ipk}
+          opkg install --force-reinstall --force-overwrite ./${ipk}
+          rm -f /tmp/luci-indexcache
+          rm -rf /tmp/luci-modulecache
+          /etc/init.d/uhttpd restart
+          /etc/init.d/xpon-app restart
+          ```
+
+          `head -c 8` 正常应看到 `!<arch>`。如果看到 `PK` 或 `<html`，说明上传的不是 ipk 本体，而是 zip/网页下载结果。
+          EOF
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload opkg package
         uses: actions/upload-artifact@v7
         with:
