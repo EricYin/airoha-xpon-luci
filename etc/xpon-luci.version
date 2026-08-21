@@ -1,4 +1,5 @@
 xpon-luci 2.8 2026-08-20
+ui: OMCI 页面入口由 /xpon/provision 调整为 /xpon/moci，旧 /xpon/provision 保留兼容跳转
 epon: OAM 完整身份回读成功后 best-effort 通知原厂 epon_oam 的 TCAPI_SAVE/update-config 队列入口（cmdType=24）；跨重启持久源为 UCI，启动后重放 OAM；OUI 在提交和下发时均从 EPON 注册 MAC 前三字节强制推导
 auth: 保存后重启提示页增加返回管理首页按钮；按当前 LAN IP、当前访问地址与 192.168.0.1 提供备用入口，避免 IP 变更后卡在 /admin/xpon/save
 boot: 重启恢复按当前 onu_type 统一选择 EPON/OAM 或 GPON/OMCI；旧配置优先读取 auth_method_g，PASSWORD 清除残留 LOID，sn 作为唯一 Vendor ID 来源

@@ -153,7 +153,8 @@ function index()
 	entry({"admin", "xpon", "services"}, call("action_services"), "业务", 2)
 	entry({"admin", "xpon", "voice"}, call("action_voice"), "语音", 3)
 	entry({"admin", "xpon", "service-vlan"}, post("action_service_vlan")).leaf = true
-	entry({"admin", "xpon", "provision"}, call("action_provision"), "OMCI", 4)
+	entry({"admin", "xpon", "moci"}, call("action_moci"), "OMCI", 4)
+	entry({"admin", "xpon", "provision"}, call("action_provision_redirect")).leaf = true
 	entry({"admin", "xpon", "oam"}, call("action_oam"), "OAM", 5)
 	entry({"admin", "xpon", "status"}, call("action_status"), "状态", 6)
 
@@ -2765,23 +2766,23 @@ function action_save()
 		if not ok then
 			http.redirect(xpon_url("services", "err=" .. tostring(why))); return
 		end
-	elseif page == "provision" then
+	elseif page == "provision" or page == "moci" then
 		local act = formvalue("action") or "save"
 		if act == "manual" then
 			local mok, mskip, mfail = manual_gem(formvalue)
-			http.redirect(xpon_url("provision", "act=manual&mok=" .. mok ..
+			http.redirect(xpon_url("moci", "act=manual&mok=" .. mok ..
 				"&mskip=" .. mskip .. "&mfail=" .. mfail))
 			return
 		end
 		save_vlan(formvalue)
 		if act == "fallback" then
 			sys.call("/usr/bin/xpon-fallback.sh once >/dev/null 2>&1")
-			http.redirect(xpon_url("provision", "act=fallback"))
+			http.redirect(xpon_url("moci", "act=fallback"))
 		elseif act == "refresh" then
-			http.redirect(xpon_url("provision", "act=refresh"))
+			http.redirect(xpon_url("moci", "act=refresh"))
 		else
 			sys.call("/usr/bin/xpon-apply.sh network >/dev/null 2>&1")
-			http.redirect(xpon_url("provision", "act=save"))
+			http.redirect(xpon_url("moci", "act=save"))
 		end
 		return
 	end
@@ -3059,7 +3060,12 @@ local function build_gem_vlan_analysis(opt)
 	}
 end
 
-function action_provision()
+function action_provision_redirect()
+	local qs = http.getenv("QUERY_STRING") or ""
+	http.redirect(xpon_url("moci", qs ~= "" and qs or nil))
+end
+
+function action_moci()
 	local gem_up_text = klog_show("/userfs/bin/gponmapcmd showGemPortRule")
 	local me84 = sh("cat /tmp/ponstatus/me84_tag_info 2>/dev/null")
 	local me171 = sh("cat /tmp/ponstatus/me171_tag_info 2>/dev/null")

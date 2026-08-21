@@ -5,8 +5,8 @@ runtime identity views on the XG2010G/Airoha EN7581 image.
 
 ## GPON OMCI identity
 
-The GPON provision page should treat `omcicfgCmd get ...` as the runtime truth
-and UCI as the intended override. The important fields are:
+The GPON `/xpon/moci` page should treat `omcicfgCmd get ...` as the runtime
+truth and UCI as the intended override. The important fields are:
 
 ```text
 omcicfgCmd get sn
