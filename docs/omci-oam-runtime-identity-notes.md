@@ -45,6 +45,12 @@ as the OMCI process's stock/default product value until the replay path applies
 `xpon.device.onu_version`. Do not backfill that stock runtime value into the
 editable auth form and save it as user intent.
 
+SN password/REG_ID is write-only on the inspected firmware. The valid
+`ponmgr gpon get` subcommands do not include `passwd`; the working entry point
+is `ponmgr gpon set passwd ascii|hex|regid <value>`. The `/admin/xpon/moci`
+runtime identity table therefore shows the saved password values plus the most
+recent set log, not a fake runtime getter.
+
 ## EPON OAM identity
 
 EPON registration is not OMCI registration. The OAM page should show OAM/MPCP

@@ -1,4 +1,5 @@
 xpon-luci 2.8 2026-08-20
+ui: OMCI SN Password 运行字段不再调用不存在的 ponmgr gpon get passwd，改显示配置值与最近 set passwd 下发日志
 ui: OMCI 页面永久改为 /admin/xpon/moci，移除旧 /admin/xpon/provision 路由并统一模板名；升级后清理 LuCI 旧路由缓存
 epon: OAM 完整身份回读成功后 best-effort 通知原厂 epon_oam 的 TCAPI_SAVE/update-config 队列入口（cmdType=24）；跨重启持久源为 UCI，启动后重放 OAM；OUI 在提交和下发时均从 EPON 注册 MAC 前三字节强制推导
 auth: 保存后重启提示页增加返回管理首页按钮；按当前 LAN IP、当前访问地址与 192.168.0.1 提供备用入口，避免 IP 变更后卡在 /admin/xpon/save
