@@ -1,5 +1,5 @@
 xpon-luci 2.8 2026-08-20
-ui: OMCI 页面入口由 /xpon/provision 调整为 /xpon/moci，旧 /xpon/provision 保留兼容跳转
+ui: OMCI 页面永久改为 /admin/xpon/moci，移除旧 /admin/xpon/provision 路由并统一模板名；升级后清理 LuCI 旧路由缓存
 epon: OAM 完整身份回读成功后 best-effort 通知原厂 epon_oam 的 TCAPI_SAVE/update-config 队列入口（cmdType=24）；跨重启持久源为 UCI，启动后重放 OAM；OUI 在提交和下发时均从 EPON 注册 MAC 前三字节强制推导
 auth: 保存后重启提示页增加返回管理首页按钮；按当前 LAN IP、当前访问地址与 192.168.0.1 提供备用入口，避免 IP 变更后卡在 /admin/xpon/save
 boot: 重启恢复按当前 onu_type 统一选择 EPON/OAM 或 GPON/OMCI；旧配置优先读取 auth_method_g，PASSWORD 清除残留 LOID，sn 作为唯一 Vendor ID 来源
@@ -50,7 +50,7 @@ boot: preinit 从 mtd2 DSD 生成 /tmp/dsd.env；OMCI 就绪后两阶段重放�
 install: /etc/config/xpon 改由 uci-defaults 首次创建，覆盖升级不再重置用户认证配置
 mode/status: 页面渲染彻底移除同步 xponigmpcmd 调用（ioctl 阻塞会挂起 LuCI→“登出”）；
 新增 xpon-mvlan-snap.sh 后台刷新“驱动实际登记”快照 /tmp/xpon-mvlan-act.txt，页面只读快照；
-provision 手动组播登记改后台 detach；status 页“IPTV 组播”诊断段改读快照
+moci 手动组播登记改后台 detach；status 页“IPTV 组播”诊断段改读快照
 mode: 修复添加/删除仍登出——后台组播登记与 reboot 子 shell 补全 >/dev/null 2>&1 detach；
 mode: vconfig/ip/ifconfig/gponmapcmd 全部 timeout 3 防 ioctl 挂死；
 mode: 8021q 诊断改判 /proc/net/vlan（lsmod 查不到内建内核模块，不再误报“未加载”）；

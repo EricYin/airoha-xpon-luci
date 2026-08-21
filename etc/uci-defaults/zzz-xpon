@@ -249,4 +249,10 @@ rm -f /etc/rc.d/S99uenv_update /etc/rc.d/K99uenv_update
 rm -f /etc/rc.d/S95pon-services /etc/rc.d/K95pon-services
 rm -f /etc/rc.d/S11xpon-app /etc/rc.d/K89xpon-app
 
+# 升级到 /admin/xpon/moci 后清理 LuCI 旧路由/模板缓存；手工 tar 覆盖
+# 安装时旧 provision.htm 可能残留在 overlay，删除它避免后续误判页面来源。
+rm -f /usr/lib/lua/luci/view/xpon/provision.htm
+rm -f /tmp/luci-indexcache
+rm -rf /tmp/luci-modulecache /tmp/luci-*cache
+
 exit 0

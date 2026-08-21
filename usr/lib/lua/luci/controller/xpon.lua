@@ -154,7 +154,6 @@ function index()
 	entry({"admin", "xpon", "voice"}, call("action_voice"), "语音", 3)
 	entry({"admin", "xpon", "service-vlan"}, post("action_service_vlan")).leaf = true
 	entry({"admin", "xpon", "moci"}, call("action_moci"), "OMCI", 4)
-	entry({"admin", "xpon", "provision"}, call("action_provision_redirect")).leaf = true
 	entry({"admin", "xpon", "oam"}, call("action_oam"), "OAM", 5)
 	entry({"admin", "xpon", "status"}, call("action_status"), "状态", 6)
 
@@ -3060,11 +3059,6 @@ local function build_gem_vlan_analysis(opt)
 	}
 end
 
-function action_provision_redirect()
-	local qs = http.getenv("QUERY_STRING") or ""
-	http.redirect(xpon_url("moci", qs ~= "" and qs or nil))
-end
-
 function action_moci()
 	local gem_up_text = klog_show("/userfs/bin/gponmapcmd showGemPortRule")
 	local me84 = sh("cat /tmp/ponstatus/me84_tag_info 2>/dev/null")
@@ -3382,7 +3376,7 @@ function action_moci()
 			level = "info",
 		},
 	}
-	ltemplate.render("xpon/provision", {
+	ltemplate.render("xpon/moci", {
 		ctl_ver = "2",
 		interaction_rows = interaction_rows,
 		omci_fields = omci_fields,

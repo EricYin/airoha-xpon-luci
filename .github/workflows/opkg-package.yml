@@ -126,6 +126,8 @@ jobs:
           [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon || true
           [ ! -x /etc/init.d/pon-services ] || /etc/init.d/pon-services enable || true
           [ ! -x /etc/init.d/xpon-app ] || /etc/init.d/xpon-app enable || true
+          rm -f /tmp/luci-indexcache
+          rm -rf /tmp/luci-modulecache /tmp/luci-*cache
 
           exit 0
           EOF
