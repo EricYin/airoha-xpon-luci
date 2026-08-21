@@ -210,12 +210,87 @@ local function sh(cmd)
 	return util.trim((out:gsub("%z", "")))
 end
 
+local function dsd_ascii24_ok(s)
+	s = tostring(s or "")
+	if #s > 24 then return false end
+	for i = 1, #s do
+		local b = s:byte(i)
+		if b < 32 or b == 127 then return false end
+	end
+	return true
+end
+
+local function dsd_ponmac_ok(s)
+	return #(s or "") == 17 and s:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") ~= nil
+end
+
+local function dsd_raw_value(key)
+	local safe_keys = {
+		fsan = true, wan_mac = true, lan_mac = true, serial_number = true,
+		manufacturer = true, clei_code = true,
+	}
+	if not safe_keys[key] then return "" end
+	local v = sh("/usr/sbin/gtk_dsd get " .. key .. " 2>/dev/null")
+	if v ~= "" then return v end
+	return sh([[awk -F"'" '/^]] .. key .. [[=/ {print $2; exit}' /tmp/dsd.env 2>/dev/null]])
+end
+
 local function dsd_wan_mac()
-	local mac = sh([[sed -n 's/^wan_mac=//p' /tmp/dsd.env | tr -d "'\"" | head -1]])
+	local mac = dsd_raw_value("wan_mac")
 	if #mac == 17 and mac:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") then
 		return mac:upper()
 	end
 	return ""
+end
+
+local function dsd_fsan()
+	local fsan = (dsd_raw_value("fsan") or ""):gsub("%s+", ""):upper()
+	if #fsan == 12 and fsan:sub(1, 4):match("^[A-Z0-9]+$") and fsan:sub(5, 12):match("^[0-9A-F]+$") then
+		return fsan
+	end
+	return ""
+end
+
+local function dsd_clei_code()
+	local clei = dsd_raw_value("clei_code")
+	if dsd_ascii24_ok(clei) then return clei end
+	return ""
+end
+
+local function shell_quote(s)
+	return "'" .. tostring(s or ""):gsub("'", "'\\''") .. "'"
+end
+
+local function apply_dsd_value(key, value)
+	local safe_keys = { fsan = true, wan_mac = true, clei_code = true }
+	if not safe_keys[key] then return 64 end
+	value = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if key == "fsan" then
+		value = value:gsub("%s+", ""):upper()
+		if #value ~= 12 or not value:sub(1, 4):match("^[A-Z0-9]+$") or not value:sub(5, 12):match("^[0-9A-F]+$") then return 64 end
+	elseif key == "wan_mac" then
+		value = value:gsub("%s+", ""):upper()
+		if not dsd_ponmac_ok(value) then return 64 end
+	elseif key == "clei_code" then
+		if value == "" or not dsd_ascii24_ok(value) then return 64 end
+	end
+	local qkey = shell_quote(key)
+	local qvalue = shell_quote(value)
+	local qcmp = shell_quote((key == "fsan" or key == "wan_mac") and value:upper() or value)
+	local normalize = (key == "fsan" or key == "wan_mac") and " | tr 'a-z' 'A-Z'" or ""
+	local cmd = table.concat({
+		"stamp=$(date +%Y%m%d-%H%M%S 2>/dev/null);",
+		"[ -n \"$stamp\" ] || stamp=unknown;",
+		"mkdir -p /etc/xpon-env-backups || exit 1;",
+		"/usr/sbin/gtk_dsd get all > /etc/xpon-env-backups/dsd-get-all-$stamp.txt 2>/dev/null || true;",
+		"dd if=/dev/mtdblock2 of=/etc/xpon-env-backups/mtd2-dsd-$stamp.bin bs=128k >/tmp/xpon-dsd-dd.log 2>&1 || exit 1;",
+		"/usr/sbin/gtk_dsd set " .. qkey .. " " .. qvalue .. " || exit 1;",
+		"/usr/bin/xpon-dsd-env.sh || true;",
+		"read_value=$(/usr/sbin/gtk_dsd get " .. qkey .. " 2>/dev/null" .. normalize .. ");",
+		"[ \"$read_value\" = " .. qcmp .. " ] || { echo \"DSD " .. key .. " 回读失败：want=" .. value .. " have=${read_value:-空}\"; exit 65; };",
+		"echo \"DSD " .. key .. " 已写入并回读成功：" .. value .. " backup=/etc/xpon-env-backups/mtd2-dsd-$stamp.bin\""
+	}, " ")
+	return sys.call("( " .. cmd .. " ) >/tmp/xpon-dsd-apply.log 2>&1")
 end
 
 -- 写系统日志（logread 可查），单引号转义防注入
@@ -413,6 +488,66 @@ local function encode_json(t)
 	return table.concat(out)
 end
 
+local function html_escape(s)
+	s = tostring(s or "")
+	s = s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+	s = s:gsub('"', "&quot;"):gsub("'", "&#39;")
+	return s
+end
+
+local function reboot_return_targets()
+	local targets, seen = {}, {}
+	local function add(url)
+		if url and url ~= "" and not seen[url] then
+			seen[url] = true
+			targets[#targets + 1] = url
+		end
+	end
+
+	local https = http.getenv("HTTPS") == "on" or http.getenv("SERVER_PORT") == "443"
+	local scheme = https and "https" or "http"
+	local host = http.getenv("HTTP_HOST") or http.getenv("SERVER_NAME") or ""
+	host = host:gsub("[/%s].*$", "")
+
+	local lan_ip = uget("network", "lan", "ipaddr") or ""
+	if lan_ip:match("^%d+%.%d+%.%d+%.%d+$") then
+		add(scheme .. "://" .. lan_ip .. "/")
+		add("https://" .. lan_ip .. "/")
+		add("http://" .. lan_ip .. "/")
+	end
+	if host ~= "" then
+		add(scheme .. "://" .. host .. "/")
+	end
+	add("https://192.168.0.1/")
+	add("http://192.168.0.1/")
+	return targets
+end
+
+local function write_reboot_page(result)
+	local targets = reboot_return_targets()
+	local primary = targets[1] or "/"
+	local links = {}
+	for i, url in ipairs(targets) do
+		links[#links + 1] = "<li><a href='" .. html_escape(url) .. "'>" ..
+			html_escape(url) .. "</a>" .. (i == 1 and "（推荐）" or "") .. "</li>"
+	end
+	http.write("<html><head><meta charset='utf-8'>" ..
+		"<meta name='viewport' content='width=device-width,initial-scale=1'>" ..
+		"<meta http-equiv='refresh' content='150;url=" .. html_escape(primary) .. "'>" ..
+		"<style>body{font-family:Arial,sans-serif;margin:28px;line-height:1.6;color:#222}" ..
+		".btn{display:inline-block;margin:14px 0;padding:8px 16px;border-radius:4px;background:#0069d9;color:#fff;text-decoration:none}" ..
+		".muted{color:#666;font-size:13px}ul{padding-left:20px}</style>" ..
+		"<script>var xponReturnTargets=" .. encode_json(targets) .. ";" ..
+		"function xponReturnHome(){var i=parseInt(sessionStorage.getItem('xponReturnIndex')||'0',10);" ..
+		"var url=xponReturnTargets[i%xponReturnTargets.length];sessionStorage.setItem('xponReturnIndex',String(i+1));location.href=url;return false;}</script>" ..
+		"</head><body><h2>" .. html_escape(result) .. "</h2>" ..
+		"<p>重启任务已创建，设备将在约 8 秒后整机重启。</p>" ..
+		"<p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p>" ..
+		"<a class='btn' href='" .. html_escape(primary) .. "' onclick='return xponReturnHome()'>返回管理首页</a>" ..
+		"<p class='muted'>如果设备 LAN IP 已变更，请在恢复后尝试下面的备用入口：</p><ul>" ..
+		table.concat(links, "") .. "</ul></body></html>")
+end
+
 function auth_values()
 	local u = uci.cursor()
 	local v = {}
@@ -592,6 +727,11 @@ function auth_values()
 	if v.loid == "" and rt.loid ~= "" and rt.loid ~= "mtk1111" then v.loid = rt.loid end
 	if (v.sn == "" or v.sn == "NoNumber") and rt.sn ~= "" then v.sn = rt.sn end
 	v.pon_mac_default = dsd_mac
+	v.dsd_fsan = dsd_fsan()
+	v.dsd_clei_code = dsd_clei_code()
+	v.dsd_lan_mac = dsd_raw_value("lan_mac")
+	v.dsd_serial_number = dsd_raw_value("serial_number")
+	v.dsd_manufacturer = dsd_raw_value("manufacturer")
 	v.rt = rt
 	local pmv = ponmode_values()
 	local pt = saved("pon_tech", "")
@@ -610,6 +750,10 @@ function auth_values()
 	v.onu_low           = pmv.cur_low
 	v.onu_mode_run      = pmv.run_dec.label
 	v.onu_mode_next     = pmv.env_dec.label
+	v.onu_type_run      = pmv.run_dec.label
+	v.onu_type_env      = pmv.env_dec.label
+	v.onu_type_run_hex  = pmv.run_hex
+	v.onu_type_env_hex  = pmv.env_hex
 	v.onu_type_pending  = pmv.pending
 	return v
 end
@@ -1335,9 +1479,13 @@ end
 
 function ponmode_values()
 	local env_val = sh("fw_printenv onu_type 2>/dev/null")
+	local env_bootargs = sh("fw_printenv -n bootargs 2>/dev/null")
 	local cmdline_val = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1")
 	cmdline_val = cmdline_val:match("=(.*)$") or cmdline_val
 	local env_num = env_val:match("=(.*)$") or env_val
+	if not env_num:match("^[0-9a-fA-F][0-9a-fA-F]$") then
+		env_num = (" " .. env_bootargs .. " "):match("%sonu_type=([0-9a-fA-F][0-9a-fA-F])%s") or ""
+	end
 	local sys_mode = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
 
 	-- 当前生效 hex（cmdline 优先），用于预选与缺省技术推导
@@ -2560,6 +2708,20 @@ function action_save()
 			if not saved_ok then
 				err = save_err or "persist_auth"
 			else
+				if pmode ~= "EPON" and formvalue("dsd_fsan_sync") == "1" then
+					local dsd_rc = apply_dsd_value("fsan", sn)
+					if dsd_rc ~= 0 then err = "dsd_fsan_write_" .. tostring(dsd_rc) end
+				end
+				if not err and pmode ~= "EPON" and formvalue("dsd_wan_mac_sync") == "1" then
+					local dsd_rc = apply_dsd_value("wan_mac", effective_pon_mac)
+					if dsd_rc ~= 0 then err = "dsd_wan_mac_write_" .. tostring(dsd_rc) end
+				end
+				if not err and pmode ~= "EPON" and formvalue("dsd_clei_code_sync") == "1" then
+					local dsd_rc = apply_dsd_value("clei_code", formvalue("equipment_id") or "")
+					if dsd_rc ~= 0 then err = "dsd_clei_code_write_" .. tostring(dsd_rc) end
+				end
+			end
+			if not err then
 				local onu_val = onu_type_hex(ptech, onu_low)
 				-- ONU 形态/PON 技术只保存在 U-Boot env；这是用户明确保存时
 				-- 唯一允许写 onu_type/bootargs 的入口，启动重放只读 env。
@@ -2569,7 +2731,7 @@ function action_save()
 				else
 					-- GPON 只同步 pon 业务接口地址；EPON 还必须同步并回读
 					-- ethaddr/bootargs，供驱动在下次启动时设置 MPCP ONU MAC。
-					local mac_rc = sys.call("/usr/bin/xpon-apply.sh mac")
+					local mac_rc = sys.call("/usr/bin/xpon-apply.sh mac >/tmp/xpon-ponmac-apply.log 2>&1")
 					if mac_rc ~= 0 then
 						err = "ponmac_write_" .. tostring(mac_rc)
 					else
@@ -2581,7 +2743,7 @@ function action_save()
 							if schedule_reboot(8) then
 								local result = same_engine and "认证参数及 PON MAC 已应用"
 									or "认证参数及 PON MAC 已保存，将在新 PON 模式启动时生效"
-								http.write("<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='150;url=/cgi-bin/luci/'></head><body><h2>" .. result .. "</h2><p>重启任务已创建，设备将在约 8 秒后整机重启。</p><p>重启预计耗时 2-3 分钟，恢复后请重新登录核对当前生效值。</p></body></html>")
+								write_reboot_page(result)
 								return
 							end
 							err = "reboot_schedule"
@@ -2657,10 +2819,20 @@ function action_auth()
 	local page_err = formvalue("err")
 	-- r5 已将 OMCC 设为非阻断可选项；忽略旧页面 URL 遗留的废弃错误码。
 	if page_err == "omcc_version" then page_err = nil end
+	local ponmac_log = ""
+	if page_err and page_err:match("^ponmac_write_") then
+		ponmac_log = sh("tail -20 /tmp/xpon-ponmac-apply.log 2>/dev/null")
+	end
+	local dsd_fsan_log = ""
+	if page_err and page_err:match("^dsd_.*_write_") then
+		dsd_fsan_log = sh("tail -20 /tmp/xpon-dsd-apply.log 2>/dev/null")
+	end
 	ltemplate.render("xpon/auth", {
 		v = auth_values(),
 		saved = (formvalue("saved") == "1"),
 		err = page_err,
+		ponmac_log = ponmac_log,
+		dsd_fsan_log = dsd_fsan_log,
 	})
 end
 

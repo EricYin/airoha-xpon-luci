@@ -1,8 +1,10 @@
 # ImmortalWrt vendor tool integration
 
 The LuCI scripts in this project retain the original `/userfs/bin` command
-paths used by the factory firmware. On ImmortalWrt, install the companion
-`airoha-xpon-vendor-tools` package before installing this package.
+paths used by the factory firmware. The stock Airoha firmware already ships
+those commands, so the opkg package is self-contained there. On ImmortalWrt,
+install the companion `airoha-xpon-vendor-tools` package separately to provide
+the missing factory command ABI.
 
 That package provides an isolated AArch64 glibc runtime below
 `/opt/airoha-xpon/vendor` and compatibility links for the commands used by

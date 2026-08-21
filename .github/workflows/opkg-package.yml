@@ -43,6 +43,7 @@ jobs:
           bash -n usr/bin/xpon-dsd-env.sh
           bash -n usr/bin/xpon-epon-sn.sh
           bash -n usr/bin/xpon-fallback.sh
+          bash -n usr/bin/xpon-gpon-identity-watch.sh
           bash -n usr/bin/xpon-iptv.sh
           bash -n usr/bin/xpon-mode
           bash -n usr/bin/xpon-mvlan-snap.sh
@@ -108,7 +109,7 @@ jobs:
           Maintainer: xpon-luci maintainers
           Section: luci
           Priority: optional
-          Depends: libc, airoha-xpon-vendor-tools
+          Depends: libc
           Description: LuCI xPON management panel for Airoha based devices.
            Includes authentication, service VLAN, IPTV multicast, status, and
            runtime replay helpers for XPON devices.
@@ -152,11 +153,26 @@ jobs:
             -czf "${workdir}/data.tar.gz" \
             .
 
-          (cd "${workdir}" && ar cr "${repo_dir}/${ipk}" debian-binary control.tar.gz data.tar.gz)
+          mkdir -p "${workdir}/pkg"
+          mv "${workdir}/debian-binary" "${workdir}/pkg/debian-binary"
+          mv "${workdir}/data.tar.gz" "${workdir}/pkg/data.tar.gz"
+          mv "${workdir}/control.tar.gz" "${workdir}/pkg/control.tar.gz"
 
-          ar t "${ipk}"
-          tar -tzf "${workdir}/control.tar.gz"
-          tar -tzf "${workdir}/data.tar.gz" | sed -n '1,120p'
+          tar \
+            --format=gnu \
+            --sort=name \
+            --mtime="@${source_date_epoch}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C "${workdir}/pkg" \
+            -czf "${repo_dir}/${ipk}" \
+            ./debian-binary ./data.tar.gz ./control.tar.gz
+
+          file "${ipk}"
+          tar -tzf "${ipk}"
+          tar -xOzf "${ipk}" ./control.tar.gz | tar -xzOf - ./control
+          tar -xOzf "${ipk}" ./data.tar.gz | tar -tzf - | sed -n '1,120p'
 
           sha256="$(sha256sum "${ipk}" | awk '{print $1}')"
           echo "ipk=${ipk}" >> "$GITHUB_OUTPUT"
@@ -176,16 +192,16 @@ jobs:
           file __IPK__ __IPK__.zip 2>/dev/null || true
           unzip __IPK__.zip 2>/dev/null || unzip __IPK__
           file __IPK__
-          ar t __IPK__
+          tar -tzf __IPK__
           sha256sum __IPK__
           ```
 
-          解压后的 `__IPK__` 应显示 `current ar archive`，`ar t` 应输出：
+          解压后的 `__IPK__` 应显示 `gzip compressed data`，`tar -tzf` 应输出：
 
           ```text
-          debian-binary
-          control.tar.gz
-          data.tar.gz
+          ./debian-binary
+          ./data.tar.gz
+          ./control.tar.gz
           ```
 
           #### 上传到设备
@@ -198,7 +214,7 @@ jobs:
 
           ```sh
           cd /tmp
-          head -c 8 __IPK__
+          tar -tzf __IPK__
           opkg install --force-reinstall --force-overwrite ./__IPK__
           rm -f /tmp/luci-indexcache
           rm -rf /tmp/luci-modulecache
@@ -206,7 +222,7 @@ jobs:
           /etc/init.d/xpon-app restart
           ```
 
-          `head -c 8` 正常应看到 `!<arch>`。如果看到 `PK` 或 `<html`，说明上传的不是 ipk 本体，而是 zip/网页下载结果。
+          `tar -tzf` 正常应列出 `./debian-binary`、`./data.tar.gz`、`./control.tar.gz`。如果看到 `PK`、`<html` 或解包失败，说明上传的不是 ipk 本体，而是 artifact zip/网页下载结果。
           EOF
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload opkg package
