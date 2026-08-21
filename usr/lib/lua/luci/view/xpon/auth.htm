@@ -27,7 +27,14 @@ end
 	<div class="alert-message error">保存被拒绝：字段 <b><%=err%></b> 不合法（LOID≤24 字节、LOID 密码≤12 字节；PON SN 为 4 位厂商代码 + 8 位 hex；SN 密码 ascii≤10 / hex≤20 / REG_ID≤36；EPON OUI 为 6 位 hex、ONU Vendor ID 为 4 位可打印 ASCII、EPON 序列号为 6 字节 MAC 格式；EPON 注册 MAC 留空时必须能读取有效 dsd wan_mac）。</div>
 <% end %>
 
-<form class="cbi-map" method="post" action="save" onsubmit="return xponAuthCheck(this)" id="authform">
+	<form class="cbi-map" method="post" action="save" onsubmit="return xponAuthCheck(this)" id="authform"
+		data-credential-mode="<%=v.pon_mode == "EPON" and "epon" or "gpon"%>"
+		data-epon-loid="<%=esc(v.epon_loid)%>"
+		data-gpon-loid="<%=esc(v.gpon_loid)%>"
+		data-epon-sn="<%=esc(v.epon_sn)%>"
+		data-gpon-sn="<%=esc(v.gpon_sn)%>"
+		data-epon-loid-password-set="<%=v.epon_loid_password ~= "" and "1" or "0"%>"
+		data-gpon-loid-password-set="<%=v.gpon_loid_password ~= "" and "1" or "0"%>">
 	<input type="hidden" name="token" value="<%=token%>" />
 	<input type="hidden" name="page" value="auth" />
 
@@ -73,8 +80,9 @@ for _, t in ipairs(v.pon_techs or {}) do
 				<select id="auth_type_g" name="auth_type_g" class="cbi-input-select" onchange="xponAuthToggle()">
 					<option value="loid"<% if atg == "loid" then %> selected="selected"<% end %>>LOID（大多数：电信/联通）</option>
 					<option value="password"<% if atg == "password" then %> selected="selected"<% end %>>PASSWORD（大多数：移动）</option>
+					<option value="sn"<% if atg == "sn" then %> selected="selected"<% end %>>SN 密码认证（政企/专线）</option>
 				</select>
-				<div class="cbi-value-description"><b>LOID（默认）</b>：大多数电信/联通认证方案；<b>PASSWORD</b>：大部分移动，配合「PON SN」+「REG_ID」。保存一次即持久化。</div>
+				<div class="cbi-value-description"><b>LOID（默认）</b>：大多数电信/联通认证方案；<b>PASSWORD</b>：大部分移动，配合「PON SN」+「REG_ID」；<b>SN 密码认证</b>：政企/专线常见的 SN+PWD（ascii/hex）。保存一次即持久化。</div>
 			</div>
 		</div>
 
@@ -141,7 +149,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-loid">
-			<label class="cbi-value-title xpon-required" for="loid">LOID</label>
+			<label class="cbi-value-title xpon-required" for="loid">逻辑LOID</label>
 			<div class="cbi-value-field">
 				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 LOID_EXAMPLE" />
 				<div class="cbi-value-description">≤24 字节，运营商提供。
@@ -179,7 +187,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-sn">
-			<label class="cbi-value-title" for="sn_password">SN 密码</label>
+			<label class="cbi-value-title" for="sn_password">SN 密码认证</label>
 			<div class="cbi-value-field">
 				<input type="text" id="sn_password" name="sn_password" class="cbi-input-text" autocomplete="new-password" maxlength="36" placeholder="留空 = 保持原值（按上面格式填）" />
 				<div class="cbi-value-description">ascii ≤10 / hex ≤20；留空不改。家宽一般不需要 PWD，政企专线可能开启 SN+PWD。<br />
@@ -188,10 +196,10 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-regid">
-			<label class="cbi-value-title xpon-required" for="reg_id">REG_ID（Password认证码）</label>
+			<label class="cbi-value-title xpon-required" for="reg_id">Password认证码</label>
 			<div class="cbi-value-field">
 				<input type="text" id="reg_id" name="reg_id" class="cbi-input-text" autocomplete="off" maxlength="36" value="<%=esc(v.reg_id)%>" placeholder="移动 Password 认证码" />
-				<div class="cbi-value-description">仅移动 Password 认证需要，只填这一个（≤36 位），旧猫认证页「密码/REG_ID」直接抄。<br />
+				<div class="cbi-value-description">仅移动 Password 认证需要，只填这一个（≤36 位），旧猫认证页「Password密码/REG_ID」直接抄。<br />
 					当前已配置：<code><%=esc(v.reg_id ~= "" and v.reg_id or "（空）")%></code></div>
 			</div>
 		</div>
@@ -207,7 +215,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title xpon-required" for="sn">PON SN（含 Vendor ID）</label>
+			<label class="cbi-value-title xpon-required" for="sn">序列号GPON SN</label>
 			<div class="cbi-value-field">
 				<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 TEST1234ABCD" pattern="[A-Za-z0-9]{4}[0-9A-Fa-f]{8}" />
 				<div class="cbi-value-description">完整 12 字符：前 4 位为厂商代码 PON Vendor ID，后 8 位为十六进制序列号。保存时后台自动拆分，并分别写入 <code>omcicfgCmd set vendor_id</code> 和 <code>GPON SN</code>。
@@ -217,16 +225,16 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title" for="equipment_id">设备型号（Equipment ID，可选）</label>
+			<label class="cbi-value-title" for="equipment_id">设备型号（Equipment可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="equipment_id" name="equipment_id" class="cbi-input-text" maxlength="24" value="<%=v.equipment_id%>" placeholder="留空 = 不下发" pattern="[\x20-\x7E]{0,24}" />
-				<div class="cbi-value-description">GPON ONU2-G 定义的设备型号/标识，可选；非空时允许 1~24 个可打印 ASCII，通过 <code>omcicfgCmd set equipment_id</code> 写入；留空则清除本项目覆盖值、不下发。<br />
+				<div class="cbi-value-description">GPON ONU2-G 定义的设备型号/标识，可选；非空时允许 1~24 个可打印 ASCII，模拟设备型号 <code>omcicfgCmd set equipment_id</code> 写入；留空则清除本项目覆盖值、不下发。<br />
 					当前系统生效：<code><%=esc(rt.equipment_id ~= "" and rt.equipment_id or "（空）")%></code></div>
 			</div>
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title" for="gpon_pon_mac">GPON/XGPON/XGSPON 业务接口 MAC</label>
+			<label class="cbi-value-title" for="gpon_pon_mac">业务GPON MAC（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="gpon_pon_mac" name="gpon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.gpon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
 				<div class="cbi-value-description">GPON 系列的 PLOAM/OMCI 注册使用 SN/Registration ID；该值只用于 <code>pon</code> 业务侧 Ethernet 接口，不写 U-Boot <code>ethaddr</code>。</div>

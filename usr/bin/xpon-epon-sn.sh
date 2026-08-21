@@ -58,8 +58,28 @@ normalize_oui() {
 }
 
 auth_get() {
-	v=$(uci -q get "network.xpon_auth.$1")
-	[ -n "$v" ] || v=$(uci -q get "xpon.device.$1")
+	has_private_auth=$(uci -q get xpon.device.pon_mode)
+	case "$1" in
+		loid)
+			v=$(uci -q get xpon.device.epon_loid)
+			[ -n "$v" ] || [ -n "$has_private_auth" ] || v=$(uci -q get xpon.device.loid)
+			[ -n "$v" ] || [ -n "$has_private_auth" ] || v=$(uci -q get network.xpon_auth.loid)
+			;;
+		loid_password)
+			v=$(uci -q get xpon.device.epon_loid_password)
+			[ "$v" = '""' ] && { printf ''; return; }
+			[ -n "$v" ] || [ -n "$has_private_auth" ] || v=$(uci -q get xpon.device.loid_password)
+			[ -n "$v" ] || [ -n "$has_private_auth" ] || v=$(uci -q get network.xpon_auth.loid_password)
+			;;
+		epon_ctc_oui|epon_serial|epon_oui|epon_ven_info|epon_onu_vendor_id)
+			v=$(uci -q get "xpon.device.$1")
+			[ -n "$v" ] || v=$(uci -q get "network.xpon_auth.$1")
+			;;
+		*)
+			v=$(uci -q get "network.xpon_auth.$1")
+			[ -n "$v" ] || v=$(uci -q get "xpon.device.$1")
+			;;
+	esac
 	printf '%s' "$v"
 }
 

@@ -30,15 +30,18 @@ config auth 'device'
 	option gpon_pon_mac ''
 	option auth_type_g 'LOID'
 	option auth_method_g 'loid'
-	option loid ''
-	option loid_password ''
-	option def_sn ''
-	option sn ''
+	option epon_loid ''
+	option epon_loid_password '""'
+	option epon_sn ''
+	option gpon_loid ''
+	option gpon_loid_password '""'
+	option gpon_sn ''
 	option xpon_sn_auth_type 'ascii'
 	option sn_regid_password ''
 	option epon_oui ''
 	option epon_ctc_oui '111111'
 	option epon_ven_info ''
+	option epon_onu_vendor_id ''
 	option epon_serial ''
 
 config service 'tr069'
@@ -152,10 +155,42 @@ uci -q get xpon.device.auth_method_g >/dev/null || uci set xpon.device.auth_meth
 factory_vendor=${factory_sn%????????}
 [ "${#factory_vendor}" -eq 4 ] || factory_vendor=
 [ -n "$(uci -q get xpon.device.vendor_id)" ] || [ -z "$factory_vendor" ] || uci set xpon.device.vendor_id="$factory_vendor"
-uci -q get xpon.device.loid >/dev/null || uci set xpon.device.loid=''
-uci -q get xpon.device.loid_password >/dev/null || uci set xpon.device.loid_password=''
-uci -q get xpon.device.def_sn >/dev/null || uci set xpon.device.def_sn=''
-uci -q get xpon.device.sn >/dev/null || uci set xpon.device.sn=''
+legacy_loid=$(uci -q get xpon.device.loid)
+[ -n "$legacy_loid" ] || legacy_loid=$(uci -q get network.xpon_auth.loid)
+legacy_loid_password=$(uci -q get xpon.device.loid_password)
+[ -n "$legacy_loid_password" ] || legacy_loid_password=$(uci -q get network.xpon_auth.loid_password)
+[ "$legacy_loid_password" = '""' ] && legacy_loid_password=
+legacy_loid_password_value=$legacy_loid_password
+[ -n "$legacy_loid_password_value" ] || legacy_loid_password_value='""'
+legacy_sn=$(uci -q get xpon.device.sn)
+[ -n "$legacy_sn" ] || legacy_sn=$(uci -q get xpon.device.def_sn)
+[ -n "$legacy_sn" ] || legacy_sn=$(uci -q get network.xpon_auth.sn)
+[ -n "$legacy_sn" ] || legacy_sn=$(uci -q get network.xpon_auth.def_sn)
+case "$legacy_sn" in
+	[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) legacy_sn=$(printf '%s' "$legacy_sn" | tr 'a-z' 'A-Z') ;;
+	*) legacy_sn= ;;
+esac
+factory_sn_valid=
+[ "$factory_sn" != NoNumber ] && factory_sn_valid=$factory_sn
+if [ "$pm" = EPON ]; then
+	uci -q get xpon.device.epon_loid >/dev/null || uci set xpon.device.epon_loid="$legacy_loid"
+	uci -q get xpon.device.epon_loid_password >/dev/null || uci set xpon.device.epon_loid_password="$legacy_loid_password_value"
+	uci -q get xpon.device.epon_sn >/dev/null || uci set xpon.device.epon_sn="$legacy_sn"
+	uci -q get xpon.device.gpon_loid >/dev/null || uci set xpon.device.gpon_loid=''
+	uci -q get xpon.device.gpon_loid_password >/dev/null || uci set xpon.device.gpon_loid_password='""'
+	uci -q get xpon.device.gpon_sn >/dev/null || uci set xpon.device.gpon_sn="$factory_sn_valid"
+else
+	uci -q get xpon.device.gpon_loid >/dev/null || uci set xpon.device.gpon_loid="$legacy_loid"
+	uci -q get xpon.device.gpon_loid_password >/dev/null || uci set xpon.device.gpon_loid_password="$legacy_loid_password_value"
+	uci -q get xpon.device.gpon_sn >/dev/null || uci set xpon.device.gpon_sn="${legacy_sn:-$factory_sn_valid}"
+	uci -q get xpon.device.epon_loid >/dev/null || uci set xpon.device.epon_loid=''
+	uci -q get xpon.device.epon_loid_password >/dev/null || uci set xpon.device.epon_loid_password='""'
+	uci -q get xpon.device.epon_sn >/dev/null || uci set xpon.device.epon_sn=''
+fi
+uci -q delete xpon.device.loid
+uci -q delete xpon.device.loid_password
+uci -q delete xpon.device.sn
+uci -q delete xpon.device.def_sn
 uci -q get xpon.device.xpon_sn_auth_type >/dev/null || uci set xpon.device.xpon_sn_auth_type='ascii'
 uci -q get xpon.device.sn_regid_password >/dev/null || uci set xpon.device.sn_regid_password=''
 uci -q get xpon.device.epon_oui >/dev/null || uci set xpon.device.epon_oui=''
@@ -167,6 +202,7 @@ if [ -z "$epon_ctc_oui" ] || { [ -n "$epon_oui" ] && [ "$epon_ctc_oui" = "$epon_
 	uci set xpon.device.epon_ctc_oui='111111'
 fi
 uci -q get xpon.device.epon_ven_info >/dev/null || uci set xpon.device.epon_ven_info=''
+uci -q get xpon.device.epon_onu_vendor_id >/dev/null || uci set xpon.device.epon_onu_vendor_id=''
 uci -q get xpon.device.epon_serial >/dev/null || uci set xpon.device.epon_serial=''
 uci commit xpon
 

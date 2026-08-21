@@ -4,7 +4,7 @@
 # 读 UCI -> omcicfgCmd/oamcfgCmd 下发 -> 重启 OMCI -> reload network
 # 按设备原生认证流程执行：
 #   GPON SN  : set sn + ponmgr gpon set passwd ascii|hex <pwd>
-#   GPON LOID: set sn <def_sn> + set loid + set loidPasswd
+#   GPON LOID: set sn <gpon_sn> + set loid + set loidPasswd
 #   /tmp/load_process 存在则只发 `omci set reconfig`，否则重启 omci/ponmgr_cfg
 
 OMCI=/userfs/bin/omcicfgCmd
@@ -15,6 +15,53 @@ OMCID=/userfs/bin/omci
 EPON_OAM=/userfs/bin/epon_oam
 
 uci_get() { uci -q get "$1"; }
+
+credential_prefix() {
+	[ "$1" = EPON ] && printf '%s' epon || printf '%s' gpon
+}
+
+mode_credential_get() {
+	local mode prefix field v has_private_auth
+	mode=$1
+	field=$2
+	prefix=$(credential_prefix "$mode")
+	has_private_auth=$(uci_get xpon.device.pon_mode)
+	v=$(uci_get "xpon.device.${prefix}_${field}")
+	if [ "$field" = loid_password ] && [ "$v" = '""' ]; then
+		printf ''
+		return 0
+	fi
+	if [ -n "$v" ]; then
+		printf '%s' "$v"
+		return 0
+	fi
+	if [ -n "$has_private_auth" ]; then
+		printf ''
+		return 0
+	fi
+	case "$field" in
+		sn)
+			if [ "$mode" = EPON ]; then
+				v=
+			else
+				v=$(uci_get xpon.device.sn)
+				[ -n "$v" ] || v=$(uci_get xpon.device.def_sn)
+				[ -n "$v" ] || v=$(uci_get network.xpon_auth.sn)
+				[ -n "$v" ] || v=$(uci_get network.xpon_auth.def_sn)
+			fi
+			;;
+		loid)
+			v=$(uci_get xpon.device.loid)
+			[ -n "$v" ] || v=$(uci_get network.xpon_auth.loid)
+			;;
+		loid_password)
+			v=$(uci_get xpon.device.loid_password)
+			[ -n "$v" ] || v=$(uci_get network.xpon_auth.loid_password)
+			[ "$v" = '""' ] && v=
+			;;
+	esac
+	printf '%s' "$v"
+}
 
 current_pon_mode() {
 	local onu_type onu_high
@@ -41,6 +88,7 @@ current_pon_mode() {
 restore_auth() {
 	local t p pt k v read_v factory_sn legacy_sn legacy_vendor legacy_serial
 	local old_loid old_loidpw old_type old_method old_sn_type old_password old_loid_auth onu_type onu_high method
+	local mode_sn mode_loid mode_loidpw
 	# env 是 ONU 形态/PON 技术的唯一权威来源。优先采用本次实际启动参数，
 	# 只有 /proc/cmdline 缺失时才读取 env；此函数永远不反写两者。
 	onu_type=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' /proc/cmdline 2>/dev/null)
@@ -149,11 +197,26 @@ restore_auth() {
 			uci -q delete network.xpon_auth.loid
 			uci -q delete network.xpon_auth.loid_password
 		fi
-		for k in xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
-			v=$(uci_get network.xpon_auth.$k)
-			[ -n "$v" ] || v=$(uci_get xpon.device.$k)
-			[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
-		done
+		if [ "$p" = EPON ]; then
+			for k in epon_oui epon_ctc_oui epon_ven_info epon_onu_vendor_id epon_serial epon_pon_mac; do
+				v=$(uci_get network.xpon_auth.$k)
+				[ -n "$v" ] || v=$(uci_get xpon.device.$k)
+				[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
+			done
+			uci -q delete network.xpon_auth.xpon_sn_auth_type
+			uci -q delete network.xpon_auth.sn_ascii_password
+			uci -q delete network.xpon_auth.sn_hex_password
+			uci -q delete network.xpon_auth.sn_regid_password
+		else
+			for k in xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
+				v=$(uci_get network.xpon_auth.$k)
+				[ -n "$v" ] || v=$(uci_get xpon.device.$k)
+				[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
+			done
+			for k in epon_oui epon_ctc_oui epon_ven_info epon_onu_vendor_id epon_serial epon_pon_mac; do
+				uci -q delete network.xpon_auth.$k
+			done
+		fi
 		uci commit network
 		logger -t xpon "restore-auth: 未找到已保存标志，按旧配置恢复 pon_mode=$p auth_type=$(uci_get network.xpon_auth.auth_type_g) sn=$(uci_get network.xpon_auth.sn)"
 		return 0
@@ -162,17 +225,21 @@ restore_auth() {
 	method=$(uci_get xpon.device.auth_method_g)
 	method=$(printf '%s' "$method" | tr 'A-Z' 'a-z')
 	[ "$method" = "password" ] && t=sn
+	mode_sn=$(mode_credential_get "$p" sn | tr -d '[:space:]' | tr 'a-z' 'A-Z')
+	mode_loid=$(mode_credential_get "$p" loid)
+	mode_loidpw=$(mode_credential_get "$p" loid_password)
+	[ "$mode_loidpw" = '""' ] && mode_loidpw=
 	if [ "$p" = "EPON" ]; then
-		[ -n "$(uci_get xpon.device.loid)" ] || {
-			logger -t xpon "restore-auth: pon_mode=EPON 但 loid 为空，跳过覆盖"
+		[ -n "$mode_loid" ] || {
+			logger -t xpon "restore-auth: pon_mode=EPON 但 epon_loid 为空，跳过覆盖"
 			return 0
 		}
 	else
 		[ -n "$t" ] || return 0
 		case "$t" in
 			loid|LOID)
-				[ -n "$(uci_get xpon.device.loid)" ] || {
-					logger -t xpon "restore-auth: auth_type_g=$t 但 loid 为空，跳过覆盖"
+				[ -n "$mode_loid" ] || {
+					logger -t xpon "restore-auth: auth_type_g=$t 但 gpon_loid 为空，跳过覆盖"
 					return 0
 				}
 				;;
@@ -198,18 +265,30 @@ restore_auth() {
 		fi
 		uci -q delete network.xpon_auth.auth_type_e
 	fi
-	for k in def_sn sn xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
-		v=$(uci_get xpon.device.$k)
-		[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
-	done
+	if [ -n "$mode_sn" ]; then
+		uci set network.xpon_auth.sn="$mode_sn"
+		uci set network.xpon_auth.def_sn="$mode_sn"
+	else
+		uci -q delete network.xpon_auth.sn
+		uci -q delete network.xpon_auth.def_sn
+	fi
+	if [ "$p" = EPON ]; then
+		uci -q delete network.xpon_auth.xpon_sn_auth_type
+		uci -q delete network.xpon_auth.sn_ascii_password
+		uci -q delete network.xpon_auth.sn_hex_password
+		uci -q delete network.xpon_auth.sn_regid_password
+	else
+		for k in xpon_sn_auth_type sn_ascii_password sn_hex_password sn_regid_password; do
+			v=$(uci_get xpon.device.$k)
+			[ -n "$v" ] && uci set network.xpon_auth.$k="$v"
+		done
+	fi
 	if [ "$p" = EPON ] || [ "$t" = LOID ] || [ "$t" = loid ]; then
-		v=$(uci_get xpon.device.loid)
-		[ -n "$v" ] && uci set network.xpon_auth.loid="$v"
+		[ -n "$mode_loid" ] && uci set network.xpon_auth.loid="$mode_loid"
 		# libuci 不保留真正的空字符串。字面值 "" 对 UCI 是已配置值，
 		# netifd 拼接原生命令后则由 shell 解析为空参数，避免回退到 ECONET。
-		v=$(uci_get xpon.device.loid_password)
-		if [ -n "$v" ]; then
-			uci set network.xpon_auth.loid_password="$v"
+		if [ -n "$mode_loidpw" ]; then
+			uci set network.xpon_auth.loid_password="$mode_loidpw"
 		else
 			uci set 'network.xpon_auth.loid_password=""'
 		fi
@@ -217,20 +296,48 @@ restore_auth() {
 		uci -q delete network.xpon_auth.loid
 		uci -q delete network.xpon_auth.loid_password
 	fi
+	if [ "$p" = EPON ]; then
+		for k in epon_oui epon_ctc_oui epon_ven_info epon_onu_vendor_id epon_serial epon_pon_mac; do
+			v=$(uci_get xpon.device.$k)
+			if [ -n "$v" ]; then
+				uci set network.xpon_auth.$k="$v"
+			else
+				uci -q delete network.xpon_auth.$k
+			fi
+		done
+		uci -q delete network.xpon_auth.gpon_pon_mac
+	else
+		v=$(uci_get xpon.device.gpon_pon_mac)
+		if [ -n "$v" ]; then
+			uci set network.xpon_auth.gpon_pon_mac="$v"
+		else
+			uci -q delete network.xpon_auth.gpon_pon_mac
+		fi
+		for k in epon_oui epon_ctc_oui epon_ven_info epon_onu_vendor_id epon_serial epon_pon_mac; do
+			uci -q delete network.xpon_auth.$k
+		done
+	fi
 	uci commit network || {
 		logger -t xpon "restore-auth: network 提交失败，持久认证未恢复"
 		return 1
 	}
-	for k in sn def_sn; do
-		v=$(uci_get xpon.device.$k)
-		[ -n "$v" ] || continue
-		read_v=$(uci_get network.xpon_auth.$k)
-		[ "$read_v" = "$v" ] || {
-			logger -t xpon "restore-auth: $k 回读失败 want='$v' have='$read_v'"
+	if [ -n "$mode_sn" ]; then
+		for k in sn def_sn; do
+			read_v=$(uci_get network.xpon_auth.$k)
+			[ "$read_v" = "$mode_sn" ] || {
+				logger -t xpon "restore-auth: $k 回读失败 want='$mode_sn' have='$read_v'"
+				return 1
+			}
+		done
+	fi
+	if [ "$p" = EPON ] || [ "$t" = LOID ] || [ "$t" = loid ]; then
+		read_v=$(uci_get network.xpon_auth.loid)
+		[ "$read_v" = "$mode_loid" ] || {
+			logger -t xpon "restore-auth: loid 回读失败 want='$mode_loid' have='$read_v'"
 			return 1
 		}
-	done
-	logger -t xpon "restore-auth: 按 env onu_type=$onu_type 恢复 pon_mode=$p pon_tech=$pt auth_type=$([ "$p" = EPON ] && echo EPON-LOID || echo "$t")（loid=$(uci_get network.xpon_auth.loid)）"
+	fi
+	logger -t xpon "restore-auth: 按 env onu_type=$onu_type 恢复 pon_mode=$p pon_tech=$pt auth_type=$([ "$p" = EPON ] && echo EPON-LOID || echo "$t")（loid=$(uci_get network.xpon_auth.loid) sn=$(uci_get network.xpon_auth.sn)）"
 }
 
 apply_auth() {
@@ -258,11 +365,10 @@ apply_auth() {
 		loid|LOID) auth=loid ;;
 		sn|SN|password|PASSWORD) auth=sn ;;
 	esac
-	sn=$(uci_get network.xpon_auth.sn)
-	[ -n "$sn" ] || sn=$(uci_get network.xpon_auth.def_sn)
+	sn=$(mode_credential_get "$mode" sn)
 	sn=$(printf '%s' "$sn" | tr 'a-z' 'A-Z')
-	loid=$(uci_get network.xpon_auth.loid)
-	loidpw=$(uci_get network.xpon_auth.loid_password)
+	loid=$(mode_credential_get "$mode" loid)
+	loidpw=$(mode_credential_get "$mode" loid_password)
 	[ "$loidpw" = '""' ] && loidpw=
 	sn_type=$(uci_get network.xpon_auth.xpon_sn_auth_type); [ -z "$sn_type" ] && sn_type=ascii
 	[ "$auth_method" = "password" ] && sn_type=regid

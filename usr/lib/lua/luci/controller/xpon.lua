@@ -57,10 +57,10 @@ local pon_modes = {
 	{ id = "71", name = "SFU + XGSPON", desc = "出厂默认：SFU 桥形态 + 10G 对称" },
 	{ id = "12", name = "HGU + GPON",   desc = "GPON-only 端口（需 OLT 为 GPON）" },
 	{ id = "11", name = "SFU + GPON",   desc = "GPON-only 端口（需 OLT 为 GPON）" },
-	{ id = "42", name = "HGU + 10G/10G-EPON", desc = "实验：XEPON 对称（IEEE 802.3av 10G-EPON），需 OLT 10G-EPON 口 + OAM 认证" },
-	{ id = "41", name = "SFU + 10G/10G-EPON", desc = "实验：XEPON 对称 SFU 形态" },
-	{ id = "32", name = "HGU + 10G/1G-EPON",  desc = "实验：XEPON 不对称（10G 下行/1G 上行）" },
-	{ id = "31", name = "SFU + 10G/1G-EPON",  desc = "实验：XEPON 不对称 SFU 形态" },
+	{ id = "42", name = "HGU + 10G/10G-EPON", desc = "XEPON 对称（IEEE 802.3av 10G-EPON），需 OLT 10G-EPON 口 + OAM 认证" },
+	{ id = "41", name = "SFU + 10G/10G-EPON", desc = "XEPON 对称 SFU 形态" },
+	{ id = "32", name = "HGU + 10G/1G-EPON",  desc = "XEPON 不对称（10G 下行/1G 上行）" },
+	{ id = "31", name = "SFU + 10G/1G-EPON",  desc = "XEPON 不对称 SFU 形态" },
 }
 
 -- 认证页“PON 模式”技术选型（onu_type bits[7:4]）：
@@ -423,11 +423,11 @@ function auth_values()
 		local s
 		if private_saved then
 			s = uget("xpon", "device", field)
-			if field == "loid_password" and s == '""' then s = "" end
+			if field:match("loid_password$") and s == '""' then s = "" end
 			if s ~= nil and s ~= "" then return s end
 		end
 		s = uget("network", "xpon_auth", field)
-		if field == "loid_password" and s == '""' then s = "" end
+		if field:match("loid_password$") and s == '""' then s = "" end
 		if s ~= nil and s ~= "" then return s end
 		return dflt
 	end
@@ -435,13 +435,49 @@ function auth_values()
 	v.auth_type_g       = saved("auth_type_g", "LOID")
 	v.auth_method_g     = saved("auth_method_g", "")
 	v.auth_type_e       = saved("auth_type_e", "LOID")
-	v.loid              = saved("loid", "")
-	v.loid_password     = saved("loid_password", "")
-	v.sn                = saved("sn", "")
+	local function saved_credential(prefix, field, dflt)
+		local s
+		local active_prefix = (v.pon_mode == "EPON") and "epon" or "gpon"
+		if private_saved then
+			s = uget("xpon", "device", prefix .. "_" .. field)
+			if field == "loid_password" and s == '""' then return "" end
+			if s ~= nil and s ~= "" then return s end
+			return dflt
+		end
+		if field == "sn" then
+			if prefix == "epon" then return dflt end
+			if prefix == active_prefix then
+				s = saved("sn", nil)
+				if s ~= nil and s ~= "" then return s end
+				return saved("def_sn", dflt)
+			end
+			return dflt
+		end
+		if prefix == active_prefix then
+			return saved(field, dflt)
+		end
+		return dflt
+	end
+	v.epon_loid         = saved_credential("epon", "loid", "")
+	v.epon_loid_password = saved_credential("epon", "loid_password", "")
+	v.epon_sn           = saved_credential("epon", "sn", "")
+	v.gpon_loid         = saved_credential("gpon", "loid", "")
+	v.gpon_loid_password = saved_credential("gpon", "loid_password", "")
+	v.gpon_sn           = saved_credential("gpon", "sn", "")
+	if v.pon_mode == "EPON" then
+		v.loid          = v.epon_loid
+		v.loid_password = v.epon_loid_password
+		v.sn            = v.epon_sn
+	else
+		v.loid          = v.gpon_loid
+		v.loid_password = v.gpon_loid_password
+		v.sn            = v.gpon_sn
+	end
 	v.xpon_sn_auth_type = saved("xpon_sn_auth_type", "ascii")
-	-- PASSWORD（移动 SN+Password）落库为 SN + regid，读回时还原成独立选项
+	-- PASSWORD（移动 SN+Password）落库为 SN + regid，读回时还原成独立选项。
+	-- 新配置用 auth_method_g 区分；旧配置没有 auth_method_g 时，继续按 SN+regid 兼容为 PASSWORD。
 	if v.auth_method_g:lower() == "password" or
-		(v.auth_type_g:lower() == "sn" and v.xpon_sn_auth_type:lower() == "regid") then
+		(v.auth_method_g == "" and v.auth_type_g:lower() == "sn" and v.xpon_sn_auth_type:lower() == "regid") then
 		v.auth_type_g = "password"
 	end
 	v.sn_ascii_password = saved("sn_ascii_password", "")
@@ -1714,10 +1750,26 @@ local function save_auth(fv)
 		auth_type = "sn"
 		auth_method = "sn"
 	end
+	local active_prefix = (pmode == "EPON") and "epon" or "gpon"
+	local private_saved = (u:get("xpon", "device", "pon_mode") or "") ~= ""
+	local function stored_mode_credential(field)
+		local s = u:get("xpon", "device", active_prefix .. "_" .. field)
+		if field == "loid_password" and s == '""' then return "" end
+		if s ~= nil and s ~= "" then return s end
+		if private_saved then return "" end
+		if field == "sn" then
+			if active_prefix == "epon" then return "" end
+			s = u:get("xpon", "device", "sn") or u:get("xpon", "device", "def_sn")
+				or u:get("network", "xpon_auth", "sn") or u:get("network", "xpon_auth", "def_sn")
+		else
+			s = u:get("xpon", "device", field) or u:get("network", "xpon_auth", field)
+		end
+		if field == "loid_password" and s == '""' then s = "" end
+		return s or ""
+	end
+	local loid = fv("loid") or ""
 	local submitted_loid_password = fv("loid_password") or ""
-	local stored_loid_password = u:get("xpon", "device", "loid_password")
-		or u:get("network", "xpon_auth", "loid_password") or ""
-	if stored_loid_password == '""' then stored_loid_password = "" end
+	local stored_loid_password = stored_mode_credential("loid_password")
 	local loid_password = submitted_loid_password ~= "" and submitted_loid_password
 		or (fv("loid_password_clear") == "1" and "" or stored_loid_password)
 	if (pmode == "EPON" or auth_type == "LOID") and #loid_password > 12 then
@@ -1733,7 +1785,7 @@ local function save_auth(fv)
 	-- EPON/XEPON 用 auth_type_e（TYPE_EPON_AUTH），EPON 只支持 LOID 认证，必须大写
 	local auth_type_e = "LOID"
 	-- 页面只接收完整 PON SN；GPON Vendor ID 始终由前 4 位派生。
-	local sn = (fv("sn") or ""):gsub("%s+", ""):upper()
+	local sn = (fv("sn") or stored_mode_credential("sn") or ""):gsub("%s+", ""):upper()
 	if sn == "NONUMBER" then sn = "" end
 	local vendor_id = (#sn == 12) and sn:sub(1, 4) or ""
 	-- 空值表示恢复 DSD wan_mac。GPON 仅应用到 pon 业务接口；
@@ -1783,7 +1835,7 @@ local function save_auth(fv)
 		u:delete("network", "xpon_auth", "auth_type_e")
 	end
 	if pmode == "EPON" or auth_type == "LOID" then
-		if fv("loid") and fv("loid") ~= "" then u:set("network", "xpon_auth", "loid", fv("loid")) end
+		if loid ~= "" then u:set("network", "xpon_auth", "loid", loid) end
 	else
 		u:delete("network", "xpon_auth", "loid")
 		u:delete("network", "xpon_auth", "loid_password")
@@ -1793,22 +1845,52 @@ local function save_auth(fv)
 	if pmode == "EPON" or auth_type == "LOID" then
 		u:set("network", "xpon_auth", "loid_password", loid_password)
 	end
-	if sn ~= "" then u:set("network", "xpon_auth", "def_sn", sn); u:set("network", "xpon_auth", "sn", sn) end
+	if sn ~= "" then
+		u:set("network", "xpon_auth", "def_sn", sn)
+		u:set("network", "xpon_auth", "sn", sn)
+	elseif pmode == "EPON" then
+		u:delete("network", "xpon_auth", "def_sn")
+		u:delete("network", "xpon_auth", "sn")
+	end
 	u:set("network", "xpon_auth", "xpon_sn_auth_type", snf)
-	if equipment_id ~= "" then u:set("network", "xpon_auth", "equipment_id", equipment_id) else u:delete("network", "xpon_auth", "equipment_id") end
-	if onu_version ~= "" then u:set("network", "xpon_auth", "onu_version", onu_version) else u:delete("network", "xpon_auth", "onu_version") end
-	if omcc_version ~= "" then u:set("network", "xpon_auth", "omcc_version", omcc_version) end
+	if pmode == "EPON" then
+		u:delete("network", "xpon_auth", "equipment_id")
+		u:delete("network", "xpon_auth", "onu_version")
+		u:delete("network", "xpon_auth", "omcc_version")
+		u:delete("network", "xpon_auth", "omci_spec_ver")
+		u:set("network", "xpon_auth", "epon_oui", eoui)
+		u:set("network", "xpon_auth", "epon_ctc_oui", ectc)
+		u:set("network", "xpon_auth", "epon_ven_info", even)
+		if eonu_vendor ~= "" then u:set("network", "xpon_auth", "epon_onu_vendor_id", eonu_vendor) else u:delete("network", "xpon_auth", "epon_onu_vendor_id") end
+		if epon_serial ~= "" then u:set("network", "xpon_auth", "epon_serial", epon_serial) else u:delete("network", "xpon_auth", "epon_serial") end
+		if epon_pon_mac ~= "" then u:set("network", "xpon_auth", "epon_pon_mac", epon_pon_mac) else u:delete("network", "xpon_auth", "epon_pon_mac") end
+		u:delete("network", "xpon_auth", "gpon_pon_mac")
+	else
+		if equipment_id ~= "" then u:set("network", "xpon_auth", "equipment_id", equipment_id) else u:delete("network", "xpon_auth", "equipment_id") end
+		if onu_version ~= "" then u:set("network", "xpon_auth", "onu_version", onu_version) else u:delete("network", "xpon_auth", "onu_version") end
+		if omcc_version ~= "" then u:set("network", "xpon_auth", "omcc_version", omcc_version) else u:delete("network", "xpon_auth", "omcc_version") end
+		if gpon_pon_mac ~= "" then u:set("network", "xpon_auth", "gpon_pon_mac", gpon_pon_mac) else u:delete("network", "xpon_auth", "gpon_pon_mac") end
+		u:delete("network", "xpon_auth", "epon_oui")
+		u:delete("network", "xpon_auth", "epon_ctc_oui")
+		u:delete("network", "xpon_auth", "epon_ven_info")
+		u:delete("network", "xpon_auth", "epon_onu_vendor_id")
+		u:delete("network", "xpon_auth", "epon_serial")
+		u:delete("network", "xpon_auth", "epon_pon_mac")
+	end
 	-- 移动 Password = 只填 REG_ID（regid ≤36）；留空保持旧值，避免只切换认证类型却丢失密码。
 	local submitted_regid = fv("reg_id") or ""
-	local snpwd = (ui_auth == "password") and
-		(submitted_regid ~= "" and submitted_regid or stored_regid_password) or
-		(fv("sn_password") or "")
-	if ui_auth == "password" and snpwd == "" then
-		return nil, "reg_id"
-	elseif snpwd == "" then
-		snpwd = stored_sn_password(snf)
+	local snpwd = ""
+	if pmode ~= "EPON" then
+		snpwd = (ui_auth == "password") and
+			(submitted_regid ~= "" and submitted_regid or stored_regid_password) or
+			(fv("sn_password") or "")
+		if ui_auth == "password" and snpwd == "" then
+			return nil, "reg_id"
+		elseif snpwd == "" then
+			snpwd = stored_sn_password(snf)
+		end
 	end
-	if snpwd ~= "" then
+	if pmode ~= "EPON" and snpwd ~= "" then
 		if snf == "hex" then
 			u:set("network", "xpon_auth", "sn_hex_password", snpwd)
 			u:delete("network", "xpon_auth", "sn_ascii_password")
@@ -1823,6 +1905,12 @@ local function save_auth(fv)
 			u:delete("network", "xpon_auth", "sn_regid_password")
 		end
 	end
+	if pmode == "EPON" then
+		u:delete("network", "xpon_auth", "xpon_sn_auth_type")
+		u:delete("network", "xpon_auth", "sn_ascii_password")
+		u:delete("network", "xpon_auth", "sn_hex_password")
+		u:delete("network", "xpon_auth", "sn_regid_password")
+	end
 
 	-- 镜像到 /etc/config/xpon（auth 类型段 device）：开机 restore-auth 的持久源，
 	-- 抵消 S00xponconfig 每次开机把 network.xpon_auth 打回 sn 的问题
@@ -1832,21 +1920,27 @@ local function save_auth(fv)
 	u:set("xpon", "device", "pon_tech", ptech)
 	if pmode == "EPON" then
 		u:set("xpon", "device", "auth_type_e", auth_type_e)
-		u:delete("xpon", "device", "auth_type_g")
-		u:delete("xpon", "device", "auth_method_g")
+		-- Keep GPON auth preferences in the persistent source so switching
+		-- back from EPON restores the previous LOID/SN/PASSWORD selection.
+		u:set("xpon", "device", "auth_type_g", auth_type)
+		u:set("xpon", "device", "auth_method_g", auth_method)
 	else
 		u:set("xpon", "device", "auth_type_g", auth_type)
 		u:set("xpon", "device", "auth_method_g", auth_method)
 		u:delete("xpon", "device", "auth_type_e")
 	end
-	if pmode == "EPON" or auth_type == "LOID" then
-		if fv("loid") and fv("loid") ~= "" then u:set("xpon", "device", "loid", fv("loid")) end
-		u:set("xpon", "device", "loid_password", loid_password)
-	else
-		u:delete("xpon", "device", "loid")
-		u:delete("xpon", "device", "loid_password")
+	if loid ~= "" then
+		u:set("xpon", "device", active_prefix .. "_loid", loid)
 	end
-	if sn ~= "" then u:set("xpon", "device", "def_sn", sn); u:set("xpon", "device", "sn", sn) end
+	u:set("xpon", "device", active_prefix .. "_loid_password", loid_password ~= "" and loid_password or '""')
+	if sn ~= "" then
+		u:set("xpon", "device", active_prefix .. "_sn", sn)
+	elseif active_prefix == "epon" then
+		u:delete("xpon", "device", active_prefix .. "_sn")
+	end
+	for _, shared in ipairs({ "loid", "loid_password", "def_sn", "sn" }) do
+		u:delete("xpon", "device", shared)
+	end
 	u:set("xpon", "device", "xpon_sn_auth_type", snf)
 	if snpwd ~= "" then
 		if snf == "hex" then
@@ -1863,7 +1957,7 @@ local function save_auth(fv)
 			u:delete("xpon", "device", "sn_regid_password")
 		end
 	end
-	if vendor_id ~= "" then u:set("xpon", "device", "vendor_id", vendor_id) end
+	if pmode ~= "EPON" and vendor_id ~= "" then u:set("xpon", "device", "vendor_id", vendor_id) end
 	if equipment_id ~= "" then u:set("xpon", "device", "equipment_id", equipment_id) else u:delete("xpon", "device", "equipment_id") end
 	if onu_version ~= "" then u:set("xpon", "device", "onu_version", onu_version) else u:delete("xpon", "device", "onu_version") end
 	if omcc_version ~= "" then u:set("xpon", "device", "omcc_version", omcc_version) end
@@ -1911,6 +2005,9 @@ local function save_auth(fv)
 	-- 回读关键身份字段，禁止“页面提示成功但持久配置没写进去”。
 	local check = uci_native.cursor()
 	local equipment = equipment_id
+	local function password_value(s)
+		return s == '""' and "" or (s or "")
+	end
 	if pmode ~= "EPON" and check:get("network", "xpon_auth", "auth_method_g") ~= auth_method then
 		return nil, "persist_network_auth_method"
 	end
@@ -1922,45 +2019,60 @@ local function save_auth(fv)
 			or check:get("network", "xpon_auth", "def_sn") ~= sn then
 			return nil, "persist_network_sn"
 		end
-		if check:get("xpon", "device", "sn") ~= sn
-			or check:get("xpon", "device", "def_sn") ~= sn then
-			return nil, "persist_device_sn"
+		if check:get("xpon", "device", active_prefix .. "_sn") ~= sn then
+			return nil, "persist_device_" .. active_prefix .. "_sn"
 		end
 	end
-	if vendor_id ~= "" and check:get("xpon", "device", "vendor_id") ~= vendor_id then
+	if loid ~= "" then
+		if (pmode == "EPON" or auth_type == "LOID") and check:get("network", "xpon_auth", "loid") ~= loid then
+			return nil, "persist_network_loid"
+		end
+		if check:get("xpon", "device", active_prefix .. "_loid") ~= loid then
+			return nil, "persist_device_" .. active_prefix .. "_loid"
+		end
+	end
+	if pmode == "EPON" or auth_type == "LOID" then
+		if password_value(check:get("network", "xpon_auth", "loid_password")) ~= loid_password then
+			return nil, "persist_network_loid_password"
+		end
+		if password_value(check:get("xpon", "device", active_prefix .. "_loid_password")) ~= loid_password then
+			return nil, "persist_device_" .. active_prefix .. "_loid_password"
+		end
+	end
+	if pmode ~= "EPON" and vendor_id ~= "" and check:get("xpon", "device", "vendor_id") ~= vendor_id then
 		return nil, "persist_vendor_id"
 	end
-	if equipment ~= "" and check:get("network", "xpon_auth", "equipment_id") ~= equipment then
+	if pmode ~= "EPON" and equipment ~= "" and check:get("network", "xpon_auth", "equipment_id") ~= equipment then
 		return nil, "persist_equipment_id"
 	end
 	if equipment ~= "" and check:get("xpon", "device", "equipment_id") ~= equipment then
 		return nil, "persist_device_equipment_id"
 	end
-	if equipment == "" and (check:get("network", "xpon_auth", "equipment_id") or "") ~= "" then
+	if pmode ~= "EPON" and equipment == "" and (check:get("network", "xpon_auth", "equipment_id") or "") ~= "" then
 		return nil, "persist_equipment_id_clear"
 	end
 	if equipment == "" and (check:get("xpon", "device", "equipment_id") or "") ~= "" then
 		return nil, "persist_device_equipment_id_clear"
 	end
-	if onu_version ~= "" and check:get("network", "xpon_auth", "onu_version") ~= onu_version then
+	if pmode ~= "EPON" and onu_version ~= "" and check:get("network", "xpon_auth", "onu_version") ~= onu_version then
 		return nil, "persist_onu_version"
 	end
 	if onu_version ~= "" and check:get("xpon", "device", "onu_version") ~= onu_version then
 		return nil, "persist_device_onu_version"
 	end
-	if onu_version == "" and (check:get("network", "xpon_auth", "onu_version") or "") ~= "" then
+	if pmode ~= "EPON" and onu_version == "" and (check:get("network", "xpon_auth", "onu_version") or "") ~= "" then
 		return nil, "persist_onu_version_clear"
 	end
 	if onu_version == "" and (check:get("xpon", "device", "onu_version") or "") ~= "" then
 		return nil, "persist_device_onu_version_clear"
 	end
-	if omcc_version ~= "" and check:get("network", "xpon_auth", "omcc_version") ~= omcc_version then
+	if pmode ~= "EPON" and omcc_version ~= "" and check:get("network", "xpon_auth", "omcc_version") ~= omcc_version then
 		return nil, "persist_omcc_version"
 	end
 	if snpwd ~= "" then
 		local pw_field = snf == "hex" and "sn_hex_password"
 			or snf == "regid" and "sn_regid_password" or "sn_ascii_password"
-		if check:get("network", "xpon_auth", pw_field) ~= snpwd then
+		if pmode ~= "EPON" and check:get("network", "xpon_auth", pw_field) ~= snpwd then
 			return nil, "persist_network_" .. pw_field
 		end
 		if check:get("xpon", "device", pw_field) ~= snpwd then
@@ -2408,9 +2520,9 @@ function action_save()
 			err = "loid"
 		elseif pmode == "EPON" and not ponmac_ok(effective_pon_mac) then
 			err = "epon_pon_mac"
-		elseif atg == "loid" and #loid == 0 then
+		elseif pmode ~= "EPON" and atg == "loid" and #loid == 0 then
 			err = "loid"
-		elseif atg == "sn" or atg == "regid" then
+		elseif pmode ~= "EPON" and (atg == "sn" or atg == "regid") then
 			-- PON SN 已在通用校验中按完整格式验证；这里只校验可选密码。
 			-- SN 密码（可选）：ascii ≤10 / hex ≤20 位且只能 0-9a-f。
 			if not err then
@@ -2426,7 +2538,7 @@ function action_save()
 					end
 				end
 			end
-		elseif atg == "password" then
+		elseif pmode ~= "EPON" and atg == "password" then
 			-- 移动 Password：PON SN + REG_ID。
 			local rp = formvalue("reg_id") or ""
 			local u = uci.cursor()

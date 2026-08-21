@@ -28,6 +28,54 @@ get() {
 	printf '%s' "$v"
 }
 identity_get() { get "$1"; }
+device_first_get() {
+	v=$(device_get "$1")
+	[ -n "$v" ] || v=$(uci -q get "network.xpon_auth.$1")
+	printf '%s' "$v"
+}
+credential_prefix() {
+	[ "$mode" = EPON ] && printf '%s' epon || printf '%s' gpon
+}
+credential_get() {
+	has_private_auth=$(device_get pon_mode)
+	prefix=$(credential_prefix)
+	field=$1
+	v=$(device_get "${prefix}_${field}")
+	if [ "$field" = loid_password ] && [ "$v" = '""' ]; then
+		printf ''
+		return 0
+	fi
+	if [ -n "$v" ]; then
+		printf '%s' "$v"
+		return 0
+	fi
+	if [ -n "$has_private_auth" ]; then
+		printf ''
+		return 0
+	fi
+	case "$field" in
+		sn)
+			if [ "$mode" = EPON ]; then
+				v=
+			else
+				v=$(device_get sn)
+				[ -n "$v" ] || v=$(device_get def_sn)
+				[ -n "$v" ] || v=$(uci -q get network.xpon_auth.sn)
+				[ -n "$v" ] || v=$(uci -q get network.xpon_auth.def_sn)
+			fi
+			;;
+		loid)
+			v=$(device_get loid)
+			[ -n "$v" ] || v=$(uci -q get network.xpon_auth.loid)
+			;;
+		loid_password)
+			v=$(device_get loid_password)
+			[ -n "$v" ] || v=$(uci -q get network.xpon_auth.loid_password)
+			[ "$v" = '""' ] && v=
+			;;
+	esac
+	printf '%s' "$v"
+}
 omci_read() {
 	$OMCI get "$1" 2>>"$LOG" | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1
 }
@@ -119,9 +167,8 @@ case "$onu_high" in
 		echo "警告：无法从当前启动参数识别 onu_type='$onu_type'，仅沿用运行时引擎 $mode；未写 env" >> "$LOG"
 		;;
 esac
-loid=$(get loid); loidpw=$(get loid_password); sn=$(get sn)
+loid=$(credential_get loid); loidpw=$(credential_get loid_password); sn=$(credential_get sn)
 [ "$loidpw" = '""' ] && loidpw=
-[ -n "$sn" ] || sn=$(get def_sn)
 equipment=$(identity_get equipment_id); onuver=$(identity_get onu_version); omcc=$(identity_get omcc_version)
 spec=$(get omci_spec_ver)
 if [ "$mode" = "EPON" ]; then
@@ -134,9 +181,11 @@ fi
 regid=$(get sn_regid_password)
 sn_type=$(get xpon_sn_auth_type); asciipw=$(get sn_ascii_password); hexpw=$(get sn_hex_password)
 [ "$auth_method" = "password" ] && sn_type=regid
-epon_oui=$(get epon_oui); epon_ctc_oui=$(get epon_ctc_oui); epon_ven=$(get epon_ven_info)
-epon_onu_vendor=$(get epon_onu_vendor_id)
-epon_serial=$(get epon_serial)
+epon_oui=$(device_first_get epon_oui)
+epon_ctc_oui=$(device_first_get epon_ctc_oui)
+epon_ven=$(device_first_get epon_ven_info)
+epon_onu_vendor=$(device_first_get epon_onu_vendor_id)
+epon_serial=$(device_first_get epon_serial)
 [ -n "$epon_ctc_oui" ] || epon_ctc_oui=111111
 
 # PON SN 是唯一输入源；SDK 仍要求分别设置 ME 256 SN 与 ME 7 Vendor ID。

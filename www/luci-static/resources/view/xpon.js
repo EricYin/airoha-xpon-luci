@@ -81,11 +81,55 @@ function xponAuthChanged(form) {
 	return false;
 }
 
+function xponAuthCredentialMode(ponTech) {
+	return xponIsFixedEponTech(ponTech) ? 'epon' : 'gpon';
+}
+
+function xponAuthStoreCredentialFields(form) {
+	if (!form || !form.dataset || !form.dataset.credentialMode) return;
+	var key = form.dataset.credentialMode;
+	if (form.elements.loid) form.dataset[key + 'Loid'] = form.elements.loid.value;
+	if (form.elements.sn) form.dataset[key + 'Sn'] = form.elements.sn.value;
+	if (form.elements.loid_password) {
+		if (form.elements.loid_password.value) {
+			form.dataset[key + 'LoidPasswordValue'] = form.elements.loid_password.value;
+		} else {
+			delete form.dataset[key + 'LoidPasswordValue'];
+		}
+	}
+	if (form.elements.loid_password_clear) {
+		form.dataset[key + 'LoidPasswordSet'] =
+			(form.elements.loid_password_clear.checked && !form.elements.loid_password.value) ? '0' : '1';
+	}
+}
+
+function xponAuthLoadCredentialFields(form, key) {
+	if (!form || !form.dataset) return;
+	if (form.elements.loid) form.elements.loid.value = form.dataset[key + 'Loid'] || '';
+	if (form.elements.sn) form.elements.sn.value = form.dataset[key + 'Sn'] || '';
+	if (form.elements.loid_password) form.elements.loid_password.value = form.dataset[key + 'LoidPasswordValue'] || '';
+	if (form.elements.loid_password_clear) {
+		form.elements.loid_password_clear.checked =
+			!form.elements.loid_password.value && form.dataset[key + 'LoidPasswordSet'] !== '1';
+	}
+	form.dataset.credentialMode = key;
+}
+
 // 认证页：按认证方式显示 LOID 组 / SN 组（GPONPWD）/ REG_ID 组（移动 Password）
 function xponAuthToggle() {
 	var sel = document.getElementById('auth_type_g');
 	var pm = document.getElementById('pon_tech');
 	var epon = pm && xponIsFixedEponTech(pm.value);
+	var form = document.getElementById('authform');
+	if (form && pm) {
+		var nextMode = xponAuthCredentialMode(pm.value);
+		if (!form.dataset.credentialMode) {
+			form.dataset.credentialMode = nextMode;
+		} else if (form.dataset.credentialMode !== nextMode) {
+			xponAuthStoreCredentialFields(form);
+			xponAuthLoadCredentialFields(form, nextMode);
+		}
+	}
 	var auth = (sel ? sel.value : 'LOID').toUpperCase();
 	var loid = epon || auth === 'LOID';
 	var pwd = auth === 'PASSWORD';

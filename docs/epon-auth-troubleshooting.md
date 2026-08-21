@@ -24,6 +24,22 @@ EPON 模式不校验 OMCI SN。`omcicfgCmd get sn`、`omcicfgCmd get equipment_i
 
 当前守护在同一 `epon_oam` PID 下每 30 秒只读检查 `ctcOui`、`loidPasswd0` 和 ONUSN，仅对发生漂移的字段做轻量回写；只有进程 PID 变化时才执行完整身份重放。
 
+## EPON 身份字段对照
+
+| 认证页字段 | UCI 键（`xpon.device`） | 运行态字段 | 回读命令 |
+| --- | --- | --- | --- |
+| EPON LOID | `epon_loid` | `loid0` | `/userfs/bin/oamcfgCmd get loid0` |
+| EPON LOID 密码 | `epon_loid_password` | `loidPasswd0` | `/userfs/bin/oamcfgCmd get loidPasswd0` |
+| EPON OUI | `epon_oui` | `localOui` | `/userfs/bin/oamcfgCmd get localOui` |
+| EPON Vendor | `epon_ven_info` | `localVenInfo` | `/userfs/bin/oamcfgCmd get localVenInfo` |
+| CTC OUI | `epon_ctc_oui` | `ctcOui` | `/userfs/bin/oamcfgCmd get ctcOui` |
+| ONU Vendor ID | `epon_onu_vendor_id` | `onuVenID` | `/userfs/bin/oamcfgCmd get onuVenID` |
+| CTC ONUSN | `epon_serial` | CTC ONUSN ONU ID | `/usr/bin/xpon-epon-sn.sh get` |
+
+`epon_oui` 对应 ONU 本地 OUI，通常按原装 ONU 或 EPON 注册 MAC 前 3 字节填写；`epon_ctc_oui` 对应 CTC 扩展 OUI，已验证默认值为 `111111`。两者不能互换。
+
+EPON 与 GPON 的持久凭据已拆分：EPON 使用 `epon_loid` / `epon_loid_password` / `epon_sn`，GPON 使用 `gpon_loid` / `gpon_loid_password` / `gpon_sn`。`network.xpon_auth.loid`、`loid_password`、`sn`、`def_sn` 只是当前启动引擎的活动镜像，切换模式时由 `restore-auth` 从对应专属键重建。
+
 Access 桥接、LAN/STB 端口绑定及 IPTV 组播功能尚未在本次真实电信 IPTV 线路验证。使用前应记录现有 VLAN、桥成员和组播配置，并分别验证直播、回看、换台和普通上网互不影响。
 
 ## 抓包方法

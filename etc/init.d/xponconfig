@@ -6,28 +6,35 @@ PROFILE_CFG=/userfs/profile.cfg
 
 validate_xponauth_section()
 {
-    local fsan xpon_auth serialnumber
+    local fsan xpon_auth serialnumber xponmode pon_mode
 
     fsan="NoNumber"
     [ -r /tmp/dsd.env ] && fsan=`awk -F \' '/^fsan=/ {print $2; exit}' /tmp/dsd.env`
     xpon_auth=`uci -q get network.xpon_auth`
+    xponmode=`cat /proc/tc3162/sys_xpon_mode 2>/dev/null`
+    case "$xponmode" in
+        2|3|4|5|12) pon_mode=EPON ;;
+        *) pon_mode=GPON ;;
+    esac
 
     # Factory compatibility path: seed missing values only. The original code
     # tested the undefined variable $gponauth and overwrote the saved SN on
     # every boot. Existing authentication values must be left untouched.
     if [ -z "$xpon_auth" ]; then
         uci set network.xpon_auth='xpon_auth'
-        uci set network.xpon_auth.pon_mode=GPON
+        uci set network.xpon_auth.pon_mode="$pon_mode"
         uci set network.xpon_auth.auth_type_g=sn
         uci set network.xpon_auth.gpon_sn_auth_type=ascii
         uci set network.xpon_auth.sn_ascii_password=xxxx
-        uci set network.xpon_auth.sn="$fsan"
-        uci set network.xpon_auth.def_sn="$fsan"
+        if [ "$pon_mode" = GPON ]; then
+            uci set network.xpon_auth.sn="$fsan"
+            uci set network.xpon_auth.def_sn="$fsan"
+        fi
         uci commit network
-        logger -t XPON "uci auth section initialized, fsan:$fsan"
+        logger -t XPON "uci auth section initialized, pon_mode:$pon_mode fsan:$fsan"
     else
         serialnumber=`uci -q get network.xpon_auth.sn`
-        if [ -z "$serialnumber" ] || [ "$serialnumber" = "NoNumber" ]; then
+        if [ "$pon_mode" = GPON ] && { [ -z "$serialnumber" ] || [ "$serialnumber" = "NoNumber" ]; }; then
             uci set network.xpon_auth.sn="$fsan"
             uci set network.xpon_auth.def_sn="$fsan"
             uci commit network

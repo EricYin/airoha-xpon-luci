@@ -17,8 +17,11 @@ EPON authentication is not OMCI SN authentication. It has two layers:
    `wan_mac`. For EPON the resulting MAC is applied to the PON interface and
    synchronized to U-Boot `ethaddr` and the `ethaddr=` token in `bootargs`.
    The driver uses that value as the MPCP/LLID registration MAC.
-2. OAM identity uses `loid`, `loid_password`, `epon_oui`, `epon_ctc_oui`,
-   `epon_ven_info`, `epon_onu_vendor_id`, and `epon_serial`.
+2. OAM identity uses persistent `xpon.device.epon_loid`,
+   `xpon.device.epon_loid_password`, `epon_oui`, `epon_ctc_oui`,
+   `epon_ven_info`, `epon_onu_vendor_id`, and `epon_serial`. At boot these are
+   mirrored into the active `network.xpon_auth.loid` / `loid_password` fields
+   only while the current engine is EPON.
 
 The native commands are:
 
@@ -31,6 +34,16 @@ oamcfgCmd set ctcOui <epon_ctc_oui>
 oamcfgCmd set localVenInfo <epon_ven_info>
 oamcfgCmd set onuVenID <epon_onu_vendor_id>
 xpon-epon-sn.sh set <epon_serial>
+```
+
+The matching readback commands are:
+
+```text
+oamcfgCmd get localOui
+oamcfgCmd get ctcOui
+oamcfgCmd get localVenInfo
+oamcfgCmd get onuVenID
+xpon-epon-sn.sh get
 ```
 
 These EPON fields are independent: `localOui` is a 3-byte OUI,
@@ -53,13 +66,16 @@ The page stores:
 ```text
 auth_type_g=LOID
 auth_method_g=loid
-loid=<LOID>
-loid_password=<optional LOID password>
-sn=<12-character PON SN>
-def_sn=<same SN, compatibility mirror>
+xpon.device.gpon_loid=<LOID>
+xpon.device.gpon_loid_password=<optional LOID password>
+xpon.device.gpon_sn=<12-character PON SN>
+network.xpon_auth.loid=<active GPON LOID mirror>
+network.xpon_auth.loid_password=<active GPON LOID password mirror>
+network.xpon_auth.sn=<active GPON SN mirror>
+network.xpon_auth.def_sn=<same active SN, compatibility mirror>
 ```
 
-`sn` is the canonical PON SN. Its first four characters are the only source
+`gpon_sn` is the canonical GPON PON SN. Its first four characters are the only source
 for the OMCI Vendor ID. The project writes:
 
 ```text
@@ -82,8 +98,9 @@ auth_type_g=sn
 auth_method_g=password
 xpon_sn_auth_type=regid
 sn_regid_password=<REG_ID>
-sn=<12-character PON SN>
-def_sn=<same SN, compatibility mirror>
+xpon.device.gpon_sn=<12-character PON SN>
+network.xpon_auth.sn=<active GPON SN mirror>
+network.xpon_auth.def_sn=<same active SN, compatibility mirror>
 ```
 
 It writes the OMCI identity fields:
@@ -93,7 +110,9 @@ omcicfgCmd set vendor_id <sn[0:4]>
 omcicfgCmd set sn <sn>
 ```
 
-It does **not** write `omcicfgCmd set loid` or `set loid_password`. The
+It does **not** write `omcicfgCmd set loid` or `set loid_password`. The durable
+`gpon_loid` value is kept for switching back to GPON LOID later, but it is not
+mirrored into `network.xpon_auth` while GPON PASSWORD/SN is active. The
 registration password is sent through the firmware-native command:
 
 ```text
@@ -101,9 +120,7 @@ ponmgr gpon set passwd regid <REG_ID>
 ```
 
 The firmware does not provide a reliable password getter, so success is based
-on the command return code and the surrounding OMCI identity read-back. The
-old `loid` and `loid_password` fields are deleted when PASSWORD is saved or
-restored, preventing `mtk1111` from being replayed as a LOID.
+on the command return code and the surrounding OMCI identity read-back.
 
 ## Reboot restore
 
@@ -121,12 +138,22 @@ current engine wins and a warning is logged. In old configurations without
 `xpon.device.pon_mode`, `auth_method_g` and `auth_type_g` are consulted before
 falling back to a non-default LOID; the sentinel `mtk1111` is ignored.
 
+`xpon.device` now stores EPON and GPON credentials independently:
+
+```text
+epon_loid / epon_loid_password / epon_sn
+gpon_loid / gpon_loid_password / gpon_sn
+```
+
+The legacy shared `loid`, `loid_password`, `sn`, and `def_sn` names remain only
+as current `network.xpon_auth` mirrors or one-time upgrade fallback sources.
+
 This prevents the following cross-engine mistakes after reboot:
 
 * GPON PASSWORD writing a leftover LOID into OMCI.
 * GPON settings being sent to EPON OAM, or EPON OAM settings being sent to OMCI,
   when the UCI mode is stale.
-* A stale `def_sn` generating a Vendor ID different from the configured PON SN.
+* A stale GPON `def_sn` generating a Vendor ID after switching back to EPON.
 
 Useful logs and checks:
 
