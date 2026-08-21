@@ -46,6 +46,15 @@ oamcfgCmd get onuVenID
 xpon-epon-sn.sh get
 ```
 
+`oamcfgCmd set` changes the live `epon_oam` state and is sufficient for the
+current MPCP/OAM authentication session; a TCAPI save notification is not
+required for registration. This image persists the EPON identity in UCI
+(`/etc/config/xpon`, on the writable overlay) and replays it after
+`epon_oam` starts. The vendor `cmdType=24` queue message is only a
+best-effort runtime update hook. It must not be treated as proof that this
+image wrote the vendor Flash/NVRAM store; the original TCAPI/`ctcapd`
+service that owns that store is not present on the inspected firmware.
+
 These EPON fields are independent: `localOui` is a 3-byte OUI,
 `localVenInfo` is separate 4-byte hexadecimal vendor information, and
 `onuVenID` is a separate 4-byte printable ASCII value. The project does not
@@ -79,15 +88,15 @@ network.xpon_auth.def_sn=<same active SN, compatibility mirror>
 for the OMCI Vendor ID. The project writes:
 
 ```text
-omcicfgCmd set vendor_id <sn[0:4]>
+omcicfgCmd set vendorId <sn[0:4]>
 omcicfgCmd set sn <sn>
 omcicfgCmd set loid <loid>
-omcicfgCmd set loid_password <loid_password>
+omcicfgCmd set loidPasswd <loid_password>
 ```
 
 Optional `equipment_id`, `onu_version`, `omcc_version`, and `omci_spec_ver`
-are written only when explicitly configured, using `equipment_id`,
-`onu_version`, `omcc_version`, and `spec_version` respectively.
+are written only when explicitly configured, using the firmware CLI fields
+`equipmentId`, `onuVersion`, `omccVersion`, and `specVer` respectively.
 
 ## GPON PASSWORD
 
@@ -106,11 +115,11 @@ network.xpon_auth.def_sn=<same active SN, compatibility mirror>
 It writes the OMCI identity fields:
 
 ```text
-omcicfgCmd set vendor_id <sn[0:4]>
+omcicfgCmd set vendorId <sn[0:4]>
 omcicfgCmd set sn <sn>
 ```
 
-It does **not** write `omcicfgCmd set loid` or `set loid_password`. The durable
+It does **not** write `omcicfgCmd set loid` or `set loidPasswd`. The durable
 `gpon_loid` value is kept for switching back to GPON LOID later, but it is not
 mirrored into `network.xpon_auth` while GPON PASSWORD/SN is active. The
 registration password is sent through the firmware-native command:
@@ -162,10 +171,10 @@ cat /tmp/xpon-auth-native.log
 uci show network.xpon_auth
 uci show xpon.device
 /userfs/bin/omcicfgCmd get sn
-/userfs/bin/omcicfgCmd get vendor_id
+/userfs/bin/omcicfgCmd get vendorId
 /userfs/bin/omcicfgCmd get loid
-/userfs/bin/omcicfgCmd get loid_password
-/userfs/bin/omcicfgCmd get auth_status
+/userfs/bin/omcicfgCmd get loidPasswd
+/userfs/bin/omcicfgCmd get authStat
 /userfs/bin/oamcfgCmd get loid0
 ```
 
@@ -173,8 +182,9 @@ uci show xpon.device
 
 The current firmware's `omcicfgCmd` help text prints display labels such as
 `vendorId`, `equipmentId`, `onuVersion`, `omccVersion`, `specVer`,
-`loidPasswd`, and `authStat`. Those are **not** accepted `set`/`get`
-subcommands. The accepted names are `vendor_id`, `equipment_id`,
-`onu_version`, `omcc_version`, `spec_version`, `loid_password`, and
-`auth_status`. EPON is a different program: its `oamcfgCmd` subcommands such
-as `loidPasswd0` and `authStatus` remain camelCase.
+`loidPasswd`, and `authStat`. On the inspected XG2010G firmware those camelCase
+names are the accepted `set`/`get` subcommands. Older notes and some netifd
+call paths used snake_case aliases such as `vendor_id` or `loid_password`, but
+they must not be assumed portable when writing the LuCI runtime identity view
+or the strict replay script. EPON is a different program: its `oamcfgCmd`
+subcommands such as `loidPasswd0` and `authStatus` are also camelCase.

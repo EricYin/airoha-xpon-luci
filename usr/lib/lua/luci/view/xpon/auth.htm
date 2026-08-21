@@ -108,8 +108,12 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-epon-auth">
 			<label class="cbi-value-title xpon-required" for="epon_pon_mac">EPON 注册 MAC（MPCP/LLID）</label>
 			<div class="cbi-value-field">
-				<input type="text" id="epon_pon_mac" name="epon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.epon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
+				<div class="xpon-input-line">
+					<input type="text" id="epon_pon_mac" name="epon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.epon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
+					<label class="xpon-danger-inline"><input type="checkbox" name="dsd_wan_mac_sync" value="1" /><span>永久写入设备分区（<span class="xpon-danger-text">危险！错误值会导致系统反复重启</span>）</span></label>
+				</div>
 				<div class="cbi-value-description">EPON通过 EPON ONU devMac / LLID MAC 注册，保存后会读取设备 <code>ethaddr</code>/<code>bootargs</code>，重启后作为 MPCP ONU 注册 MAC。</div>
+				<div class="cbi-value-description">勾选“永久写入设备分区”后，同时将该 MAC 写入 DSD <code>wan_mac</code>，作为 EPON 的默认 MAC；未勾选时只写入 U-Boot <code>ethaddr</code>/<code>bootargs</code>。</div>
 				<div class="cbi-value-description">已保存 EPON：<code><%=esc(v.epon_pon_mac_saved ~= "" and v.epon_pon_mac_saved or "（未保存，使用 DSD 默认/旧 pon_mac）")%></code>；本次启动 EPON 注册基准 MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code>；DSD 默认：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
 				<div class="cbi-value-description">注意：EPON 修改 <code>ethaddr</code> 后，下次启动还会联动改变 <code>eth0</code>、<code>br-lan</code>、<code>oam</code> 等基础接口地址。</div>
 			</div>

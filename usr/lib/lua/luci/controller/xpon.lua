@@ -154,7 +154,8 @@ function index()
 	entry({"admin", "xpon", "voice"}, call("action_voice"), "语音", 3)
 	entry({"admin", "xpon", "service-vlan"}, post("action_service_vlan")).leaf = true
 	entry({"admin", "xpon", "provision"}, call("action_provision"), "OMCI", 4)
-	entry({"admin", "xpon", "status"}, call("action_status"), "状态", 5)
+	entry({"admin", "xpon", "oam"}, call("action_oam"), "OAM", 5)
+	entry({"admin", "xpon", "status"}, call("action_status"), "状态", 6)
 
 	-- 手写表单直接提交各字段，不包含名为 data 的字段；post_on({data=true})
 	-- 会导致路由条件不匹配并回到登录页，表现为“被登出且未保存”。
@@ -1943,8 +1944,9 @@ local function save_auth(fv)
 	local active_pon_mac = pmode == "EPON" and epon_pon_mac or gpon_pon_mac
 	local effective_pon_mac = active_pon_mac ~= "" and active_pon_mac or dsd_wan_mac()
 	-- EPON OUI = 最终 EPON 注册 MAC 前 3 字节，留空使用 DSD 时也保持联动。
-	local eoui = fv("epon_oui") or ""
-	if eoui == "" and ponmac_ok(effective_pon_mac) then
+	local eoui = (fv("epon_oui") or ""):gsub("%s+", ""):upper()
+	if pmode == "EPON" and ponmac_ok(effective_pon_mac) then
+		-- EPON localOui is the ONU OUI and must follow the MPCP registration MAC.
 		eoui = effective_pon_mac:gsub(":", ""):sub(1, 6):upper()
 	end
 	local ectc = (fv("epon_ctc_oui") or ""):gsub("%s+", ""):upper()
@@ -2712,7 +2714,7 @@ function action_save()
 					local dsd_rc = apply_dsd_value("fsan", sn)
 					if dsd_rc ~= 0 then err = "dsd_fsan_write_" .. tostring(dsd_rc) end
 				end
-				if not err and pmode ~= "EPON" and formvalue("dsd_wan_mac_sync") == "1" then
+				if not err and formvalue("dsd_wan_mac_sync") == "1" then
 					local dsd_rc = apply_dsd_value("wan_mac", effective_pon_mac)
 					if dsd_rc ~= 0 then err = "dsd_wan_mac_write_" .. tostring(dsd_rc) end
 				end
@@ -3061,6 +3063,25 @@ function action_provision()
 	local gem_up_text = klog_show("/userfs/bin/gponmapcmd showGemPortRule")
 	local me84 = sh("cat /tmp/ponstatus/me84_tag_info 2>/dev/null")
 	local me171 = sh("cat /tmp/ponstatus/me171_tag_info 2>/dev/null")
+	local pon_info_text = sh("timeout 3 /userfs/bin/ponmgr gpon get info 2>&1")
+	local omcc_text = sh("timeout 3 /userfs/bin/ponmgr gpon get omcc 2>&1")
+	local auth_stat_text = sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
+	local omci_sn_text = sh("/userfs/bin/omcicfgCmd get sn 2>&1")
+	local omci_vendor_text = sh("/userfs/bin/omcicfgCmd get vendorId 2>&1")
+	local omci_loid_text = sh("/userfs/bin/omcicfgCmd get loid 2>&1")
+	local omci_loidpw_text = sh("/userfs/bin/omcicfgCmd get loidPasswd 2>&1")
+	local omci_equipment_text = sh("/userfs/bin/omcicfgCmd get equipmentId 2>&1")
+	local omci_onuver_text = sh("/userfs/bin/omcicfgCmd get onuVersion 2>&1")
+	local omci_omcc_ver_text = sh("/userfs/bin/omcicfgCmd get omccVersion 2>&1")
+	local omci_spec_text = sh("/userfs/bin/omcicfgCmd get specVer 2>&1")
+	local gpon_passwd_text = sh("timeout 3 /userfs/bin/ponmgr gpon get passwd 2>&1")
+	local pon_mac_text = sh("cat /sys/class/net/pon/address 2>/dev/null")
+	local olt_info_text = sh("cat /tmp/ponstatus/olt_info 2>/dev/null")
+	local me2_text = sh("timeout 3 /usr/sbin/gmtk_omci_dbg me 2 2>&1")
+	local me11_text = sh("timeout 3 /usr/sbin/gmtk_omci_dbg me 11 2>&1")
+	local me131_text = sh("timeout 3 /usr/sbin/gmtk_omci_dbg me 131 2>&1")
+	local me256_text = sh("timeout 3 /usr/sbin/gmtk_omci_dbg me 256 2>&1")
+	local me329_text = sh("timeout 3 /usr/sbin/gmtk_omci_dbg me 329 2>&1")
 	local gem_up_rows = parse_gem_up(gem_up_text)
 	-- G.988 结构化：ME84 下行打标 / ME171 打标操作 / ME268 GEM 口（OLT 下发视图）
 	local me84_rows = {}
@@ -3090,6 +3111,116 @@ function action_provision()
 	local tcont_text = sh("timeout 3 /userfs/bin/ponmgr gpon get tcont")
 	local tcont_entries = parse_ponmgr_tcont(tcont_text)
 	local gem_entries = parse_ponmgr_gem(sh("timeout 3 /userfs/bin/ponmgr gpon get gemport"))
+	local state_id = pon_info_text:match("ONU State:%s*O(%d+)") or pon_info_text:match("ONU%s+State%s*[:=]%s*(%d+)")
+	local auth_raw = auth_stat_text:match("authStat%s*=%s*(%d+)") or auth_stat_text:match("(%d+)")
+	local alloc_id = omcc_text:match("alloc%s+ID%s*:%s*(%d+)") or omcc_text:match("Alloc%-?ID%s*[:=]%s*(%d+)")
+	local omcc_gem = omcc_text:match("gemport%s+ID%s*:%s*(%d+)") or omcc_text:match("GEM%s+Port%s*ID%s*[:=]%s*(%d+)")
+	local olt_vendor = olt_info_text:match("oltVendorId%s*=%s*([%w]+)")
+		or me131_text:match("oltVendorId%s*=%s*([%w]+)") or me131_text:match("Vendor%s*ID%s*[:=]%s*([%w]+)")
+	local olt_equipment = olt_info_text:match("equipmentId[ \t]*=[ \t]*([^\r\n]*)")
+		or me131_text:match("equipmentId[ \t]*=[ \t]*([^\r\n]*)") or ""
+	olt_equipment = util.trim(olt_equipment or "")
+	local onu_equipment = me256_text:match("equipmentId[ \t]*=[ \t]*([^\r\n]*)")
+		or me256_text:match("Equipment%s*ID%s*[:=]%s*([^\r\n]*)") or ""
+	onu_equipment = util.trim(onu_equipment or "")
+	local mib_sync = me2_text:match("[Mm][Ii][Bb][%w_ ]-[Ss]ync%s*[:=]%s*(%d+)")
+		or me2_text:match("[Mm][Ii][Bb][%w_ ]*[Ss]ync%s*[:=]%s*(%d+)")
+		or me2_text:match("[Mm]ibDataSync%s*[:=]%s*(%d+)")
+	local function me_count(text)
+		local n = tonumber(text:match("Entries%s*:%s*(%d+)") or text:match("entry%s*num%s*[:=]%s*(%d+)"))
+		if n then return n end
+		local c = 0
+		for _ in (text .. "\n"):gmatch("[Ee]ntity%s*[Ii][Dd]") do c = c + 1 end
+		for _ in (text .. "\n"):gmatch("instance%s*[Ii][Dd]") do c = c + 1 end
+		return c
+	end
+	local pptp_count = me_count(me11_text)
+	local veip_count = me_count(me329_text)
+	local model_label = (veip_count > 0 and "HGU/VEIP") or (pptp_count > 0 and "SFU/PPTP") or "未识别"
+	local function cmd_value(text)
+		text = util.trim(tostring(text or ""))
+		return text:match("^[^=:]*[=:]%s*(.-)%s*$") or text
+	end
+	local function runtime_mac(s)
+		local m = (s or ""):match("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+		return m and m:upper() or ""
+	end
+	local function show(v, empty)
+		return (v and v ~= "") and v or (empty or "（空/未读取）")
+	end
+	local function saved_any(...)
+		for i = 1, select("#", ...) do
+			local key = select(i, ...)
+			local v = key and (uget("xpon", "device", key) or uget("network", "xpon_auth", key))
+			if v and v ~= "" then return v end
+		end
+		return ""
+	end
+	local function saved_exact(config, section, option)
+		return uget(config, section, option) or ""
+	end
+	local function append_omci_field(rows, label, source, value, note)
+		rows[#rows + 1] = { label = label, source = source, value = value, note = note }
+	end
+	local run_sn = cmd_value(omci_sn_text)
+	local run_vendor = cmd_value(omci_vendor_text)
+	local run_loid = cmd_value(omci_loid_text)
+	local run_loidpw = cmd_value(omci_loidpw_text)
+	local run_equipment = cmd_value(omci_equipment_text)
+	local run_onuver = cmd_value(omci_onuver_text)
+	local run_omcc_ver = cmd_value(omci_omcc_ver_text)
+	local run_spec = cmd_value(omci_spec_text)
+	local run_pon_mac = runtime_mac(pon_mac_text)
+	local saved_gpon_sn = saved_any("gpon_sn", "sn", "def_sn")
+	local saved_vendor = saved_any("vendor_id")
+	if saved_vendor == "" and #saved_gpon_sn >= 4 then saved_vendor = saved_gpon_sn:sub(1, 4):upper() end
+	local saved_loid = saved_any("gpon_loid", "loid")
+	local saved_loidpw = saved_any("gpon_loid_password", "loid_password")
+	local saved_equipment = saved_any("equipment_id")
+	local saved_onuver = saved_any("onu_version")
+	local saved_omcc_ver = saved_any("omcc_version")
+	local saved_spec = saved_any("omci_spec_ver")
+	local saved_gpon_mac = runtime_mac(saved_any("gpon_pon_mac", "pon_mac"))
+	local saved_auth_method = saved_exact("network", "xpon_auth", "auth_method_g")
+	if saved_auth_method == "" then saved_auth_method = saved_exact("xpon", "device", "auth_method_g") end
+	local saved_auth_type = saved_exact("network", "xpon_auth", "auth_type_g")
+	if saved_auth_type == "" then saved_auth_type = saved_exact("xpon", "device", "auth_type_g") end
+	local saved_sn_pw_type = saved_exact("network", "xpon_auth", "xpon_sn_auth_type")
+	if saved_sn_pw_type == "" then saved_sn_pw_type = saved_exact("xpon", "device", "xpon_sn_auth_type") end
+	local sn_ascii_pw = saved_any("sn_ascii_password")
+	local sn_hex_pw = saved_any("sn_hex_password")
+	local sn_regid_pw = saved_any("sn_regid_password")
+	local omci_fields = {}
+	append_omci_field(omci_fields, "当前 PON 状态", "ponmgr gpon get info", state_id and ("O" .. state_id) or "未读取", "O5 表示 GPON/XGPON/XGSPON 已进入运行态")
+	append_omci_field(omci_fields, "OMCI 认证状态", "omcicfgCmd get authStat", show(auth_raw), auth_raw == "1" and "已认证" or "未认证/未读取")
+	append_omci_field(omci_fields, "OMCC alloc / GEM", "ponmgr gpon get omcc", show((alloc_id or "?") .. " / " .. (omcc_gem or "?")), "OMCI 管理通道，后续 ME 交互走这个 GEM")
+	append_omci_field(omci_fields, "OMCC Version（当前）", "omcicfgCmd get omccVersion", show(run_omcc_ver), "OMCI/OMCC 能力版本")
+	append_omci_field(omci_fields, "OMCC Version（配置）", "xpon.device.omcc_version", show(saved_omcc_ver), "认证页保存的期望值")
+	append_omci_field(omci_fields, "OMCI Spec Version（当前）", "omcicfgCmd get specVer", show(run_spec), "G.988/spec version 运行值")
+	append_omci_field(omci_fields, "OMCI Spec Version（配置）", "xpon.device.omci_spec_ver", show(saved_spec), "空值表示不覆盖固件默认")
+	append_omci_field(omci_fields, "PON SN（当前）", "omcicfgCmd get sn", show(run_sn), "GPON/XGPON/XGSPON PLOAM/OMCI 身份 SN")
+	append_omci_field(omci_fields, "PON SN（配置）", "xpon.device.gpon_sn / network.xpon_auth.gpon_sn", show(saved_gpon_sn), "完整 SN 通常为 4 字节 Vendor ID + 8 位序列")
+	append_omci_field(omci_fields, "Vendor ID（当前）", "omcicfgCmd get vendorId", show(run_vendor), "PON Vendor ID，通常等于 SN 前 4 位")
+	append_omci_field(omci_fields, "Vendor ID（配置）", "xpon.device.vendor_id / SN 前 4 位", show(saved_vendor), "认证页保存的期望 Vendor")
+	append_omci_field(omci_fields, "认证方式（配置）", "network.xpon_auth auth_method_g/auth_type_g", show(saved_auth_method ~= "" and saved_auth_method or saved_auth_type), "LOID / SN / Password 等认证分支")
+	append_omci_field(omci_fields, "LOID（当前）", "omcicfgCmd get loid", show(run_loid), "LOID 认证时使用")
+	append_omci_field(omci_fields, "LOID（配置）", "xpon.device.gpon_loid", show(saved_loid), "GPON 专属持久 LOID")
+	append_omci_field(omci_fields, "LOID 密码（当前）", "omcicfgCmd get loidPasswd", show(run_loidpw), "OMCI 当前运行值")
+	append_omci_field(omci_fields, "LOID 密码（配置）", "xpon.device.gpon_loid_password", show(saved_loidpw), "认证页保存的期望值")
+	append_omci_field(omci_fields, "SN Password 类型（配置）", "xpon_sn_auth_type", show(saved_sn_pw_type), "ascii / hex / regid")
+	append_omci_field(omci_fields, "SN Password ASCII（配置）", "sn_ascii_password", show(sn_ascii_pw), "认证页保存值")
+	append_omci_field(omci_fields, "SN Password HEX（配置）", "sn_hex_password", show(sn_hex_pw), "认证页保存值")
+	append_omci_field(omci_fields, "REG_ID / Password（配置）", "sn_regid_password", show(sn_regid_pw), "移动 Password 认证常用")
+	append_omci_field(omci_fields, "SN Password（运行查询）", "ponmgr gpon get passwd", show(gpon_passwd_text), "固件原生命令输出")
+	append_omci_field(omci_fields, "Equipment ID（当前）", "omcicfgCmd get equipmentId / ME256", show(run_equipment ~= "" and run_equipment or onu_equipment), "ONU2-G 设备型号/标识")
+	append_omci_field(omci_fields, "Equipment ID（配置）", "xpon.device.equipment_id", show(saved_equipment), "空值表示不覆盖固件默认")
+	append_omci_field(omci_fields, "ONU Version（当前）", "omcicfgCmd get onuVersion", show(run_onuver), "ONU 软件/硬件版本模拟值")
+	append_omci_field(omci_fields, "ONU Version（配置）", "xpon.device.onu_version", show(saved_onuver), "空值表示不覆盖固件默认")
+	append_omci_field(omci_fields, "PON 业务 MAC（当前）", "/sys/class/net/pon/address", show(run_pon_mac), "GPON 系列业务侧 pon netdev MAC，不参与 PLOAM SN 注册")
+	append_omci_field(omci_fields, "PON 业务 MAC（配置）", "xpon.device.gpon_pon_mac / pon_mac", show(saved_gpon_mac), "空值通常使用 DSD 默认 MAC")
+	append_omci_field(omci_fields, "OLT-G Vendor / Equipment", "ME131 / /tmp/ponstatus/olt_info", show((olt_vendor or "") .. (olt_equipment ~= "" and (" / " .. olt_equipment) or "")), "OLT 标识，仅用于诊断")
+	append_omci_field(omci_fields, "ONU 模型", "ME11 / ME329", model_label .. "（PPTP=" .. pptp_count .. "，VEIP=" .. veip_count .. "）", "决定 OLT 下发 bridge/VEIP 业务模型")
+	append_omci_field(omci_fields, "MIB Data Sync", "ME2 ONU Data", show(mib_sync), "OLT MIB Upload/MIB Reset 的同步计数")
 
 	local me_groups = {
 		{ title = "身份与 MIB 同步（ME2 / ME131 / ME256）", mes = {
@@ -3173,8 +3304,82 @@ function action_provision()
 		up_text = gem_up_text, down_text = gem_down_text, queue_text = gem_queue_text,
 		me84_out = me84, me171_out = me171,
 	})
+	local interaction_rows = {
+		{
+			stage = "1",
+			direction = "OLT → ONU",
+			message = "PLOAM 激活 + OMCC 创建",
+			purpose = "ONU 进入 O5 后建立 OMCI 管理控制通道；OMCC alloc-id 通常来自 ONU-ID，OMCI GEM 承载后续 OMCI 消息。",
+			values = "ONU State=" .. (state_id and ("O" .. state_id) or "未读取")
+				.. "；OMCC alloc=" .. (alloc_id or "?") .. "；OMCI GEM=" .. (omcc_gem or "?"),
+			evidence = "ponmgr gpon get info / omcc",
+			level = (state_id == "5" or (alloc_id and omcc_gem)) and "ok" or "warn",
+		},
+		{
+			stage = "2",
+			direction = "OLT ↔ ONU",
+			message = "OMCI 基础报文头",
+			purpose = "OMCI 在 GEM Port 上以主从方式交互；请求/响应通过 Transaction Correlation Identifier 对应，Message Type 表示 Create/Delete/Set/Get/MIB upload 等操作。",
+			values = "当前可见 OMCI GEM=" .. (omcc_gem or "?") .. "；DeviceID=0x0A（Baseline）/0x0B（Extended，抓包可见）",
+			evidence = "OMCC GEM / OMCI 协议头",
+			level = omcc_gem and "ok" or "info",
+		},
+		{
+			stage = "3",
+			direction = "OLT → ONU",
+			message = "Get/Set 身份与能力 ME",
+			purpose = "OLT 读取/设置 ONU-G、ONU2-G、OLT-G 等管理实体，确认厂商、型号、版本和认证状态。",
+			values = "authStat=" .. (auth_raw or "未读取") .. "；OLT=" .. ((olt_vendor or "N/A") .. (olt_equipment ~= "" and ("/" .. olt_equipment) or ""))
+				.. "；ONU2-G Equipment=" .. (onu_equipment ~= "" and onu_equipment or "未读取"),
+			evidence = "omcicfgCmd authStat / ME131 / ME256",
+			level = auth_raw == "1" and "ok" or "warn",
+		},
+		{
+			stage = "4",
+			direction = "OLT ↔ ONU",
+			message = "MIB Reset / MIB Upload / MIB Upload Next",
+			purpose = "OLT 触发 MIB 同步并读取 ONU 支持的 ME 实例；后续下发会依赖这张能力表。",
+			values = "ME2 MIB Data Sync=" .. (mib_sync or "未读取")
+				.. "；PPTP(ME11)=" .. pptp_count .. "；VEIP(ME329)=" .. veip_count .. "；模型=" .. model_label,
+			evidence = "ME2 / ME11 / ME329",
+			level = (mib_sync or pptp_count > 0 or veip_count > 0) and "ok" or "info",
+		},
+		{
+			stage = "5",
+			direction = "OLT → ONU",
+			message = "Create/Set TCONT 与 GEM Port",
+			purpose = "OLT 建立上行业务承载：TCONT 对应 alloc-id，GEM Port 对应业务/组播/OMCC 通道。",
+			values = "TCONT=" .. tostring(#tcont_entries) .. " 个；GEM=" .. tostring(#gem_entries)
+				.. " 个；OMCC GEM=" .. (omcc_gem or "?"),
+			evidence = "ponmgr gpon get tcont / gemport",
+			level = (#tcont_entries > 0 or #gem_entries > 0) and "ok" or "warn",
+		},
+		{
+			stage = "6",
+			direction = "OLT → ONU",
+			message = "Set VLAN / Bridge / Mapper",
+			purpose = "OLT 下发业务 VLAN、桥接端口、802.1p 映射和扩展 VLAN 处理；这一步决定 TR069/Internet/IPTV/Voice 如何落到本机业务。",
+			values = "GEM↔VLAN 行=" .. tostring(#(analysis.rows or {}))
+				.. "；ME84 显式 VLAN=" .. tostring(#me84_rows)
+				.. "；ME171 处理规则=" .. tostring(#me171_rows)
+				.. "；通配 GEM=" .. tostring(analysis.wild_gems or 0),
+			evidence = "ME84 / ME171 / gponmapcmd",
+			level = #(analysis.rows or {}) > 0 and "ok" or "warn",
+		},
+		{
+			stage = "7",
+			direction = "ONU → OLT",
+			message = "Alarm / AVC / Test Result",
+			purpose = "ONU 运行后主要由 OLT 主动控制；ONU 仅在告警、属性变化或测试结果时主动上报。",
+			values = "事件快照见原始诊断中的 /tmp/ponstatus/omci_trap_event；业务承载以当前 GEM/VLAN 表为准。",
+			evidence = "/tmp/ponstatus/omci_trap_event",
+			level = "info",
+		},
+	}
 	ltemplate.render("xpon/provision", {
 		ctl_ver = "2",
+		interaction_rows = interaction_rows,
+		omci_fields = omci_fields,
 		gem_up_rows = gem_up_rows,
 		gem_down_rows = gem_down_rows,
 		gem_down_total = down_total,
@@ -3298,6 +3503,264 @@ local function optical_diag()
 		body = (body ~= "" and (body .. "\n\n") or "") .. table.concat(notes, "\n")
 	end
 	return body ~= "" and body or "（无任何输出：/proc/lddla/debug 不存在且备用命令均无输出）"
+end
+
+function action_oam()
+	local sys_mode = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
+	local sys_mode_num = tonumber(sys_mode)
+	local is_epon = sys_mode_num == 2 or sys_mode_num == 3 or sys_mode_num == 4
+		or sys_mode_num == 5 or sys_mode_num == 12
+	local oam_ready = sh("pidof epon_oam >/dev/null 2>&1 && echo yes || echo no") == "yes"
+	local status_file = sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
+	local oam_log = sh("tail -160 /tmp/oam_debug 2>/dev/null")
+	local llid_live = sh("timeout 2 /userfs/bin/ponmgr epon get llid_info 2>/dev/null")
+	local llid_proc = sh("cat /proc/epon/debug 2>/dev/null")
+	local klog = sh("dmesg 2>/dev/null | grep -Ei 'epon|mpcp|oam|register|llid|auth' | tail -160")
+	local olt_mac = epon_olt_mac()
+	local auth_out = sh("/userfs/bin/oamcfgCmd get authStatus 2>&1")
+	local auth_status = tonumber(auth_out:match("[Aa]uth[Ss]tatus%s*=%s*(%d+)"))
+	local function runtime_mac(s)
+		local m = (s or ""):match("(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+		return m and m:upper() or ""
+	end
+	local function first_nonempty(...)
+		for i = 1, select("#", ...) do
+			local v = select(i, ...)
+			if v and v ~= "" then return v end
+		end
+		return ""
+	end
+	local onu_mac = first_nonempty(
+		runtime_mac(sh("timeout 2 /userfs/bin/ponmgr epon get devMac 2>/dev/null")),
+		runtime_mac(sh("cat /sys/class/net/oam/address 2>/dev/null")),
+		runtime_mac(sh("awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' /proc/cmdline 2>/dev/null")),
+		runtime_mac(sh("fw_printenv -n ethaddr 2>/dev/null")),
+		runtime_mac(uget("xpon", "device", "epon_pon_mac") or ""))
+	local llid_text = table.concat({ llid_live, llid_proc, status_file, klog }, "\n")
+	local llid_token = llid_text:lower():match("llid%s*[:=]%s*([%w]+)")
+		or llid_text:lower():match("llid%s+(%d+)")
+		or llid_text:lower():match("llididx%s*[:=]%s*([%w]+)")
+	local llid_label = llid_token and ("LLID=" .. llid_token) or "未读取到明确 LLID"
+
+	local fields = {
+		{ label = "LOID", cmd = "loid0", secret = false },
+		{ label = "LOID 密码", cmd = "loidPasswd0", secret = false },
+		{ label = "ONU 本地 OUI", cmd = "localOui", secret = false },
+		{ label = "CTC OUI", cmd = "ctcOui", secret = false },
+		{ label = "Vendor 信息", cmd = "localVenInfo", secret = false },
+		{ label = "ONU Vendor ID", cmd = "onuVenID", secret = false },
+	}
+	local oam_fields = {}
+	local oam_values = {}
+	for _, f in ipairs(fields) do
+		local raw = sh("/userfs/bin/oamcfgCmd get " .. f.cmd .. " 2>&1")
+		local value = raw:match("^[^=:]*[=:]%s*(.-)%s*$") or raw
+		oam_values[f.cmd] = value
+		if f.secret then value = value ~= "" and value or "（空）" end
+		oam_fields[#oam_fields + 1] = {
+			label = f.label,
+			cmd = f.cmd,
+			value = value ~= "" and value or "（空/未读取）",
+			raw = raw,
+		}
+	end
+	local onusn = sh("/usr/bin/xpon-epon-sn.sh get 2>&1")
+	oam_fields[#oam_fields + 1] = {
+		label = "CTC ONUSN",
+		cmd = "xpon-epon-sn.sh get",
+		value = onusn,
+	}
+
+	local evidence = (status_file .. "\n" .. oam_log):upper()
+	local registered = (status_file:lower():match("llid") ~= nil)
+		or evidence:match("REG_AND_AUTH") ~= nil
+		or evidence:match("REG_BUT_NOT_AUTH") ~= nil
+		or llid_live:lower():match("llid") ~= nil
+	local auth_label, auth_level
+	if auth_status == 1 then
+		auth_label = "已认证（authStatus=1）"
+		auth_level = "ok"
+	elseif auth_status == 0 then
+		auth_label = "未确认认证（authStatus=0）"
+		auth_level = registered and "warn" or "info"
+	elseif evidence:match("REG_AND_AUTH") or evidence:match("AUTH SUCCESS") then
+		auth_label = "已认证（日志确认）"
+		auth_level = "ok"
+	elseif evidence:match("REG_BUT_NOT_AUTH") or evidence:match("AUTH FAILURE") then
+		auth_label = "认证失败或未通过"
+		auth_level = "err"
+	else
+		auth_label = "状态未知"
+		auth_level = "info"
+	end
+
+	local summary = {
+		{ label = "当前 PON 模式", value = (sys_mode ~= "" and (sys_mode .. " → " .. (pon_mode_names[sys_mode_num] or "未知"))) or "N/A",
+		  level = is_epon and "ok" or "warn" },
+		{ label = "epon_oam 进程", value = oam_ready and "运行中" or "未运行", level = oam_ready and "ok" or "err" },
+		{ label = "MPCP 注册", value = registered and "已检测到 LLID/注册证据" or "未检测到有效 LLID", level = registered and "ok" or "warn" },
+		{ label = "OAM 认证", value = auth_label, level = auth_level },
+		{ label = "OLT MAC", value = olt_mac and olt_mac or "未读取到", level = olt_mac and "ok" or "info" },
+	}
+
+	local function field_value(name)
+		local v = oam_values[name] or ""
+		return v ~= "" and v or "未读取到"
+	end
+	local saved_epon_mac = runtime_mac(uget("xpon", "device", "epon_pon_mac") or "")
+	local saved_legacy_mac = runtime_mac(uget("xpon", "device", "pon_mac") or "")
+	local saved_epon_oui = (uget("xpon", "device", "epon_oui") or ""):gsub("^0[xX]", ""):upper()
+	local saved_ctc_oui = (uget("xpon", "device", "epon_ctc_oui") or ""):gsub("^0[xX]", ""):upper()
+	local saved_ven_info = (uget("xpon", "device", "epon_ven_info") or ""):gsub("^0[xX]", ""):upper()
+	local saved_onu_vendor = uget("xpon", "device", "epon_onu_vendor_id") or ""
+	local saved_onusn = runtime_mac(uget("xpon", "device", "epon_serial") or "")
+	local saved_loid = uget("xpon", "device", "epon_loid") or uget("network", "xpon_auth", "epon_loid") or ""
+	local saved_loidpw = uget("xpon", "device", "epon_loid_password") or uget("network", "xpon_auth", "epon_loid_password") or ""
+	local dsd_mac = dsd_wan_mac()
+	local oam_if_mac = runtime_mac(sh("cat /sys/class/net/oam/address 2>/dev/null"))
+	local pon_if_mac = runtime_mac(sh("cat /sys/class/net/pon/address 2>/dev/null"))
+	local boot_ethaddr = runtime_mac(sh("awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' /proc/cmdline 2>/dev/null"))
+	local fw_ethaddr = runtime_mac(sh("fw_printenv -n ethaddr 2>/dev/null"))
+	local desired_mac = first_nonempty(saved_epon_mac, saved_legacy_mac, dsd_mac)
+	local current_oui_from_mac = onu_mac ~= "" and onu_mac:gsub(":", ""):sub(1, 6):upper() or ""
+	local function show(v, empty)
+		return (v and v ~= "") and v or (empty or "（空/未读取）")
+	end
+	local function append_field(label, source, value, note)
+		oam_fields[#oam_fields + 1] = {
+			label = label,
+			cmd = source,
+			value = value,
+			note = note,
+		}
+	end
+	local existing_oam_fields = oam_fields
+	oam_fields = {}
+	append_field("当前 PON 技术模式", "/proc/tc3162/sys_xpon_mode", show(sys_mode) .. " → " .. (pon_mode_names[sys_mode_num] or "未知"), "2/3/4/5/12 为 EPON/OAM 家族")
+	append_field("epon_oam 进程", "pidof epon_oam", oam_ready and "运行中" or "未运行", "OAM 身份字段只有进程起来后才可靠")
+	append_field("OAM 认证状态", "oamcfgCmd get authStatus", auth_status ~= nil and tostring(auth_status) or show(auth_out), auth_label)
+	append_field("MPCP 注册状态", "llid_info / 状态文件 / 内核日志", registered and "已检测到 LLID/注册证据" or "未检测到有效 LLID", llid_label)
+	append_field("OLT MAC", "devmem 0x1FB66390/0x1FB66394", show(olt_mac), "来自 EPON MAC 寄存器，只读")
+	append_field("EPON 注册 MAC（当前）", "ponmgr epon get devMac / oam / ethaddr", show(onu_mac), "REGISTER_REQ 使用的 ONU/MPCP MAC")
+	append_field("EPON 注册 MAC（配置）", "xpon.device.epon_pon_mac / pon_mac / DSD wan_mac", show(desired_mac), "留空时通常回退 DSD wan_mac")
+	append_field("oam 接口 MAC", "/sys/class/net/oam/address", show(oam_if_mac), "OAM netdev 地址，可能跟注册基准 MAC 联动")
+	append_field("pon 接口 MAC", "/sys/class/net/pon/address", show(pon_if_mac), "业务侧 pon netdev 地址")
+	append_field("U-Boot ethaddr（本次启动）", "/proc/cmdline ethaddr / fw_printenv", show(first_nonempty(boot_ethaddr, fw_ethaddr)), "EPON 驱动常用的启动基准 MAC")
+	append_field("DSD 默认 wan_mac", "dsd wan_mac", show(dsd_mac), "未显式配置 EPON MAC 时的默认来源")
+	append_field("ONU 本地 OUI（当前）", "oamcfgCmd get localOui", field_value("localOui"), "通常应等于 EPON 注册 MAC 前 3 字节：" .. show(current_oui_from_mac))
+	append_field("ONU 本地 OUI（配置）", "xpon.device.epon_oui", show(saved_epon_oui), "保存认证页后写入 localOui")
+	append_field("CTC OUI（当前）", "oamcfgCmd get ctcOui", field_value("ctcOui"), "CTC 扩展组织标识，不等同于 ONU 本地 OUI")
+	append_field("CTC OUI（配置）", "xpon.device.epon_ctc_oui", show(saved_ctc_oui ~= "" and saved_ctc_oui or "111111"), "空值按 111111 下发")
+	append_field("Vendor 信息（当前）", "oamcfgCmd get localVenInfo", field_value("localVenInfo"), "CTC OAM 厂商扩展字段")
+	append_field("Vendor 信息（配置）", "xpon.device.epon_ven_info", show(saved_ven_info), "可选，克隆旧猫时填写")
+	append_field("ONU Vendor ID（当前）", "oamcfgCmd get onuVenID", field_value("onuVenID"), "4 字节可打印 ASCII")
+	append_field("ONU Vendor ID（配置）", "xpon.device.epon_onu_vendor_id", show(saved_onu_vendor), "可选，空值不下发")
+	append_field("LOID（当前）", "oamcfgCmd get loid0", field_value("loid0"), "扩展 OAM/运营商认证字段")
+	append_field("LOID（配置）", "xpon.device.epon_loid", show(saved_loid), "EPON 专属持久 LOID")
+	append_field("LOID 密码（当前）", "oamcfgCmd get loidPasswd0", show(oam_values.loidPasswd0), "OAM 当前运行值")
+	append_field("LOID 密码（配置）", "xpon.device.epon_loid_password", show(saved_loidpw), "认证页保存的期望值")
+	append_field("CTC ONUSN（当前）", "xpon-epon-sn.sh get", show(onusn), "CTC ONUSN 的 6 字节 ONU ID")
+	append_field("CTC ONUSN（配置）", "xpon.device.epon_serial", show(saved_onusn), "与 MPCP 注册 MAC 是两个字段")
+	local ext_version = first_nonempty(
+		(oam_log:match("[Ee]xt[^\n]*[Vv]er[^0-9A-Fa-f]*(0x%x+)") or ""),
+		(oam_log:match("[Vv]ersion[^0-9A-Fa-f]*(0x%x+)") or ""),
+		(oam_log:match("[Ee]xt[^\n]*[Vv]er[^0-9]*(%d+)") or ""))
+	local interaction_rows = {
+		{
+			stage = "1",
+			direction = "OLT → ONU",
+			packet = "MPCP Discovery GATE",
+			purpose = "打开发现窗口，让 ONU 发起注册。",
+			values = "OLT MAC：" .. (olt_mac or "未读取到") .. "；发现证据：" .. ((klog:lower():match("discover") or klog:lower():match("gate")) and "日志出现 discovery/gate" or "SDK 未直接暴露帧字段"),
+			evidence = "devmem / dmesg",
+			level = olt_mac and "ok" or "info",
+		},
+		{
+			stage = "2",
+			direction = "ONU → OLT",
+			packet = "REGISTER_REQ",
+			purpose = "ONU 上报 MPCP 注册 MAC，OLT 用它识别 ONU 并测距。",
+			values = "ONU/MPCP MAC：" .. (onu_mac ~= "" and onu_mac or "未读取到"),
+			evidence = "ponmgr epon get devMac / oam netdev / ethaddr",
+			level = onu_mac ~= "" and "ok" or "warn",
+		},
+		{
+			stage = "3",
+			direction = "OLT → ONU",
+			packet = "REGISTER + GATE",
+			purpose = "OLT 分配 LLID，并开始给该 LLID 授权上行时隙。",
+			values = llid_label,
+			evidence = "llid_info / /proc/epon/debug / 状态文件",
+			level = registered and "ok" or "warn",
+		},
+		{
+			stage = "4",
+			direction = "ONU → OLT",
+			packet = "REGISTER_ACK",
+			purpose = "ONU 确认 LLID，MPCP 注册阶段完成。",
+			values = registered and "已检测到 LLID/注册证据" or "未检测到有效 LLID",
+			evidence = "/tmp/epon_reg_auth_status / 内核日志",
+			level = registered and "ok" or "warn",
+		},
+		{
+			stage = "5",
+			direction = "ONU ↔ OLT",
+			packet = "标准 OAM Information/Keepalive",
+			purpose = "建立 OAM 管理通道，后续扩展 OAM 在该通道上协商。",
+			values = "epon_oam：" .. (oam_ready and "运行中" or "未运行") .. "；authStatus：" .. (auth_status ~= nil and tostring(auth_status) or "未读取到"),
+			evidence = "pidof epon_oam / oamcfgCmd get authStatus",
+			level = oam_ready and "ok" or "err",
+		},
+		{
+			stage = "6",
+			direction = "ONU → OLT",
+			packet = "扩展 OAM Organization Specific TLV",
+			purpose = "ONU 宣告扩展 OAM 能力和厂商身份，运营商认证通常看这里。",
+			values = "InfoType=0xFE；CTC OUI=" .. field_value("ctcOui") .. "；扩展版本=" .. (ext_version ~= "" and ext_version or "SDK 未暴露") .. "；localOui=" .. field_value("localOui") .. "；Vendor=" .. field_value("localVenInfo") .. "；ONU Vendor ID=" .. field_value("onuVenID") .. "；LOID=" .. field_value("loid0") .. "；ONUSN=" .. (onusn ~= "" and onusn or "未读取到"),
+			evidence = "oamcfgCmd / xpon-epon-sn.sh / OAM 日志",
+			level = (field_value("ctcOui") ~= "未读取到" and field_value("localOui") ~= "未读取到") and "ok" or "warn",
+		},
+		{
+			stage = "7",
+			direction = "OLT → ONU",
+			packet = "扩展 OAM 响应 / 认证结果",
+			purpose = "OLT 确认扩展能力和身份是否匹配，随后才会放行业务。",
+			values = auth_label,
+			evidence = "authStatus / 状态文件 / OAM 日志",
+			level = auth_level,
+		},
+	}
+
+	local raw_groups = {
+		{ title = "MPCP / LLID", body = command_dump({
+			{ "ponmgr epon get llid_info（timeout 2）", "timeout 2 /userfs/bin/ponmgr epon get llid_info" },
+			{ "/proc/epon/debug", "cat /proc/epon/debug 2>/dev/null" },
+			{ "/tmp/epon_reg_auth_status", "cat /tmp/epon_reg_auth_status 2>/dev/null" },
+		}) },
+		{ title = "OAM 认证与身份", body = command_dump({
+			{ "oamcfgCmd get authStatus", "/userfs/bin/oamcfgCmd get authStatus" },
+			{ "oamcfgCmd get loid0", "/userfs/bin/oamcfgCmd get loid0" },
+			{ "oamcfgCmd get localOui", "/userfs/bin/oamcfgCmd get localOui" },
+			{ "oamcfgCmd get ctcOui", "/userfs/bin/oamcfgCmd get ctcOui" },
+			{ "oamcfgCmd get localVenInfo", "/userfs/bin/oamcfgCmd get localVenInfo" },
+			{ "oamcfgCmd get onuVenID", "/userfs/bin/oamcfgCmd get onuVenID" },
+			{ "xpon-epon-sn.sh get", "/usr/bin/xpon-epon-sn.sh get" },
+		}) },
+		{ title = "OAM 最近日志", body = oam_log ~= "" and oam_log or "（无输出）" },
+		{ title = "内核 EPON/OAM 线索", body = klog ~= "" and klog or "（无输出）" },
+	}
+
+	ltemplate.render("xpon/oam", {
+		is_epon = is_epon,
+		summary = summary,
+		interaction_rows = interaction_rows,
+		oam_fields = oam_fields,
+		raw_groups = raw_groups,
+		llid_live = llid_live,
+		llid_proc = llid_proc,
+		status_file = status_file,
+		auth_out = auth_out,
+	})
 end
 
 -- 收集一次状态（服务端渲染 + JSON 轮询共用同一份数据）

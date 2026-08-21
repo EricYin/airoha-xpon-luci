@@ -1,4 +1,5 @@
 xpon-luci 2.8 2026-08-20
+epon: OAM 完整身份回读成功后 best-effort 通知原厂 epon_oam 的 TCAPI_SAVE/update-config 队列入口（cmdType=24）；跨重启持久源为 UCI，启动后重放 OAM；OUI 在提交和下发时均从 EPON 注册 MAC 前三字节强制推导
 auth: 保存后重启提示页增加返回管理首页按钮；按当前 LAN IP、当前访问地址与 192.168.0.1 提供备用入口，避免 IP 变更后卡在 /admin/xpon/save
 boot: 重启恢复按当前 onu_type 统一选择 EPON/OAM 或 GPON/OMCI；旧配置优先读取 auth_method_g，PASSWORD 清除残留 LOID，sn 作为唯一 Vendor ID 来源
 auth: PASSWORD/SN 严格重放不再写入残留 LOID；GPON Vendor ID 始终由 PON SN 前四位派生，ONU 软件版本/Equipment ID 留空则清除覆盖并不下发
@@ -17,7 +18,7 @@ epon: ctcOui 与 localOui 解耦，默认及空值回退改为抓包验证的 11
 status: EPON 自动轮询不再调用会段错误/污染共享内存的 ponmgr epon 查询；MPCP 改读状态文件、/proc 与内核日志
 epon: 增加 CTC ONUSN 复合身份中的 6 字节 ONU ID 独立配置；仅对已校验的 epon_oam 写入并回读，和 MPCP MAC 分离
 services: Access 桥接持久摘除 br-lan 端口并跟踪恢复；保存重载、开机与 hotplug 统一核对实际桥成员
-epon: 持久保存并重放 localOui/ctcOui/localVenInfo/onuVenID；最终写入改到 epon_oam 重启之后，防止恢复 111111/MTKc
+epon: 通过 UCI 持久保存并重放 localOui/ctcOui/localVenInfo/onuVenID；最终写入改到 epon_oam 重启之后，防止恢复 111111/MTKc；原厂 TCAPI_SAVE 仅作运行态同步通知
 boot: 修正原厂 S00xponconfig 的 gponauth 变量错误；启动主路径直接采用持久认证和 PON MAC，S11 仅作旧固件兜底
 auth: PON SN/Vendor ID 提交后同时回读 network 与 xpon 持久源；PON MAC 输入框优先显示已保存配置，运行值独立展示
 boot: GPON pon 接口出现后即重放已保存 MAC，不再依赖 OMCI 90 秒内就绪；EPON env 已一致时不重复写入或生成备份

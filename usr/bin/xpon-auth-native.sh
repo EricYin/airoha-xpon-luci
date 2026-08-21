@@ -172,7 +172,7 @@ loid=$(credential_get loid); loidpw=$(credential_get loid_password); sn=$(creden
 equipment=$(identity_get equipment_id); onuver=$(identity_get onu_version); omcc=$(identity_get omcc_version)
 spec=$(get omci_spec_ver)
 if [ "$mode" = "EPON" ]; then
-	pmac=$(get epon_pon_mac)
+	pmac=$(device_first_get epon_pon_mac)
 else
 	pmac=$(get gpon_pon_mac)
 fi
@@ -187,6 +187,16 @@ epon_ven=$(device_first_get epon_ven_info)
 epon_onu_vendor=$(device_first_get epon_onu_vendor_id)
 epon_serial=$(device_first_get epon_serial)
 [ -n "$epon_ctc_oui" ] || epon_ctc_oui=111111
+
+# localOui is the OAM form of the MPCP registration MAC OUI.  Re-derive it
+# here as well as in LuCI so an old UCI value cannot drift from EPON devMac.
+if [ "$mode" = "EPON" ]; then
+	case "$pmac" in
+		[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f])
+			epon_oui=$(printf '%s' "$pmac" | tr -d ':' | cut -c 1-6 | tr 'a-f' 'A-F')
+			;;
+	esac
+fi
 
 # PON SN 是唯一输入源；SDK 仍要求分别设置 ME 256 SN 与 ME 7 Vendor ID。
 sn=$(printf '%s' "$sn" | tr -d '[:space:]' | tr 'a-z' 'A-Z')
@@ -228,6 +238,15 @@ if [ "$mode" = "EPON" ]; then
 	verify_oam ctcOui "$epon_ctc_oui" 0
 	verify_oam localVenInfo "$epon_ven" 0
 	verify_oam onuVenID "$epon_onu_vendor" 0
+	# The stock process otherwise keeps several OAM identity values only in
+	# RAM.  cmdType=24 is the vendor's TCAPI_SAVE/update-config notification;
+	# it is best-effort here because this OpenWrt image has no stock TCAPI
+	# persistence service. UCI plus boot-time replay is the durable path.
+	if /usr/bin/xpon-epon-oam-save.sh >>"$LOG" 2>&1; then
+		echo "EPON OAM 原厂配置同步通知已发送；持久源仍为 UCI" >>"$LOG"
+	else
+		echo "警告：EPON OAM 原厂配置同步通知不可用；继续使用 UCI 持久配置和启动重放" >>"$LOG"
+	fi
 else
 	[ -x "$OMCI" ] || { echo "omcicfgCmd 不存在或不可执行" >> "$LOG"; exit 127; }
 	echo "GPON identity: auth=$auth auth_method=${auth_method:-none} sn=$valid_sn vendor_id=$vendor onu_version=${onuver:-skip}" >> "$LOG"

@@ -172,6 +172,17 @@ function xponDeriveEponSerial() {
 	serialInput.focus();
 }
 
+function xponSyncEponOui() {
+	var mac = document.getElementById('epon_pon_mac');
+	var oui = document.getElementById('epon_oui');
+	if (!mac || !oui) return;
+	var value = mac.value.trim();
+	if (!value) value = mac.getAttribute('data-default') || '';
+	if (!/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(value)) return;
+	var derived = value.replace(/:/g, '').slice(0, 6).toUpperCase();
+	if (oui.value !== derived) oui.value = derived;
+}
+
 // 业务页：按拨号方式显示 PPPoE/静态字段
 function xponProtoToggle(sel) {
 	if (!sel) return;
@@ -189,6 +200,8 @@ function xponProtoToggle(sel) {
 function xponAuthCheck(form) {
 	var pm = form.pon_tech.value;
 	var epon = xponIsFixedEponTech(pm);
+	// Submit-time sync covers paste/autofill and cached pages that missed input events.
+	if (epon) xponSyncEponOui();
 	var auth = (form.auth_type_g.value || '').toUpperCase();
 	if ((epon || auth === 'LOID') && form.loid.value.length > 24) {
 		alert('LOID 不能超过 24 字节');
@@ -292,6 +305,12 @@ function xponAuthCheck(form) {
 function xponAuthLiveCheck() {
 	var sn=document.getElementById('sn'), loid=document.getElementById('loid');
 	if (!sn || !loid) return;
+	var eponMac = document.getElementById('epon_pon_mac');
+	if (eponMac) {
+		eponMac.addEventListener('input', xponSyncEponOui);
+		eponMac.addEventListener('change', xponSyncEponOui);
+		xponSyncEponOui();
+	}
 	function validate() {
 		var s=sn.value.trim();
 		var invalid=s.length>0 && !/^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$/.test(s);

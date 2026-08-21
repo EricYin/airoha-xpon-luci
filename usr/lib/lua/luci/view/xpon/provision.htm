@@ -3,20 +3,57 @@
 .omci-dump{background:#f5f5f5;border:1px solid #d8dee4;padding:10px;font-size:12px;line-height:1.45;overflow:auto;white-space:pre-wrap}
 .omci-na{color:#777}
 .omci-ok{color:#237804;font-weight:600}
+.omci-flow td,.omci-flow th{font-size:12px;vertical-align:top}
+.omci-table td,.omci-table th{font-size:12px;vertical-align:top;padding:3px 8px;line-height:1.25}
+.omci-table code{line-height:1.25}
+.omci-note{color:#777;font-size:11px;margin-left:6px;white-space:normal}
+.omci-flow-stage{font-weight:600;text-align:center;white-space:nowrap}
+.omci-flow-values{word-break:break-all}
+.omci-pill{display:inline-block;border-radius:3px;padding:1px 5px;font-size:11px;font-weight:600;color:#fff;background:#607d8b}
+.omci-pill-ok{background:#2e7d32}
+.omci-pill-warn{background:#ef6c00}
+.omci-pill-err{background:#c62828}
 @media (prefers-color-scheme: dark){
 	.omci-dump{background:#252526;border-color:#3c3c3c;color:#ccc;}
 	.omci-na{color:#8a8a8a;}
 	.omci-ok{color:#66bb6a;}
+	.omci-note{color:#8a8a8a;}
+	.omci-pill-ok{background:#66bb6a;color:#111;}
+	.omci-pill-warn{background:#ffa726;color:#111;}
+	.omci-pill-err{background:#ef5350;color:#111;}
 }
 html.dark .omci-dump{background:#252526;border-color:#3c3c3c;color:#ccc;}
 html.dark .omci-na{color:#8a8a8a;}
 html.dark .omci-ok{color:#66bb6a;}
+html.dark .omci-note{color:#8a8a8a;}
+html.dark .omci-pill-ok{background:#66bb6a;color:#111;}
+html.dark .omci-pill-warn{background:#ffa726;color:#111;}
+html.dark .omci-pill-err{background:#ef5350;color:#111;}
 </style>
 <% local function esc(s) return (tostring(s or ''):gsub('&','&amp;'):gsub('<','&lt;'):gsub('>','&gt;')) end
 local an=analysis or {}; local rows=an.rows or {}; local concl=an.conclusion %>
 <h2 name="content">OMCI 下发</h2>
 
 <% if concl then %><div class="alert-message"><b><%=esc(concl.title)%></b>：<%=esc(concl.text)%></div><% end %>
+
+<fieldset class="cbi-section"><legend>OMCI 注册交互视图</legend>
+<div class="cbi-value-description">按 GPON OMCI 上线逻辑组织：PLOAM 建立 OMCC 后，OLT 通过 OMCI 主从消息读取 MIB、识别 VEIP/PPTP 模型，再下发 TCONT/GEM/VLAN 业务承载。页面只展示本机 SDK/ME/状态文件可读到的运行值。</div>
+<table class="cbi-section-table omci-flow"><thead><tr><th>步骤</th><th>方向</th><th>报文/阶段</th><th>交互目的</th><th>本机读到的值</th><th>证据来源</th></tr></thead><tbody>
+<% for _,r in ipairs(interaction_rows or {}) do local lv=(r.level=="ok" or r.level=="warn" or r.level=="err") and r.level or "info" %>
+<tr><td class="omci-flow-stage"><%=esc(r.stage)%></td><td><span class="omci-pill omci-pill-<%=lv%>"><%=esc(r.direction)%></span></td><td><code><%=esc(r.message)%></code></td><td><%=esc(r.purpose)%></td><td class="omci-flow-values"><%=esc(r.values)%></td><td><%=esc(r.evidence)%></td></tr>
+<% end %>
+</tbody></table>
+<div class="cbi-value-description">若要看真实 OMCI TCI、Message Type 和 Attribute Mask，需要抓 OMCI/GEM 原始报文；本页把已解析的 ME 与 SDK 状态映射到注册时序，便于判断卡在哪一步。</div>
+</fieldset>
+
+<fieldset class="cbi-section"><legend>OMCI 运行身份字段</legend>
+<table class="cbi-section-table omci-table"><thead><tr><th>字段</th><th>OMCI 命令/来源</th><th>当前运行值</th></tr></thead><tbody>
+<% for _,f in ipairs(omci_fields or {}) do %>
+<tr><td><%=esc(f.label)%></td><td><code><%=esc(f.source)%></code></td><td><code><%=esc(f.value)%></code><% if f.note and f.note ~= '' then %><span class="omci-note"><%=esc(f.note)%></span><% end %></td></tr>
+<% end %>
+</tbody></table>
+<div class="cbi-value-description">这里汇总 GPON/XGPON/XGSPON 注册身份、OMCC、SN/LOID/Password、设备型号版本、OLT-G、PON 业务 MAC 和 MIB 同步状态。</div>
+</fieldset>
 
 <fieldset class="cbi-section"><legend>GEM Port 与业务关联</legend>
 <div class="cbi-value-description">显式 VID 优先匹配 <code>/etc/config/pon</code>；<code>vid=N/A</code> 表示通配承载。</div>

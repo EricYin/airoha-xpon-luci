@@ -71,7 +71,21 @@ auth_get() {
 			[ -n "$v" ] || [ -n "$has_private_auth" ] || v=$(uci -q get xpon.device.loid_password)
 			[ -n "$v" ] || [ -n "$has_private_auth" ] || v=$(uci -q get network.xpon_auth.loid_password)
 			;;
-		epon_ctc_oui|epon_serial|epon_oui|epon_ven_info|epon_onu_vendor_id)
+		epon_oui)
+			mac=$(uci -q get xpon.device.epon_pon_mac)
+			[ -n "$mac" ] || mac=$(uci -q get network.xpon_auth.epon_pon_mac)
+			[ -n "$mac" ] || mac=$(sed -n 's/^wan_mac=//p' /tmp/dsd.env 2>/dev/null | tr -d "'\"" | head -1)
+			case "$mac" in
+				[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f])
+					v=$(printf '%s' "$mac" | tr -d ':' | cut -c 1-6 | tr 'a-f' 'A-F')
+					;;
+				*)
+					v=$(uci -q get xpon.device.epon_oui)
+					[ -n "$v" ] || v=$(uci -q get network.xpon_auth.epon_oui)
+					;;
+			 esac
+			;;
+		epon_ctc_oui|epon_serial|epon_ven_info|epon_onu_vendor_id)
 			v=$(uci -q get "xpon.device.$1")
 			[ -n "$v" ] || v=$(uci -q get "network.xpon_auth.$1")
 			;;
@@ -86,6 +100,21 @@ auth_get() {
 repair_runtime_drift() {
 	repaired=
 	failed=0
+	needs_persist=0
+
+	desired_local=$(auth_get epon_oui)
+	if [ -n "$desired_local" ]; then
+		have_local=$(oam_value localOui)
+		if [ "$(normalize_oui "$have_local")" != "$(normalize_oui "$desired_local")" ]; then
+			if /userfs/bin/oamcfgCmd set localOui "$desired_local" >/dev/null 2>&1 &&
+			   [ "$(normalize_oui "$(oam_value localOui)")" = "$(normalize_oui "$desired_local")" ]; then
+				repaired="$repaired localOui"
+				needs_persist=1
+			else
+				failed=1
+			fi
+		fi
+	fi
 
 	desired_ctc=$(auth_get epon_ctc_oui)
 	desired_ctc=${desired_ctc:-111111}
@@ -94,8 +123,37 @@ repair_runtime_drift() {
 		if /userfs/bin/oamcfgCmd set ctcOui "$desired_ctc" >/dev/null 2>&1 &&
 		   [ "$(normalize_oui "$(oam_value ctcOui)")" = "$(normalize_oui "$desired_ctc")" ]; then
 			repaired="$repaired ctcOui"
+			needs_persist=1
 		else
 			failed=1
+		fi
+	fi
+
+	desired_onu_vendor=$(auth_get epon_onu_vendor_id)
+	if [ -n "$desired_onu_vendor" ]; then
+		have_onu_vendor=$(oam_value onuVenID)
+		if [ "$have_onu_vendor" != "$desired_onu_vendor" ]; then
+			if /userfs/bin/oamcfgCmd set onuVenID "$desired_onu_vendor" >/dev/null 2>&1 &&
+			   [ "$(oam_value onuVenID)" = "$desired_onu_vendor" ]; then
+				repaired="$repaired onuVenID"
+				needs_persist=1
+			else
+				failed=1
+			fi
+		fi
+	fi
+
+	desired_ven=$(auth_get epon_ven_info)
+	if [ -n "$desired_ven" ]; then
+		have_ven=$(oam_value localVenInfo)
+		if [ "$(normalize_oui "$have_ven")" != "$(normalize_oui "$desired_ven")" ]; then
+			if /userfs/bin/oamcfgCmd set localVenInfo "$desired_ven" >/dev/null 2>&1 &&
+			   [ "$(normalize_oui "$(oam_value localVenInfo)")" = "$(normalize_oui "$desired_ven")" ]; then
+				repaired="$repaired localVenInfo"
+				needs_persist=1
+			else
+				failed=1
+			fi
 		fi
 	fi
 
@@ -115,9 +173,21 @@ repair_runtime_drift() {
 			if /userfs/bin/oamcfgCmd set loidPasswd0 "$desired_password" >/dev/null 2>&1 &&
 			   [ "$(oam_value loidPasswd0)" = "$desired_password" ]; then
 				repaired="$repaired loidPasswd0='$desired_password'"
+				needs_persist=1
 			else
 				failed=1
 			fi
+		fi
+	fi
+
+	if [ "$failed" -eq 0 ] && [ "$needs_persist" -eq 1 ]; then
+		# This IPC is only a best-effort vendor runtime notification. A missing
+		# stock TCAPI service must not turn a successful OAM repair into a
+		# failure; UCI is the durable source and boot replay is authoritative.
+		if /usr/bin/xpon-epon-oam-save.sh >/dev/null 2>&1; then
+			repaired="$repaired OAM_CONFIG_SYNC"
+		else
+			repaired="$repaired OAM_CONFIG_SYNC_UNAVAILABLE"
 		fi
 	fi
 
@@ -143,7 +213,7 @@ repair_runtime_drift() {
 	if [ "$failed" -ne 0 ]; then
 		drift_failures=$((drift_failures + 1))
 		if [ "$drift_failures" -eq 1 ] || [ $((drift_failures % 20)) -eq 0 ]; then
-			logger -t xpon "EPON OAM 运行态漂移修复失败，详见当前 ctcOui/loidPasswd0/ONUSN 回读"
+			logger -t xpon "EPON OAM 运行态漂移修复失败，详见当前 ctcOui/onuVenID/loidPasswd0/ONUSN 回读"
 		fi
 		return 1
 	fi
@@ -152,10 +222,24 @@ repair_runtime_drift() {
 	return 0
 }
 
+settle_runtime_identity() {
+	settle_try=0
+	while [ "$settle_try" -lt 12 ]; do
+		# epon_oam can restore its built-in MTKc/default fields shortly after
+		# the IPC endpoint becomes readable. Keep checking during that window.
+		sleep 1
+		if repair_runtime_drift >/dev/null 2>&1; then
+			return 0
+		fi
+		settle_try=$((settle_try + 1))
+	done
+	return 1
+}
+
 watch_identity() {
 	interval=${1:-5}
 	case "$interval" in ''|*[!0-9]*) interval=5 ;; esac
-	[ "$interval" -ge 2 ] 2>/dev/null || interval=2
+	[ "$interval" -ge 1 ] 2>/dev/null || interval=1
 	pidfile=/var/run/xpon-epon-sn-watch.pid
 	oldpid=$(cat "$pidfile" 2>/dev/null)
 	if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
@@ -183,10 +267,15 @@ watch_identity() {
 			# Wait until the new process has attached its shared state before replay.
 			/userfs/bin/oamcfgCmd get mode >/dev/null 2>&1 || continue
 			if /usr/bin/xpon-auth-native.sh >/dev/null 2>&1; then
-				logger -t xpon "EPON OAM pid=$pid 启动后已自动重放完整身份（含 CTC ONUSN）"
-				last_pid=$pid
-				check_elapsed=0
-				replay_failures=0
+				if settle_runtime_identity; then
+					logger -t xpon "EPON OAM pid=$pid 启动后已稳定重放完整身份（含 onuVenID/CTC ONUSN）"
+					last_pid=$pid
+					check_elapsed=0
+					replay_failures=0
+				else
+					replay_failures=$((replay_failures + 1))
+					logger -t xpon "EPON OAM pid=$pid 身份重放后仍发生漂移，继续重试，详见 /tmp/xpon-auth-native.log"
+				fi
 			else
 				replay_failures=$((replay_failures + 1))
 				if [ "$replay_failures" -eq 1 ] || [ $((replay_failures % 12)) -eq 0 ]; then
@@ -199,7 +288,7 @@ watch_identity() {
 		# netifd/vendor control paths can overwrite shared OAM fields without
 		# replacing the process. Read infrequently and repair only changed fields.
 		check_elapsed=$((check_elapsed + interval))
-		[ "$check_elapsed" -ge 30 ] || continue
+		[ "$check_elapsed" -ge 5 ] || continue
 		check_elapsed=0
 		repair_runtime_drift
 	done
