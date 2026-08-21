@@ -15,7 +15,7 @@ end
 .xpon-danger-text{color:#c00000;font-weight:bold;}
 </style>
 
-<h2 name="content">PON设置 — 认证 Auth</h2>
+<h2 name="content">PON设置 — 认证</h2>
 <br />
 
 <% if saved then %>
@@ -106,7 +106,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title xpon-required" for="epon_pon_mac">EPON 注册 MAC（MPCP/LLID）</label>
+			<label class="cbi-value-title xpon-required" for="epon_pon_mac">EPON MAC（必填）</label>
 			<div class="cbi-value-field">
 				<div class="xpon-input-line">
 					<input type="text" id="epon_pon_mac" name="epon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.epon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
@@ -136,7 +136,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title xpon-required" for="epon_ctc_oui">CTC OUI（可选）</label>
+			<label class="cbi-value-title" for="epon_ctc_oui">CTC OUI（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_ctc_oui" name="epon_ctc_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_ctc_oui%>" placeholder="111111" pattern="[0-9A-Fa-f]{6}" />
 				<div class="cbi-value-description">CTC OAM 扩展组织标识，与 ONU 的 EPON OUI 独立；中兴 OLT 抓包验证值为 <code>111111</code>。留空也按 <code>111111</code> 下发。当前 OAM 生效：<code><%=esc(rt.epon_ctc_oui ~= "" and rt.epon_ctc_oui or "（空）")%></code></div>
@@ -152,7 +152,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_serial">EPON 序列号（CTC ONUSN）</label>
+			<label class="cbi-value-title" for="epon_serial">CTC ONUSN（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_serial" name="epon_serial" class="cbi-input-text" maxlength="17" value="<%=v.epon_serial%>" placeholder="如 28:01:1C:B5:44:0B" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
 				<button type="button" class="cbi-button cbi-button-neutral" onclick="xponDeriveEponSerial()" style="display:block;margin-top:6px;white-space:normal;">按 PON MAC +0x08 生成候选</button>
@@ -161,12 +161,12 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-loid">
-			<label class="cbi-value-title xpon-required" for="loid">逻辑LOID</label>
+			<label class="cbi-value-title xpon-required" for="loid">逻辑 LOID（必填）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 LOID_EXAMPLE" />
 				<div class="cbi-value-description">≤24 字节，运营商提供。
 					<span class="xpon-gpon-auth">GPON/XGPON/XGSPON：OLT 经 OMCI 校验。</span>
-					<span class="xpon-epon-auth">EPON/XEPON：经 OAM 扩展透传（loid0），部分运营商不校验，保留占位值即可。</span>
+					<span class="xpon-epon-auth">EPON/XEPON：经 OAM 扩展透传（loid0），部分运营商不校验，可填写 123456 作为占位值。</span>
 					当前系统生效：<code><%=esc(rt.loid ~= "" and rt.loid or "（空）")%></code></div>
 			</div>
 		</div>
@@ -227,7 +227,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title xpon-required" for="sn">序列号GPON SN</label>
+			<label class="cbi-value-title xpon-required" for="sn">GPON SN（必填）</label>
 			<div class="cbi-value-field">
 				<div class="xpon-input-line">
 					<input type="text" id="sn" name="sn" class="cbi-input-text" maxlength="12" value="<%=v.sn%>" placeholder="如 TEST1234ABCD" pattern="[A-Za-z0-9]{4}[0-9A-Fa-f]{8}" />
@@ -240,7 +240,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title" for="equipment_id">设备型号（Equipment可选）</label>
+			<label class="cbi-value-title" for="equipment_id">设备型号（可选）</label>
 			<div class="cbi-value-field">
 				<div class="xpon-input-line">
 					<input type="text" id="equipment_id" name="equipment_id" class="cbi-input-text" maxlength="24" value="<%=v.equipment_id%>" placeholder="留空 = 不下发" pattern="[\x20-\x7E]{0,24}" />
@@ -252,7 +252,7 @@ for _, t in ipairs(v.pon_techs or {}) do
 		</div>
 
 		<div class="cbi-value xpon-gpon-auth">
-			<label class="cbi-value-title" for="gpon_pon_mac">业务GPON MAC（可选）</label>
+			<label class="cbi-value-title" for="gpon_pon_mac">GPON MAC（可选）</label>
 			<div class="cbi-value-field">
 				<div class="xpon-input-line">
 					<input type="text" id="gpon_pon_mac" name="gpon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.gpon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />

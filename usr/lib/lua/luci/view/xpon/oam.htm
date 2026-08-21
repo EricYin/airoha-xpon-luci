@@ -59,7 +59,7 @@ html.dark details.oam-sec[open] summary{border-bottom-color:#3c3c3c;}
 </style>
 <% local function esc(s) return (tostring(s or ''):gsub('&','&amp;'):gsub('<','&lt;'):gsub('>','&gt;')) end %>
 
-<h2 name="content">EPON OAM</h2>
+<h2 name="content">EPON OAM 信息</h2>
 
 <% if not is_epon then %>
 <div class="alert-message warning">当前驱动模式不是 EPON 家族；本页仍可打开，但 OAM/LLID 输出可能为空。GPON/XGPON/XGSPON 请查看 OMCI 页面。</div>

@@ -32,7 +32,7 @@ html.dark .omci-pill-err{background:#ef5350;color:#111;}
 </style>
 <% local function esc(s) return (tostring(s or ''):gsub('&','&amp;'):gsub('<','&lt;'):gsub('>','&gt;')) end
 local an=analysis or {}; local rows=an.rows or {}; local concl=an.conclusion %>
-<h2 name="content">OMCI 下发</h2>
+<h2 name="content">GPON OMCI 信息</h2>
 
 <% if concl then %><div class="alert-message"><b><%=esc(concl.title)%></b>：<%=esc(concl.text)%></div><% end %>
 

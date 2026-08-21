@@ -520,7 +520,6 @@ local function reboot_return_targets()
 		add(scheme .. "://" .. host .. "/")
 	end
 	add("https://192.168.0.1/")
-	add("http://192.168.0.1/")
 	return targets
 end
 
