@@ -126,7 +126,7 @@ verify_oam() {
 	attr=$1
 	want=$2
 	secret=$3
-	[ -n "$want" ] || return 0
+	[ -n "$want" ] || [ "$secret" = 1 ] || return 0
 	have=$(oam_read "$attr")
 	cmp_have=$have
 	cmp_want=$want
@@ -233,7 +233,7 @@ if [ "$mode" = "EPON" ]; then
 	[ -n "$epon_onu_vendor" ] && run "$OAM" set onuVenID "$epon_onu_vendor"
 	[ -n "$epon_serial" ] && run /usr/bin/xpon-epon-sn.sh set "$epon_serial"
 	verify_oam loid0 "$loid" 0
-	verify_oam loidPasswd0 "$loidpw" 1
+	[ -n "$loid" ] && verify_oam loidPasswd0 "$loidpw" 1
 	verify_oam localOui "$epon_oui" 0
 	verify_oam ctcOui "$epon_ctc_oui" 0
 	verify_oam localVenInfo "$epon_ven" 0

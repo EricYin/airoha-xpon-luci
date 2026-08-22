@@ -1989,10 +1989,10 @@ local function save_auth(fv)
 		u:delete("network", "xpon_auth", "loid")
 		u:delete("network", "xpon_auth", "loid_password")
 	end
-	-- libuci 会把空字符串保存为“选项不存在”；启动恢复会在 network 镜像中
-	-- 编码为 shell 空参数，使 netifd 首次下发就是 LOID-only。
 	if pmode == "EPON" or auth_type == "LOID" then
-		u:set("network", "xpon_auth", "loid_password", loid_password)
+		-- 空 LOID 密码必须保留为明确配置；字面 "" 经原厂 netifd/shell
+		-- 展开为空参数，避免缺省路径继续注入 Econet。
+		u:set("network", "xpon_auth", "loid_password", loid_password ~= "" and loid_password or '""')
 	end
 	if sn ~= "" then
 		u:set("network", "xpon_auth", "def_sn", sn)

@@ -141,7 +141,8 @@ uci -q get network.xpon_auth.xpon_sn_auth_type >/dev/null || uci set network.xpo
 uci -q get network.xpon_auth.sn >/dev/null || uci set network.xpon_auth.sn="$factory_sn"
 uci -q get network.xpon_auth.def_sn >/dev/null || uci set network.xpon_auth.def_sn="$factory_sn"
 uci -q get network.xpon_auth.loid >/dev/null || uci set network.xpon_auth.loid=''
-uci -q get network.xpon_auth.loid_password >/dev/null || uci set network.xpon_auth.loid_password=''
+network_loid_password=$(uci -q get network.xpon_auth.loid_password)
+[ -n "$network_loid_password" ] || uci set network.xpon_auth.loid_password='""'
 uci commit network
 
 # 3) xpon.device 认证持久源（restore-auth 开机回写 network.xpon_auth 的依据）。

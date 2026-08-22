@@ -41,6 +41,43 @@ gpon_sn() {
 	printf '%s' "$v" | tr -d '[:space:]' | tr 'a-z' 'A-Z'
 }
 
+gpon_credential_get() {
+	local field has_private v
+	field=$1
+	has_private=$(uci -q get xpon.device.pon_mode)
+	v=$(uci -q get "xpon.device.gpon_${field}")
+	if [ "$field" = loid_password ] && [ "$v" = '""' ]; then
+		printf ''
+		return 0
+	fi
+	if [ -n "$v" ]; then
+		printf '%s' "$v"
+		return 0
+	fi
+	if [ -n "$has_private" ]; then
+		printf ''
+		return 0
+	fi
+	v=$(uci -q get "xpon.device.${field}")
+	[ -n "$v" ] || v=$(uci -q get "network.xpon_auth.${field}")
+	[ "$field" = loid_password ] && [ "$v" = '""' ] && v=
+	printf '%s' "$v"
+}
+
+gpon_uses_loid() {
+	local method auth
+	method=$(uci -q get network.xpon_auth.auth_method_g)
+	[ -n "$method" ] || method=$(uci -q get xpon.device.auth_method_g)
+	auth=$(uci -q get network.xpon_auth.auth_type_g)
+	[ -n "$auth" ] || auth=$(uci -q get xpon.device.auth_type_g)
+	method=$(printf '%s' "$method" | tr 'A-Z' 'a-z')
+	auth=$(printf '%s' "$auth" | tr 'A-Z' 'a-z')
+	[ "$method" = "password" ] && return 1
+	[ "$method" = "loid" ] && return 0
+	[ "$auth" = "loid" ] && return 0
+	return 1
+}
+
 valid_pon_sn() {
 	[ "${#1}" -eq 12 ] || return 1
 	vendor=${1%????????}
@@ -56,21 +93,62 @@ omci_value() {
 }
 
 repair_runtime_drift() {
-	local sn vendor have_sn have_vendor
+	local sn vendor have_sn have_vendor want_loid want_loidpw have_loid have_loidpw
+	local need_sn need_loid repaired
+	need_sn=0
+	need_loid=0
 	sn=$(gpon_sn)
-	valid_pon_sn "$sn" || return 0
-	vendor=${sn%????????}
-	have_sn=$(omci_value sn | tr -d '[:space:]' | tr 'a-z' 'A-Z')
-	have_vendor=$(omci_value vendorId | tr -d '[:space:]' | tr 'a-z' 'A-Z')
-	if [ "$have_sn" = "$sn" ] && [ "$have_vendor" = "$vendor" ]; then
+	if valid_pon_sn "$sn"; then
+		vendor=${sn%????????}
+		have_sn=$(omci_value sn | tr -d '[:space:]' | tr 'a-z' 'A-Z')
+		have_vendor=$(omci_value vendorId | tr -d '[:space:]' | tr 'a-z' 'A-Z')
+		[ "$have_sn" = "$sn" ] && [ "$have_vendor" = "$vendor" ] || need_sn=1
+	fi
+	if gpon_uses_loid; then
+		want_loid=$(gpon_credential_get loid)
+		want_loidpw=$(gpon_credential_get loid_password)
+		[ "$want_loidpw" = '""' ] && want_loidpw=
+		if [ -n "$want_loid" ]; then
+			have_loid=$(omci_value loid)
+			have_loidpw=$(omci_value loidPasswd)
+			[ "$have_loid" = "$want_loid" ] && [ "$have_loidpw" = "$want_loidpw" ] || need_loid=1
+		fi
+	fi
+	if [ "$need_sn" -eq 0 ] && [ "$need_loid" -eq 0 ]; then
 		return 0
 	fi
-	if /usr/bin/xpon-auth-native.sh >/dev/null 2>&1; then
-		logger -t xpon "GPON OMCI 身份漂移已自动重放：sn=$sn vendorId=$vendor（此前 sn=${have_sn:-空} vendorId=${have_vendor:-空}）"
-		return 0
+	if [ "$need_sn" -eq 1 ]; then
+		"$OMCI" set vendorId "$vendor" >/dev/null 2>&1
+		"$OMCI" set sn "$sn" >/dev/null 2>&1
+		repaired="$repaired sn/vendorId"
 	fi
-	logger -t xpon "GPON OMCI 身份漂移重放失败，详见 /tmp/xpon-auth-native.log"
-	return 1
+	if [ "$need_loid" -eq 1 ]; then
+		"$OMCI" set loid "$want_loid" >/dev/null 2>&1
+		"$OMCI" set loidPasswd "$want_loidpw" >/dev/null 2>&1
+		repaired="$repaired loid/loidPasswd"
+	fi
+	if [ "$need_sn" -eq 1 ]; then
+		[ "$(omci_value sn | tr -d '[:space:]' | tr 'a-z' 'A-Z')" = "$sn" ] || {
+			logger -t xpon "GPON OMCI SN 漂移修复失败 want='$sn' have='$(omci_value sn)'"
+			return 1
+		}
+		[ "$(omci_value vendorId | tr -d '[:space:]' | tr 'a-z' 'A-Z')" = "$vendor" ] || {
+			logger -t xpon "GPON OMCI Vendor ID 漂移修复失败 want='$vendor' have='$(omci_value vendorId)'"
+			return 1
+		}
+	fi
+	if [ "$need_loid" -eq 1 ]; then
+		[ "$(omci_value loid)" = "$want_loid" ] || {
+			logger -t xpon "GPON OMCI LOID 漂移修复失败 want='$want_loid' have='$(omci_value loid)'"
+			return 1
+		}
+		[ "$(omci_value loidPasswd)" = "$want_loidpw" ] || {
+			logger -t xpon "GPON OMCI LOID 密码漂移修复失败 want='$want_loidpw' have='$(omci_value loidPasswd)'"
+			return 1
+		}
+	fi
+	logger -t xpon "GPON OMCI 身份漂移已自动修复：${repaired# }（此前 sn=${have_sn:-空} vendorId=${have_vendor:-空} loid=${have_loid:-空} loidPasswd=${have_loidpw:-空}）"
+	return 0
 }
 
 watch_identity() {
