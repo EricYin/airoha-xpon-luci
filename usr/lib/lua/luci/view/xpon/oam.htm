@@ -82,7 +82,7 @@ html.dark details.oam-sec[open] summary{border-bottom-color:#3c3c3c;}
 	<legend>EPON 注册交互视图</legend>
 	<div class="cbi-value-description">按 H3C EPON 白皮书中的注册链路组织：先 MPCP 注册获得 LLID，再进入标准 OAM 和扩展 OAM 协商。页面只展示本机 SDK/日志能读到的运行值。</div>
 	<table class="cbi-section-table oam-flow">
-		<thead><tr><th>步骤</th><th>方向</th><th>报文/阶段</th><th>交互目的</th><th>本机读到的值</th><th>证据来源</th></tr></thead>
+		<thead><tr><th>步骤</th><th>方向</th><th>报文/阶段</th><th>交互目的</th><th>读到的值</th><th>来源</th></tr></thead>
 		<tbody>
 <% for _,r in ipairs(interaction_rows or {}) do
 	local lv = (r.level == "ok" or r.level == "warn" or r.level == "err") and r.level or "info"

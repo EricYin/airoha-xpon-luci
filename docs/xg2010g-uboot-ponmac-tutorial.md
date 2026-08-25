@@ -24,9 +24,10 @@
 | 网卡 MAC（/sys/class/net/pon/address） | 开机由 DSD/uci 设置 | 显示用 |
 | **MPCP 注册 MAC** | **U-Boot env `ethaddr`** | **REGISTER_REQ 里发的就是它，OLT 按它放行** |
 
-刷机教程（TTL 刷机时的 `setenv bootargs ... ethaddr=00:AA:BB:01:23:40 ...`）在 env 里留下了占位值
-`00:AA:BB:01:23:40`。如果刷机后从未改过它，那么无论网页里填什么，OLT 收到的注册请求
-始终带着占位 MAC → 不在白名单 → 永远不给 LLID → OAM 起不来 → 注册失败。
+旧刷机流程可能曾用 `setenv bootargs ... ethaddr=00:AA:BB:01:23:40 ...` 写入占位值
+`00:AA:BB:01:23:40`；当前 XG2010G U-Boot 启动时优先使用 DSD `wan_mac`，并清除 legacy
+`bootargs`。因此必须让 DSD `wan_mac`（以及随后同步的 `ethaddr`）成为目标 MAC；否则
+无论网页里填什么，OLT 收到的注册请求仍带着占位 MAC → 不在白名单 → 永远不给 LLID。
 
 **结论：认证参数没配错，固件也没坏——只是注册身份（env ethaddr）被喂了占位值。**
 
@@ -43,7 +44,7 @@ grep -m3 getOnuMacAddr /tmp/oam_debug
 
 # 3. 当前 env
 fw_printenv | grep -E '^ethaddr='
-fw_printenv -n bootargs | tr ' ' '\n' | grep ethaddr
+# XG2010G 的 bootargs 来自 FIT DTB，env 中通常未定义；不要创建它
 
 # 4. LLID 是否分配（有值 = 已注册；0xFFFF/无 = 未注册）
 /userfs/bin/ponmgr epon get llid_info
@@ -69,27 +70,24 @@ fw_printenv > /etc/env.bak
 fw_setenv ethaddr AA:BB:CC:DD:EE:FF
 ```
 
-### 3. 同步 bootargs 里的 ethaddr=（关键，漏掉不生效）
+这一步只修改 U-Boot 环境变量。XG2010G 启动时若能读到 DSD `wan_mac`，会用 DSD
+覆盖 `ethaddr`；因此要让用户输入的 MAC 跨重启生效，还必须同步 DSD。
 
-`bootargs` 字符串里也带了一份 `ethaddr=`，必须一起改：
+### 3. 持久化到 DSD
 
-```sh
-OLD=$(fw_printenv -n bootargs)
-NEW=$(printf '%s' "$OLD" | sed 's/ethaddr=[0-9A-Fa-f:]*/ethaddr=AA:BB:CC:DD:EE:FF/')
-[ "$NEW" != "$OLD" ] && fw_setenv bootargs "$NEW"
-```
-
-> 注意：`sed` 只替换 `ethaddr=` 这一个 token，其余启动参数原样保留。
-> 改之前先看一遍 `fw_printenv bootargs`，确保 `onu_type` 等参数没被误伤。
-
+在 LuCI 的 EPON MAC 输入框旁勾选“永久写入设备分区”，再保存认证配置。系统会先
+备份 DSD 分区，写入并回读 `wan_mac`，随后同步 `ethaddr`。不应创建或修改 `bootargs`：
+当前 XG2010G U-Boot 的完整内核命令行来自 FIT DTB，legacy `bootargs` 会在启动时被清除。
 ### 4. 回读验证（必须做）
 
 ```sh
 fw_printenv | grep -E '^ethaddr='
-fw_printenv -n bootargs | tr ' ' '\n' | grep ethaddr
+/usr/sbin/gtk_dsd get wan_mac
 ```
 
-两个都显示新 MAC 才算写成功。
+确认 `ethaddr` 和 DSD `wan_mac` 都是目标 MAC。重启后以 FE MAC、OAM `src_mac` 和
+`/proc/cmdline` 为准确认实际生效值。
+如果重启后仍显示占位 MAC，检查 DSD 回读结果和 U-Boot 启动日志。
 
 ### 5. 重启并验证
 
@@ -111,8 +109,8 @@ sync && reboot
 
 - **只改 env（配置数据），不碰固件**：内核、PON 驱动、epon_oam、rootfs 均不受影响。
 - 清空 overlay（`rm -rf /overlay` 等恢复出厂操作）**不会清掉 env**，但刷机（`flash erase`）会。
-- 如果手滑把 `bootargs` 写坏导致无法启动：接 TTL 进 U-Boot 提示符，
-  用 `setenv bootargs <原值>`（对照之前保存的 `/etc/env.bak`）+ `saveenv` + `reset` 恢复。
+- 本机不写入 `bootargs`；若其他维护操作留下 legacy `bootargs` 导致无法启动，
+  接 TTL 进 U-Boot 提示符，按 `/etc/env.bak` 恢复或清除该变量后再 `saveenv` + `reset`。
 - 如果只是想换回占位 MAC：重复第四步，把目标 MAC 换成原值即可。
 
 ## 六、常见问题

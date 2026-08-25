@@ -148,7 +148,7 @@ local function decode_onu(hex)
 end
 
 function index()
-	entry({"admin", "xpon"}, firstchild(), "PON", 39).dependent = false
+	entry({"admin", "xpon"}, firstchild(), "光猫", 39).dependent = false
 	entry({"admin", "xpon", "auth"}, call("action_auth"), "认证", 1)
 	entry({"admin", "xpon", "services"}, call("action_services"), "业务", 2)
 	entry({"admin", "xpon", "voice"}, call("action_voice"), "语音", 3)
@@ -505,8 +505,8 @@ local function reboot_return_targets()
 		end
 	end
 
-	local https = http.getenv("HTTPS") == "on" or http.getenv("SERVER_PORT") == "443"
-	local scheme = https and "https" or "http"
+	-- The management endpoint is HTTPS-only; never offer an HTTP return URL.
+	local scheme = "https"
 	local host = http.getenv("HTTP_HOST") or http.getenv("SERVER_NAME") or ""
 	host = host:gsub("[/%s].*$", "")
 
@@ -514,7 +514,6 @@ local function reboot_return_targets()
 	if lan_ip:match("^%d+%.%d+%.%d+%.%d+$") then
 		add(scheme .. "://" .. lan_ip .. "/")
 		add("https://" .. lan_ip .. "/")
-		add("http://" .. lan_ip .. "/")
 	end
 	if host ~= "" then
 		add(scheme .. "://" .. host .. "/")
@@ -529,7 +528,7 @@ local function write_reboot_page(result)
 	local links = {}
 	for i, url in ipairs(targets) do
 		links[#links + 1] = "<li><a href='" .. html_escape(url) .. "'>" ..
-			html_escape(url) .. "</a>" .. (i == 1 and "（推荐）" or "") .. "</li>"
+			html_escape(url) .. "</a>" .. (i == 1 and "（默认）" or "") .. "</li>"
 	end
 	http.write("<html><head><meta charset='utf-8'>" ..
 		"<meta name='viewport' content='width=device-width,initial-scale=1'>" ..
@@ -686,17 +685,9 @@ function auth_values()
 	if rt.epon_mac == "" then
 		rt.epon_mac = runtime_mac(sh("fw_printenv -n ethaddr 2>/dev/null"))
 	end
-	-- 打开页面时，PON SN 是唯一的 GPON Vendor ID 输入源。OMCI 运行态中的
-	-- AXON/XG2010G 等出厂值只作为“当前系统生效”展示，不能回填到表单后再保存。
+	-- 打开页面时，PON SN 是唯一的 GPON Vendor ID 输入源；OMCI 身份字段优先
+	-- 回填当前运行态，运行态暂不可读时才使用持久值。
 	-- 密码类不回显（留空 = 保持原值）。
-	local function sys_fb(field, run, dflt)
-		local s
-		if private_saved then
-			s = uget("xpon", "device", field)
-			if s ~= nil and s ~= "" then return s end
-		end
-		return (run ~= nil and run ~= "") and run or dflt
-	end
 	local function identity_fb(field, run, dflt)
 		local s = uget("network", "xpon_auth", field)
 		if s ~= nil and s ~= "" then return s end
@@ -704,16 +695,22 @@ function auth_values()
 		if s ~= nil and s ~= "" then return s end
 		return (run ~= nil and run ~= "") and run or dflt
 	end
-	-- 输入框表示“下次启动仍要使用的值”，运行态在下方独立展示。
+	local function current_identity_fb(field, run, dflt)
+		-- Show what the running OMCI engine currently uses; persisted values are
+		-- only a fallback when the driver has not exposed a runtime value yet.
+		if run ~= nil and run ~= "" then return run end
+		return identity_fb(field, run, dflt)
+	end
+	-- 输入框默认显示当前系统生效值，用户可直接保存或修改。
 	if #v.sn == 12 then
 		v.vendor_id = v.sn:sub(1, 4):upper()
 	elseif #v.vendor_id == 4 then
 		v.vendor_id = v.vendor_id:upper()
 	end
-	v.equipment_id  = identity_fb("equipment_id", "", "")
-	v.onu_version   = identity_fb("onu_version", "", "")
-	v.omcc_version  = identity_fb("omcc_version", rt.omcc_version, "")
-	v.omci_spec_ver = sys_fb("omci_spec_ver", rt.spec_ver, "")
+	v.equipment_id  = current_identity_fb("equipment_id", rt.equipment_id, "")
+	v.onu_version   = current_identity_fb("onu_version", rt.onu_version, "")
+	v.omcc_version  = current_identity_fb("omcc_version", rt.omcc_version, "")
+	v.omci_spec_ver = current_identity_fb("omci_spec_ver", rt.spec_ver, "")
 	if v.epon_ctc_oui == "" then
 		v.epon_ctc_oui = "111111"
 	end
@@ -1945,7 +1942,8 @@ local function save_auth(fv)
 	if sn == "NONUMBER" then sn = "" end
 	local vendor_id = (#sn == 12) and sn:sub(1, 4) or ""
 	-- 空值表示恢复 DSD wan_mac。GPON 仅应用到 pon 业务接口；
-	-- EPON 还会把最终值同步为 U-Boot ethaddr/bootargs 中的 MPCP ONU MAC。
+	-- EPON 将最终值写入 U-Boot ethaddr。当前 XG2010G U-Boot 使用 FIT DTB
+	-- 命令行并清除 legacy bootargs，因此这里不创建或修改 bootargs。
 	local epon_pon_mac = (fv("epon_pon_mac") or fv("pon_mac") or ""):gsub("%s+", ""):upper()
 	local gpon_pon_mac = (fv("gpon_pon_mac") or fv("pon_mac") or ""):gsub("%s+", ""):upper()
 	local active_pon_mac = pmode == "EPON" and epon_pon_mac or gpon_pon_mac
@@ -2638,7 +2636,8 @@ function action_save()
 		local epon_pon_mac = (formvalue("epon_pon_mac") or formvalue("pon_mac") or ""):gsub("%s+", ""):upper()
 		local gpon_pon_mac = (formvalue("gpon_pon_mac") or formvalue("pon_mac") or ""):gsub("%s+", ""):upper()
 		local active_pon_mac = pmode == "EPON" and epon_pon_mac or gpon_pon_mac
-		local effective_pon_mac = active_pon_mac ~= "" and active_pon_mac or dsd_wan_mac()
+		local dsd_mac = dsd_wan_mac()
+		local effective_pon_mac = active_pon_mac ~= "" and active_pon_mac or dsd_mac
 		local onu_low = formvalue("onu_low") or ""
 		-- EPON OAM 身份：localOui/ctcOui 为 3 字节 hex，localVenInfo 为
 		-- 4 字节 hex，onuVenID 为 4 字节可打印 ASCII。
@@ -2677,6 +2676,11 @@ function action_save()
 			err = "loid"
 		elseif pmode == "EPON" and not ponmac_ok(effective_pon_mac) then
 			err = "epon_pon_mac"
+		elseif pmode == "EPON" and dsd_mac ~= "" and effective_pon_mac ~= dsd_mac
+			and formvalue("dsd_wan_mac_sync") ~= "1" then
+			-- U-Boot gives a valid DSD wan_mac priority over env ethaddr.
+			-- Do not report success for a value that will be overwritten on reboot.
+			err = "dsd_wan_mac_sync_required"
 		elseif pmode ~= "EPON" and atg == "loid" and #loid == 0 then
 			err = "loid"
 		elseif pmode ~= "EPON" and (atg == "sn" or atg == "regid") then
@@ -2733,13 +2737,13 @@ function action_save()
 			if not err then
 				local onu_val = onu_type_hex(ptech, onu_low)
 				-- ONU 形态/PON 技术只保存在 U-Boot env；这是用户明确保存时
-				-- 唯一允许写 onu_type/bootargs 的入口，启动重放只读 env。
+				-- 唯一允许写 onu_type 的入口，启动重放只读 env。
 				local mode_rc = sys.call("/usr/bin/xpon-apply.sh ponmode " .. onu_val)
 				if mode_rc ~= 0 then
 					err = "ponmode_write_" .. tostring(mode_rc)
 				else
-					-- GPON 只同步 pon 业务接口地址；EPON 还必须同步并回读
-					-- ethaddr/bootargs，供驱动在下次启动时设置 MPCP ONU MAC。
+					-- GPON 只同步 pon 业务接口地址；EPON 只写入 ethaddr，
+					-- 供驱动下次启动时设置 MPCP ONU MAC。
 					local mac_rc = sys.call("/usr/bin/xpon-apply.sh mac >/tmp/xpon-ponmac-apply.log 2>&1")
 					if mac_rc ~= 0 then
 						err = "ponmac_write_" .. tostring(mac_rc)

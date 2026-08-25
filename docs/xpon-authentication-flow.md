@@ -15,8 +15,12 @@ EPON authentication is not OMCI SN authentication. It has two layers:
 1. MPCP registration uses the EPON PON MAC. The project reads
    `xpon.device.epon_pon_mac`, then legacy `pon_mac`, and finally DSD
    `wan_mac`. For EPON the resulting MAC is applied to the PON interface and
-   synchronized to U-Boot `ethaddr` and the `ethaddr=` token in `bootargs`.
-   The driver uses that value as the MPCP/LLID registration MAC.
+   written to DSD `wan_mac` when the user explicitly enables DSD persistence, then
+   synchronized to U-Boot `ethaddr`. XG2010G U-Boot prioritizes DSD MACs at boot,
+   so env-only changes are overwritten when a valid DSD value exists. The command
+   line comes from the FIT DTB and legacy `bootargs` is cleared; this project does
+   not create or modify it. The driver uses the resulting startup value as the
+   MPCP/LLID registration MAC.
 2. OAM identity uses persistent `xpon.device.epon_loid`,
    `xpon.device.epon_loid_password`, `epon_oui`, `epon_ctc_oui`,
    `epon_ven_info`, `epon_onu_vendor_id`, and `epon_serial`. At boot these are

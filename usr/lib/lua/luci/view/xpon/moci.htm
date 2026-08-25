@@ -38,7 +38,7 @@ local an=analysis or {}; local rows=an.rows or {}; local concl=an.conclusion %>
 
 <fieldset class="cbi-section"><legend>OMCI 注册交互视图</legend>
 <div class="cbi-value-description">按 GPON OMCI 上线逻辑组织：PLOAM 建立 OMCC 后，OLT 通过 OMCI 主从消息读取 MIB、识别 VEIP/PPTP 模型，再下发 TCONT/GEM/VLAN 业务承载。页面只展示本机 SDK/ME/状态文件可读到的运行值。</div>
-<table class="cbi-section-table omci-flow"><thead><tr><th>步骤</th><th>方向</th><th>报文/阶段</th><th>交互目的</th><th>本机读到的值</th><th>证据来源</th></tr></thead><tbody>
+<table class="cbi-section-table omci-flow"><thead><tr><th>步骤</th><th>方向</th><th>报文/阶段</th><th>交互目的</th><th>读到的值</th><th>来源</th></tr></thead><tbody>
 <% for _,r in ipairs(interaction_rows or {}) do local lv=(r.level=="ok" or r.level=="warn" or r.level=="err") and r.level or "info" %>
 <tr><td class="omci-flow-stage"><%=esc(r.stage)%></td><td><span class="omci-pill omci-pill-<%=lv%>"><%=esc(r.direction)%></span></td><td><code><%=esc(r.message)%></code></td><td><%=esc(r.purpose)%></td><td class="omci-flow-values"><%=esc(r.values)%></td><td><%=esc(r.evidence)%></td></tr>
 <% end %>

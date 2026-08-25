@@ -566,7 +566,7 @@ apply_mac() {
 	# pon 是业务侧 Ethernet 接口；GPON/XGPON/XGSPON 的 PLOAM/OMCI
 	# 注册身份来自 SN/Registration ID，而不是 Ethernet MAC。
 	# EPON 的 MPCP ONU MAC 则由驱动启动时通过 get_ethaddr() 取得。
-	local mode pmac ba ba_raw newba old_eth read_eth read_ba read_ba_eth
+	local mode pmac old_eth read_eth
 	local backup_dir backup_stamp backup_path backup_tmp
 	mode=$(uci_get network.xpon_auth.pon_mode)
 	[ "$mode" = EPON ] || mode=$(uci_get xpon.device.pon_mode)
@@ -605,17 +605,8 @@ apply_mac() {
 		return 1
 	}
 
-	ba_raw=$(fw_printenv -n bootargs 2>/dev/null)
-	ba=$ba_raw
-	while [ "${ba#bootargs=}" != "$ba" ]; do ba=${ba#bootargs=}; done
-	[ -n "$ba" ] || { echo "读取 env bootargs 失败" >&2; return 1; }
-	case " $ba " in
-		*" ethaddr="*) newba=$(printf '%s' "$ba" | sed "s/ethaddr=[^[:space:]]*/ethaddr=$pmac/") ;;
-		*) newba="$ba ethaddr=$pmac" ;;
-	esac
 	old_eth=$(fw_printenv -n ethaddr 2>/dev/null | tr 'a-f' 'A-F')
-	read_ba_eth=$(printf '%s\n' "$ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' | tr 'a-f' 'A-F')
-	if [ "$old_eth" = "$pmac" ] && [ "$read_ba_eth" = "$pmac" ]; then
+	if [ "$old_eth" = "$pmac" ]; then
 		ifconfig pon hw ether "$pmac" 2>/dev/null || true
 		logger -t xpon "EPON MPCP 注册 MAC env 已一致：ethaddr=$pmac（无需写入）"
 		return 0
@@ -646,23 +637,11 @@ apply_mac() {
 		echo "写入 env ethaddr 失败；原环境已备份到 $backup_path" >&2
 		return 1
 	}
-	[ "$newba" = "$ba" ] || fw_setenv bootargs "$newba" || {
-		echo "写入 env bootargs ethaddr 失败；原环境已备份到 $backup_path" >&2
-		return 1
-	}
-
 	read_eth=$(fw_printenv -n ethaddr 2>/dev/null | tr 'a-f' 'A-F')
-	read_ba=$(fw_printenv -n bootargs 2>/dev/null)
-	read_ba_eth=$(printf '%s\n' "$read_ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' | tr 'a-f' 'A-F')
 	[ "$read_eth" = "$pmac" ] || {
 		echo "env ethaddr 回读失败：期望 $pmac，实际 ${read_eth:-空}" >&2
 		return 1
 	}
-	[ "$read_ba_eth" = "$pmac" ] || {
-		echo "env bootargs 回读失败：期望 ethaddr=$pmac，实际 ${read_ba_eth:-空}" >&2
-		return 1
-	}
-
 	ifconfig pon hw ether "$pmac" 2>/dev/null || true
 	logger -t xpon "EPON MPCP 注册 MAC env 写入并回读成功：ethaddr=$pmac backup=$backup_path"
 }
@@ -686,7 +665,7 @@ apply_leds() {
 }
 
 # 切换 HGU / SFU × GPON / XGPON / XGSPON 模式（写 U-Boot env，重启后生效）
-# PON 模式来自 onu_type bootarg 字节：
+# PON 模式来自 U-Boot env 的 onu_type 字节：
 #       bits[1:0]=ONU 类型 1=SFU 2=HGU；bits[7:4]=PON 模式 1=GPON 6=XGPON 7=XGSPON。
 #       出厂 71=SFU+XGSPON；本机当前 61=SFU+XGPON；联通 HGU 请用 62=HGU+XGPON。
 # 只改 env 不重启（由页面选择是否 reboot）。
@@ -702,29 +681,7 @@ apply_ponmode() {
 		return 1
 	}
 
-	# 某些固件把 bootargs 编译进启动镜像，仅在 env 中保存 onu_type；
-	# 这种设备的 fw_printenv -n bootargs 会报“未定义”，不能为了通过校验
-	# 人为创建一个可能覆盖整套内核启动参数的 bootargs。若 bootargs 已存在，
-	# 仍同步其中的 onu_type 并做完整回读校验。
-	local ba ba_raw newba read_onu read_ba read_ba_onu bootargs_present=0
-	ba_raw=$(fw_printenv -n bootargs 2>/dev/null)
-	ba=$ba_raw
-	while [ "${ba#bootargs=}" != "$ba" ]; do ba=${ba#bootargs=}; done
-	if [ -n "$ba" ]; then
-		bootargs_present=1
-		case " $ba " in
-			*" onu_type="[0-9a-fA-F]*) : ;;
-			*) echo "bootargs 中缺少 onu_type，拒绝写入不完整模式" >&2; return 1 ;;
-		esac
-		newba=$(printf '%s' "$ba" | sed "s/onu_type=[0-9a-fA-F]*/onu_type=$val/")
-		[ -n "$newba" ] || { echo "生成 bootargs 失败" >&2; return 1; }
-	fi
-
 	fw_setenv onu_type "$val" || { echo "写入 env onu_type 失败" >&2; return 1; }
-	[ "$bootargs_present" -eq 0 ] || [ "$newba" = "$ba" ] || fw_setenv bootargs "$newba" || {
-		echo "写入 env bootargs 失败" >&2
-		return 1
-	}
 
 	read_onu=$(fw_printenv -n onu_type 2>/dev/null | tr 'a-f' 'A-F')
 	val=$(printf '%s' "$val" | tr 'a-f' 'A-F')
@@ -732,17 +689,7 @@ apply_ponmode() {
 		echo "env onu_type 回读失败：期望 $val，实际 ${read_onu:-空}" >&2
 		return 1
 	}
-	if [ "$bootargs_present" -eq 1 ]; then
-		read_ba=$(fw_printenv -n bootargs 2>/dev/null)
-		read_ba_onu=$(printf '%s\n' "$read_ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' | tr 'a-f' 'A-F')
-		[ "$read_ba_onu" = "$val" ] || {
-			echo "env bootargs 回读失败：期望 onu_type=$val，实际 ${read_ba_onu:-空}" >&2
-			return 1
-		}
-	else
-		logger -t xpon "bootargs 未定义，模式仅通过 env onu_type=$val 保存并回读"
-	fi
-	logger -t xpon "模式 env 写入并回读成功：onu_type=$val"
+	logger -t xpon "模式 env 写入并回读成功：onu_type=$val（不修改 bootargs）"
 }
 
 apply_iptv() {
