@@ -671,6 +671,7 @@ apply_leds() {
 # 只改 env 不重启（由页面选择是否 reboot）。
 apply_ponmode() {
 	local val="$1"
+	local ba_raw ba newba read_ba read_ba_onu bootargs_present=0
 	[ -n "$val" ] || { echo "usage: xpon-apply.sh ponmode <2-digit-hex>" >&2; return 1; }
 	case "$val" in
 		[0-9a-fA-F][0-9a-fA-F]) : ;;
@@ -681,7 +682,27 @@ apply_ponmode() {
 		return 1
 	}
 
+	# Some XG2010G images boot from a FIT DTB and have no legacy bootargs.
+	# When bootargs is present (as on older/upgraded devices), it remains the
+	# effective command line and must be kept in sync with onu_type. Never create
+	# bootargs on images where it is absent.
+	ba_raw=$(fw_printenv -n bootargs 2>/dev/null)
+	ba=$ba_raw
+	while [ "${ba#bootargs=}" != "$ba" ]; do ba=${ba#bootargs=}; done
+	if [ -n "$ba" ]; then
+		bootargs_present=1
+		case " $ba " in
+			*" onu_type="[0-9a-fA-F]*) : ;;
+			*) echo "bootargs 中缺少 onu_type，拒绝写入不完整模式" >&2; return 1 ;;
+		esac
+		newba=$(printf '%s' "$ba" | sed "s/onu_type=[0-9a-fA-F]*/onu_type=$val/")
+		[ -n "$newba" ] || { echo "生成 bootargs 失败" >&2; return 1; }
+	fi
 	fw_setenv onu_type "$val" || { echo "写入 env onu_type 失败" >&2; return 1; }
+	[ "$bootargs_present" -eq 0 ] || [ "$newba" = "$ba" ] || fw_setenv bootargs "$newba" || {
+		echo "写入 env bootargs 失败" >&2
+		return 1
+	}
 
 	read_onu=$(fw_printenv -n onu_type 2>/dev/null | tr 'a-f' 'A-F')
 	val=$(printf '%s' "$val" | tr 'a-f' 'A-F')
@@ -689,7 +710,18 @@ apply_ponmode() {
 		echo "env onu_type 回读失败：期望 $val，实际 ${read_onu:-空}" >&2
 		return 1
 	}
-	logger -t xpon "模式 env 写入并回读成功：onu_type=$val（不修改 bootargs）"
+	if [ "$bootargs_present" -eq 1 ]; then
+		read_ba=$(fw_printenv -n bootargs 2>/dev/null)
+		read_ba_onu=$(printf '%s\n' "$read_ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' | tr 'a-f' 'A-F')
+		val=$(printf '%s' "$val" | tr 'a-f' 'A-F')
+		[ "$read_ba_onu" = "$val" ] || {
+			echo "env bootargs 回读失败：期望 onu_type=$val，实际 ${read_ba_onu:-空}" >&2
+			return 1
+		}
+		logger -t xpon "模式 env/bootargs 写入并回读成功：onu_type=$val"
+	else
+		logger -t xpon "bootargs 未定义，模式仅通过 env onu_type=$val 保存并回读"
+	fi
 }
 
 apply_iptv() {

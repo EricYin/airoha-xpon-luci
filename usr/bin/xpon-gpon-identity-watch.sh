@@ -94,9 +94,10 @@ omci_value() {
 
 repair_runtime_drift() {
 	local sn vendor have_sn have_vendor want_loid want_loidpw have_loid have_loidpw
-	local need_sn need_loid repaired
+	local want_onuver want_omcc have_onuver have_omcc need_sn need_loid need_identity repaired
 	need_sn=0
 	need_loid=0
+	need_identity=0
 	sn=$(gpon_sn)
 	if valid_pon_sn "$sn"; then
 		vendor=${sn%????????}
@@ -114,8 +115,24 @@ repair_runtime_drift() {
 			[ "$have_loid" = "$want_loid" ] && [ "$have_loidpw" = "$want_loidpw" ] || need_loid=1
 		fi
 	fi
-	if [ "$need_sn" -eq 0 ] && [ "$need_loid" -eq 0 ]; then
+	# These OMCI identity attributes live in shared memory and are lost when
+	# omci/ponmgr is restarted. Keep them aligned with the durable xpon.device
+	# values instead of only repairing SN/Vendor ID.
+	want_onuver=$(uci -q get xpon.device.onu_version)
+	want_omcc=$(uci -q get xpon.device.omcc_version)
+	if [ -n "$want_onuver" ] || [ -n "$want_omcc" ]; then
+		have_onuver=$(omci_value onuVersion)
+		have_omcc=$(omci_value omccVersion)
+		[ -z "$want_onuver" ] || [ "$have_onuver" = "$want_onuver" ] || need_identity=1
+		[ -z "$want_omcc" ] || [ "$(printf '%s' "$have_omcc" | tr 'a-f' 'A-F')" = "$(printf '%s' "$want_omcc" | tr 'a-f' 'A-F')" ] || need_identity=1
+	fi
+	if [ "$need_sn" -eq 0 ] && [ "$need_loid" -eq 0 ] && [ "$need_identity" -eq 0 ]; then
 		return 0
+	fi
+	if [ "$need_identity" -eq 1 ]; then
+		[ -z "$want_onuver" ] || "$OMCI" set onuVersion "$want_onuver" >/dev/null 2>&1
+		[ -z "$want_omcc" ] || "$OMCI" set omccVersion "$want_omcc" >/dev/null 2>&1
+		repaired="$repaired onuVersion/omccVersion"
 	fi
 	if [ "$need_sn" -eq 1 ]; then
 		"$OMCI" set vendorId "$vendor" >/dev/null 2>&1
@@ -126,6 +143,16 @@ repair_runtime_drift() {
 		"$OMCI" set loid "$want_loid" >/dev/null 2>&1
 		"$OMCI" set loidPasswd "$want_loidpw" >/dev/null 2>&1
 		repaired="$repaired loid/loidPasswd"
+	fi
+	if [ "$need_identity" -eq 1 ]; then
+		[ -z "$want_onuver" ] || [ "$(omci_value onuVersion)" = "$want_onuver" ] || {
+			logger -t xpon "GPON OMCI ONU Version 漂移修复失败 want='$want_onuver' have='$(omci_value onuVersion)'"
+			return 1
+		}
+		[ -z "$want_omcc" ] || [ "$(printf '%s' "$(omci_value omccVersion)" | tr 'a-f' 'A-F')" = "$(printf '%s' "$want_omcc" | tr 'a-f' 'A-F')" ] || {
+			logger -t xpon "GPON OMCI OMCC Version 漂移修复失败 want='$want_omcc' have='$(omci_value omccVersion)'"
+			return 1
+		}
 	fi
 	if [ "$need_sn" -eq 1 ]; then
 		[ "$(omci_value sn | tr -d '[:space:]' | tr 'a-z' 'A-Z')" = "$sn" ] || {
