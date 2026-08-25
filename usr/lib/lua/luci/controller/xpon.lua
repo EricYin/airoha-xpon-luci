@@ -610,9 +610,17 @@ function auth_values()
 	end
 	v.xpon_sn_auth_type = saved("xpon_sn_auth_type", "ascii")
 	-- PASSWORD（移动 SN+Password）落库为 SN + regid，读回时还原成独立选项。
-	-- 新配置用 auth_method_g 区分；旧配置没有 auth_method_g 时，继续按 SN+regid 兼容为 PASSWORD。
-	if v.auth_method_g:lower() == "password" or
-		(v.auth_method_g == "" and v.auth_type_g:lower() == "sn" and v.xpon_sn_auth_type:lower() == "regid") then
+	-- 新配置的 auth_method_g 是权威标记，优先于旧的 auth_type_g，避免
+	-- network.xpon_auth 中残留的 sn 把页面错误地预选为“SN 密码认证”。
+	local saved_method = v.auth_method_g:lower()
+	if saved_method == "password" then
+		v.auth_type_g = "password"
+	elseif saved_method == "loid" then
+		v.auth_type_g = "LOID"
+	elseif saved_method == "sn" then
+		v.auth_type_g = "sn"
+	elseif v.auth_type_g:lower() == "sn" and v.xpon_sn_auth_type:lower() == "regid" then
+		-- 旧配置没有 auth_method_g 时，按 SN+regid 兼容为 PASSWORD。
 		v.auth_type_g = "password"
 	end
 	v.sn_ascii_password = saved("sn_ascii_password", "")

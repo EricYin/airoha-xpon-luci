@@ -41,39 +41,6 @@ normalize_pppoe_names() {
 	[ "$changed" = 0 ] || uci commit network
 }
 
-normalize_default_lan_bridge() {
-	local brsec current item kept changed=0
-
-	# Upgrades preserve /overlay/etc/config/network, so devices flashed from an
-	# older image can still have eth0.5/7/8 in br-lan even when the new squashfs
-	# default only contains eth0.4. Remove the SerDes/HSGMII subports before
-	# S20network starts; they can be re-enabled explicitly for experiments with
-	# network.globals.hsgmii_autobridge=1.
-	[ "$(uci -q get network.globals.hsgmii_autobridge)" = "1" ] && return 0
-
-	for brsec in $(uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=device$/\1/p"); do
-		[ "$(uci -q get "network.$brsec.type")" = bridge ] || continue
-		[ "$(uci -q get "network.$brsec.name")" = br-lan ] && break
-		brsec=
-	done
-	[ -n "$brsec" ] || return 0
-
-	current=$(uci -q get "network.$brsec.ports")
-	kept=
-	for item in $current; do
-		case "$item" in
-			eth0.5|eth0.7|eth0.8) changed=1 ;;
-			*) kept="$kept $item" ;;
-		esac
-	done
-	[ "$changed" = 1 ] || return 0
-
-	uci -q delete "network.$brsec.ports"
-	for item in $kept; do uci add_list "network.$brsec.ports=$item"; done
-	uci commit network
-	logger -t xpon "已从旧 br-lan 持久配置移除 eth0.5/7/8，避免 eth0 启动循环"
-}
-
 normalize_managed_lan_ports() {
 	local meta port dev brsec current item kept changed=0
 	local managed=" "
@@ -152,7 +119,6 @@ start_epon_status_refresher() {
 
 start() {
 	disable_factory_uenv_autostart
-	normalize_default_lan_bridge
 	[ -f /etc/config/xpon ] || [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon
 	[ -f /etc/config/xpon ] || return 0
 	normalize_managed_lan_ports
@@ -167,8 +133,9 @@ start() {
 		logger -t xpon "S00 已恢复持久认证，跳过 S11 兼容覆盖"
 	fi
 	/usr/bin/xpon-apply.sh leds
-	# vendor_id/equipment_id/onu_version 等只存在共享内存，必须等 OMCI 启动后重放。
-	/usr/bin/xpon-replay.sh >/dev/null 2>&1 &
+	# 不在开机自动执行 xpon-replay：它会调用 xpon-apply auth -> OMCI
+	# set reconfig，厂商 5.4 路径会因此重新初始化共享 eth0 MAC。认证配置
+	# 仍由 S00/xpon-apply restore-auth 恢复；LuCI 保存时再显式应用运行态。
 	# GPON OMCI shared-memory identity may be reset after the first replay.
 	# Track omci restarts and repair SN/Vendor ID drift in-place.
 	/usr/bin/xpon-gpon-identity-watch.sh watch 5 >/dev/null 2>&1 &

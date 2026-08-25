@@ -27,7 +27,7 @@ html.dark .xpon-pwset{color:#66bb6a;}
 <% if err then %><div class="alert-message error">保存或操作失败：<%=err%></div><% end %>
 <form method="post" action="save" id="pon-service-form" onsubmit="return xponServicesCheck(this)"><input type="hidden" name="token" value="<%=token%>"/><input type="hidden" name="page" value="services"/><input type="hidden" id="vlan_count" name="vlan_count" value="<%=#services%>"/></form>
 <fieldset class="cbi-section"><legend>PON 业务对象</legend>
-<div class="svc-toolbar"><span>仅管理此处创建的业务配置；支持 tag（pon.&lt;VID&gt;）和 untag（pon）业务，密码留空表示保留原值。</span><button type="button" class="cbi-button cbi-button-add" onclick="xponVlanAdd()">添加业务</button></div>
+<div class="svc-toolbar"><span>仅管理此处创建的业务配置；密码留空表示保留原值。</span><button type="button" class="cbi-button cbi-button-add" onclick="xponVlanAdd()">添加业务</button></div>
 <div id="pon-vlan-body" class="svc-list">
 <% for i,s in ipairs(services) do local n=i-1 %>
 <div class="svc-card pon-vlan-row" data-index="<%=n%>">

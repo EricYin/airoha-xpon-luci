@@ -702,36 +702,46 @@ apply_ponmode() {
 		return 1
 	}
 
-	# 两个 env 值必须同时写入并通过回读；否则不能把模式保存报告为成功。
-	local ba ba_raw newba read_onu read_ba read_ba_onu
+	# 某些固件把 bootargs 编译进启动镜像，仅在 env 中保存 onu_type；
+	# 这种设备的 fw_printenv -n bootargs 会报“未定义”，不能为了通过校验
+	# 人为创建一个可能覆盖整套内核启动参数的 bootargs。若 bootargs 已存在，
+	# 仍同步其中的 onu_type 并做完整回读校验。
+	local ba ba_raw newba read_onu read_ba read_ba_onu bootargs_present=0
 	ba_raw=$(fw_printenv -n bootargs 2>/dev/null)
 	ba=$ba_raw
 	while [ "${ba#bootargs=}" != "$ba" ]; do ba=${ba#bootargs=}; done
-	case " $ba " in
-		*" onu_type="[0-9a-fA-F]*) : ;;
-		*) echo "bootargs 中缺少 onu_type，拒绝写入不完整模式" >&2; return 1 ;;
-	esac
-	newba=$(printf '%s' "$ba" | sed "s/onu_type=[0-9a-fA-F]*/onu_type=$val/")
-	[ -n "$newba" ] || { echo "生成 bootargs 失败" >&2; return 1; }
+	if [ -n "$ba" ]; then
+		bootargs_present=1
+		case " $ba " in
+			*" onu_type="[0-9a-fA-F]*) : ;;
+			*) echo "bootargs 中缺少 onu_type，拒绝写入不完整模式" >&2; return 1 ;;
+		esac
+		newba=$(printf '%s' "$ba" | sed "s/onu_type=[0-9a-fA-F]*/onu_type=$val/")
+		[ -n "$newba" ] || { echo "生成 bootargs 失败" >&2; return 1; }
+	fi
 
 	fw_setenv onu_type "$val" || { echo "写入 env onu_type 失败" >&2; return 1; }
-	[ "$newba" = "$ba" ] || fw_setenv bootargs "$newba" || {
+	[ "$bootargs_present" -eq 0 ] || [ "$newba" = "$ba" ] || fw_setenv bootargs "$newba" || {
 		echo "写入 env bootargs 失败" >&2
 		return 1
 	}
 
 	read_onu=$(fw_printenv -n onu_type 2>/dev/null | tr 'a-f' 'A-F')
-	read_ba=$(fw_printenv -n bootargs 2>/dev/null)
-	read_ba_onu=$(printf '%s\n' "$read_ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' | tr 'a-f' 'A-F')
 	val=$(printf '%s' "$val" | tr 'a-f' 'A-F')
 	[ "$read_onu" = "$val" ] || {
 		echo "env onu_type 回读失败：期望 $val，实际 ${read_onu:-空}" >&2
 		return 1
 	}
-	[ "$read_ba_onu" = "$val" ] || {
-		echo "env bootargs 回读失败：期望 onu_type=$val，实际 ${read_ba_onu:-空}" >&2
-		return 1
-	}
+	if [ "$bootargs_present" -eq 1 ]; then
+		read_ba=$(fw_printenv -n bootargs 2>/dev/null)
+		read_ba_onu=$(printf '%s\n' "$read_ba" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^onu_type=/) { print substr($i, 10); exit } }' | tr 'a-f' 'A-F')
+		[ "$read_ba_onu" = "$val" ] || {
+			echo "env bootargs 回读失败：期望 onu_type=$val，实际 ${read_ba_onu:-空}" >&2
+			return 1
+		}
+	else
+		logger -t xpon "bootargs 未定义，模式仅通过 env onu_type=$val 保存并回读"
+	fi
 	logger -t xpon "模式 env 写入并回读成功：onu_type=$val"
 }
 
