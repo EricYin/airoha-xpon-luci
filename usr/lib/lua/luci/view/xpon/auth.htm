@@ -61,7 +61,7 @@ end
 					HGU 支持 LAN 桥接、VEIP 与 IPTV 组播；SFU 用于纯桥接（不常用）。<br />
 					当前启动：<code><%=esc(v.onu_type_run ~= "" and v.onu_type_run or "未知")%><% if v.onu_type_run_hex and v.onu_type_run_hex ~= "" then %>（<%=esc(v.onu_type_run_hex)%>）<% end %></code>；下次启动：<code><%=esc(v.onu_type_env ~= "" and v.onu_type_env or "未知")%><% if v.onu_type_env_hex and v.onu_type_env_hex ~= "" then %>（<%=esc(v.onu_type_env_hex)%>）<% end %></code>。</p>
 					<% if v.onu_type_run ~= "" and v.onu_type_env ~= "" and v.onu_type_run ~= v.onu_type_env then %>
-					<div class="alert-message warning">当前内核 <code>/proc/cmdline</code> 与变量不一致；这是旧版 U-Boot，需更新支持参数同步的 U-Boot 后重启。</div>
+					<div class="alert-message warning">当前启动参数与下次启动配置不一致；重新保存模式会同步 U-Boot <code>onu_type</code> 与 <code>bootargs</code>，重启后生效。</div>
 					<% end %>
 				</div>
 			</div>

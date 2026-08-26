@@ -1488,13 +1488,16 @@ function ponmode_values()
 	local cmdline_val = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1")
 	cmdline_val = cmdline_val:match("=(.*)$") or cmdline_val
 	local env_num = env_val:match("=(.*)$") or env_val
-	if not env_num:match("^[0-9a-fA-F][0-9a-fA-F]$") then
-		env_num = (" " .. env_bootargs .. " "):match("%sonu_type=([0-9a-fA-F][0-9a-fA-F])%s") or ""
-	end
+	if not env_num:match("^[0-9a-fA-F][0-9a-fA-F]$") then env_num = "" end
+	local bootargs_num = (" " .. env_bootargs .. " "):match("%sonu_type=([0-9a-fA-F][0-9a-fA-F])%s") or ""
+	-- Factory U-Boot may boot from legacy bootargs. If it exists, it is the
+	-- effective next-boot source; xpon-apply.sh keeps fw_printenv onu_type
+	-- synchronized but cannot make it override an existing bootargs value.
+	local next_num = (bootargs_num ~= "") and bootargs_num or env_num
 	local sys_mode = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
 
 	-- 当前生效 hex（cmdline 优先），用于预选与缺省技术推导
-	local cur_hex = (cmdline_val ~= "") and cmdline_val or env_num
+	local cur_hex = (cmdline_val ~= "") and cmdline_val or next_num
 	local cur_bits = tonumber(cur_hex, 16)
 	local cur_tech = (cur_bits and pon_tech_by_bits[math.floor(cur_bits / 16)]) or nil
 	-- ONU 形态只看 onu_type 最后一位：1=SFU、2=HGU。
@@ -1651,9 +1654,11 @@ function ponmode_values()
 
 	return {
 		env           = env_val,
-		env_hex       = env_num,
+		env_hex       = next_num,
+		fwenv_hex     = env_num,
+		bootargs_hex  = bootargs_num,
 		cmdline       = cmdline_val,
-		pending       = (env_num ~= "" and cmdline_val ~= "" and env_num ~= cmdline_val),
+		pending       = (next_num ~= "" and cmdline_val ~= "" and next_num ~= cmdline_val),
 		sys_mode      = sys_mode,
 		sys_mode_name = pon_mode_names[tonumber(sys_mode)] or "未知",
 		pon_tech      = tech,
@@ -1665,7 +1670,7 @@ function ponmode_values()
 		run_tech      = cur_tech,
 		run_hex       = cur_hex,
 		run_dec       = decode_onu(cur_hex),
-		env_dec       = decode_onu(env_num),
+		env_dec       = decode_onu(next_num),
 		forms         = opts,
 		cur_low       = cur_low,
 		sys_modes     = sys_modes,
@@ -2714,7 +2719,8 @@ function action_save()
 		if not err then
 			-- 必须在写入下次启动模式之前记录当前引擎。跨 GPON/EPON 切换时，
 			-- 当前进程仍是旧引擎，不能把新配置下发给它；开机恢复会按新模式下发。
-			local run_tech = ponmode_values().run_tech
+			local pmv = ponmode_values()
+			local run_tech = pmv.run_tech
 			local same_engine = pon_tech_bits[run_tech] ~= nil and
 				pon_engine_for(run_tech) == pmode
 			local saved_ok, save_err = save_auth(formvalue)
@@ -2736,9 +2742,14 @@ function action_save()
 			end
 			if not err then
 				local onu_val = onu_type_hex(ptech, onu_low)
-				-- ONU 形态/PON 技术只保存在 U-Boot env；这是用户明确保存时
-				-- 唯一允许写 onu_type 的入口，启动重放只读 env。
-				local mode_rc = sys.call("/usr/bin/xpon-apply.sh ponmode " .. onu_val)
+				local next_onu = tostring(pmv.env_hex or ""):lower()
+				local mode_rc = 0
+				-- ONU 形态/PON 技术最终由 U-Boot 启动参数决定。只有目标值
+				-- 与当前“下次启动”值不一致时才写 env/bootargs，避免单纯
+				-- 保存认证字段被无关的 U-Boot env 写入错误阻断。
+				if next_onu ~= onu_val:lower() then
+					mode_rc = sys.call("/usr/bin/xpon-apply.sh ponmode " .. onu_val)
+				end
 				if mode_rc ~= 0 then
 					err = "ponmode_write_" .. tostring(mode_rc)
 				else

@@ -1,6 +1,15 @@
 #!/bin/sh
 # xpon-luci 首次安装/升级兜底（uci-defaults 只跑一次，随后自删）
 
+# 0) U-Boot envtools need this config to sync onu_type/bootargs.
+# Recover it if an overlay reset or manual copy dropped the file.
+if [ ! -s /etc/fw_env.config ] && grep -q '"uenv"' /proc/mtd 2>/dev/null; then
+	cat > /etc/fw_env.config <<'EOF'
+# Factory U-Boot environment. Recovery-only variables use a separate config if present.
+/dev/mtd1 0x0 0x4000 0x40000 0x1
+EOF
+	chmod 644 /etc/fw_env.config
+fi
 # 0) /etc/config/pon 缺失时创建；升级包不携带该文件，避免覆盖用户的组播 VLAN。
 P=/etc/config/pon
 if [ ! -f "$P" ]; then
