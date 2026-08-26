@@ -2847,7 +2847,9 @@ function action_save()
 			sip_action .. " ) " ..
 			">/tmp/xpon-voice-apply.log 2>&1 </dev/null &")
 	elseif page == "services" then
-		sys.call("( /etc/init.d/network reload; /etc/init.d/firewall reload; /usr/bin/xpon-bind-lan.sh all; /usr/bin/pon-multicast apply-all ) >/tmp/pon-services.log 2>&1 </dev/null &")
+		-- xpon-bind-lan.sh 先提交桥接/路由归属，再统一触发 netifd reload；
+		-- 避免先 reload 读取旧配置而与脚本 add/remove 形成竞态。
+		sys.call("( /usr/bin/xpon-bind-lan.sh all; /etc/init.d/firewall reload; /usr/bin/pon-multicast apply-all ) >/tmp/pon-services.log 2>&1 </dev/null &")
 	end
 
 	http.redirect(xpon_url(page, "saved=1"))
