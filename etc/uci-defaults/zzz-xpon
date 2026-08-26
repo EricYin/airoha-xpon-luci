@@ -148,8 +148,13 @@ uci commit network
 # 3) xpon.device 认证持久源（restore-auth 开机回写 network.xpon_auth 的依据）。
 #    旧包升级时补齐缺省键；用户经 LuCI 认证页保存后这些值会被覆盖为实际选择。
 uci -q get xpon.device >/dev/null || uci set xpon.device='auth'
+uci -q get xpon.device.pon_mode >/dev/null || uci set xpon.device.pon_mode="$(uci -q get network.xpon_auth.pon_mode)"
 uci -q get xpon.device.pon_tech >/dev/null || uci set xpon.device.pon_tech="$(uci -q get network.xpon_auth.pon_tech)"
-uci -q get xpon.device.epon_pon_mac >/dev/null || uci set xpon.device.epon_pon_mac=''
+legacy_epon_mac=$(uci -q get xpon.device.epon_pon_mac)
+[ -n "$legacy_epon_mac" ] || legacy_epon_mac=$(uci -q get network.xpon_auth.epon_pon_mac)
+[ -n "$legacy_epon_mac" ] || legacy_epon_mac=$(uci -q get xpon.device.pon_mac)
+[ -n "$legacy_epon_mac" ] || legacy_epon_mac=$factory_mac
+uci -q get xpon.device.epon_pon_mac >/dev/null || uci set xpon.device.epon_pon_mac="$legacy_epon_mac"
 uci -q get xpon.device.gpon_pon_mac >/dev/null || uci set xpon.device.gpon_pon_mac=''
 uci -q get xpon.device.auth_type_g >/dev/null || uci set xpon.device.auth_type_g='LOID'
 uci -q get xpon.device.auth_method_g >/dev/null || uci set xpon.device.auth_method_g='loid'
@@ -194,7 +199,12 @@ uci -q delete xpon.device.sn
 uci -q delete xpon.device.def_sn
 uci -q get xpon.device.xpon_sn_auth_type >/dev/null || uci set xpon.device.xpon_sn_auth_type='ascii'
 uci -q get xpon.device.sn_regid_password >/dev/null || uci set xpon.device.sn_regid_password=''
-uci -q get xpon.device.epon_oui >/dev/null || uci set xpon.device.epon_oui=''
+legacy_epon_oui=$(uci -q get xpon.device.epon_oui)
+[ -n "$legacy_epon_oui" ] || legacy_epon_oui=$(uci -q get network.xpon_auth.epon_oui)
+if [ -z "$legacy_epon_oui" ]; then
+	legacy_epon_oui=$(printf '%s' "$(uci -q get xpon.device.epon_pon_mac)" | tr -d ':' | cut -c 1-6 | tr 'a-f' 'A-F')
+fi
+uci -q get xpon.device.epon_oui >/dev/null || uci set xpon.device.epon_oui="$legacy_epon_oui"
 epon_oui=$(uci -q get xpon.device.epon_oui)
 epon_ctc_oui=$(uci -q get xpon.device.epon_ctc_oui)
 # Older xpon-luci versions incorrectly copied localOui into ctcOui. Migrate
@@ -203,7 +213,9 @@ if [ -z "$epon_ctc_oui" ] || { [ -n "$epon_oui" ] && [ "$epon_ctc_oui" = "$epon_
 	uci set xpon.device.epon_ctc_oui='111111'
 fi
 uci -q get xpon.device.epon_ven_info >/dev/null || uci set xpon.device.epon_ven_info=''
-uci -q get xpon.device.epon_onu_vendor_id >/dev/null || uci set xpon.device.epon_onu_vendor_id=''
+legacy_onu_vendor=$(uci -q get xpon.device.epon_onu_vendor_id)
+[ -n "$legacy_onu_vendor" ] || legacy_onu_vendor=$(uci -q get network.xpon_auth.epon_onu_vendor_id)
+uci -q get xpon.device.epon_onu_vendor_id >/dev/null || uci set xpon.device.epon_onu_vendor_id="$legacy_onu_vendor"
 uci -q get xpon.device.epon_serial >/dev/null || uci set xpon.device.epon_serial=''
 uci commit xpon
 
@@ -243,12 +255,13 @@ uci -q get pon.multicast.proxy_port >/dev/null || uci set pon.multicast.proxy_po
 [ -n "$(uci -q get pon.multicast.proxy_port)" ] || uci set pon.multicast.proxy_port='1'
 uci commit pon
 
-# PON 驱动和认证启动顺序保持原厂 S00xponconfig 管理。辅助脚本只供
-# LuCI 手工调用，不在开机时自动重启 OAM、重放 MAC 或重载网络。
+# PON 驱动和认证启动顺序仍由原厂 S00xponconfig 先初始化。xpon-app
+# 在 S11 做轻量运行态守护：禁用原厂 uenv_update、重放 OAM/OMCI
+# RAM-only 身份字段、刷新 EPON 状态，不主动替代 S00 拉起驱动。
 # 原厂 S99uenv_update 会修改 env 后重启，继续移除其自动启动链接。
 rm -f /etc/rc.d/S99uenv_update /etc/rc.d/K99uenv_update
 rm -f /etc/rc.d/S95pon-services /etc/rc.d/K95pon-services
-rm -f /etc/rc.d/S11xpon-app /etc/rc.d/K89xpon-app
+[ ! -x /etc/init.d/xpon-app ] || /etc/init.d/xpon-app enable >/dev/null 2>&1 || true
 
 # 升级到 /admin/xpon/moci 后清理 LuCI 旧路由/模板缓存；手工 tar 覆盖
 # 安装时旧 provision.htm 可能残留在 overlay，删除它避免后续误判页面来源。
