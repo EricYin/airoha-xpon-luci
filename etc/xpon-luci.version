@@ -1,4 +1,5 @@
-xpon-luci 2.8 2026-08-22
+xpon-luci 2.9 2026-08-26
+services: PPPoE 运行接口名改为厂商 PPE 可识别的 nasN_0；首条受管 PPPoE 为 nas1_0，启动时迁移旧 ppp*/pppoe-pon* 配置
 auth: GPON LOID-only 空密码在 network 镜像保存为 "" 哨兵；OMCI reconfig 后立即复写 loidPasswd，并由 GPON 守护检测/修复 Econet 漂移
 epon: LOID-only 空密码严格重放时不再跳过 loidPasswd0 空值回读；有 LOID 才校验空密码，守护继续兜底修复漂移
 ui: OMCI SN Password 运行字段不再调用不存在的 ponmgr gpon get passwd，改显示配置值与最近 set passwd 下发日志
@@ -31,7 +32,7 @@ status: EPON 分离显示 MPCP 有效 LLID 与 OAM authStatus；实时状态优�
 UI: 模式、OMCI、业务、状态页面增加系统暗色与 html.dark 样式
 services: PPPoE 仅显示密码是否已配置，绝不回显明文；业务卡片显示已登记的 IPTV 组播 VLAN
 auth: PON MAC 输入框回读当前值；GPON 取 pon 业务接口，EPON 取驱动的启动 ethaddr 注册基准并同步为 MPCP ONU MAC
-services: PPPoE 使用 pppoe-pon<VID> 短接口名，并在启动时迁移旧配置，避免超过 Linux 15 字符上限后 netifd 永久 pending
+services: 历史迁移：旧版曾使用 pppoe-pon<VID> 短接口名，避免超过 Linux 15 字符上限后 netifd 永久 pending
 boot: 禁用原厂 S99uenv_update 的 onu_type 强制回写，避免 PON 模式被恢复及循环重启
 mode: UCI 缺少 onu_type 时回退读取 U-Boot 目标值，同步修复 bootargs 旧模式及重复键名前缀
 auth: LOID 空密码在 OMCI 就绪后显式下发并回读，覆盖原厂 netifd 注入的 ECONET

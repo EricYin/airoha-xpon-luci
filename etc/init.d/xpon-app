@@ -18,21 +18,20 @@ disable_factory_uenv_autostart() {
 }
 
 normalize_pppoe_names() {
-	local meta iface vid expected current changed=0
+	local meta iface expected current changed=0 pppoe_index=0
 
 	# Upgrade existing managed services before S20network starts. Without an
-	# explicit pppname, netifd builds pppoe-xpon_<key>, which may be truncated
-	# by Linux and leave the logical interface permanently pending.
+	# explicit vendor-style pppname, netifd builds pppoe-xpon_<key> or older
+	# releases wrote ppp*/pppoe-pon* names that the PPE default-WAN parser does
+	# not accept.
 	for meta in $(uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=xpon_service$/\1/p"); do
 		[ "$(uci -q get "network.$meta.xpon_managed")" = 1 ] || continue
 		iface=$(uci -q get "network.$meta.interface")
-		vid=$(uci -q get "network.$meta.vlan_id")
-		case "$vid" in ''|*[!0-9]*) continue ;; esac
-		[ "$vid" -ge 1 ] 2>/dev/null && [ "$vid" -le 4094 ] 2>/dev/null || continue
 		[ -n "$iface" ] || continue
 		[ "$(uci -q get "network.$iface.xpon_managed")" = 1 ] || continue
 		[ "$(uci -q get "network.$iface.proto")" = pppoe ] || continue
-		expected="pppoe-pon$vid"
+		pppoe_index=$((pppoe_index + 1))
+		expected="nas${pppoe_index}_0"
 		current=$(uci -q get "network.$iface.pppname")
 		[ "$current" = "$expected" ] && continue
 		uci set "network.$iface.pppname=$expected" || continue

@@ -2437,6 +2437,7 @@ local function save_services(fv)
 			created_devices[s.name] = true
 		end
 	end)
+	local pppoe_index = 0
 	for _, row in ipairs(rows) do
 		local meta = "xpon_service_" .. row.key
 		local iface = row.adopt and row.interface or ("xpon_" .. row.key)
@@ -2464,9 +2465,10 @@ local function save_services(fv)
 		local opts = { device=ifdev, proto=row.proto, auto=row.enable, mtu=row.mtu, xpon_managed="1", xpon_service=row.key }
 		if row.mode == "routed" then wan_ifaces[#wan_ifaces + 1] = iface end
 		if row.proto == "pppoe" then
+			pppoe_index = pppoe_index + 1
 			opts.username=row.username; opts.ipv6="auto"
-			-- 多个业务允许共用同一 VLAN/untag 接入，PPPoE 运行接口名必须按业务唯一。
-			opts.pppname="ppp" .. row.key
+			-- 厂商 PPE 只接受 nasX_Y 形态，首条 Internet PPPoE 使用 nas1_0。
+			opts.pppname="nas" .. tostring(pppoe_index) .. "_0"
 		end
 		if row.proto == "static" then opts.ipaddr=row.ipaddr; opts.netmask=row.netmask; opts.gateway=row.gateway end
 		u:section("network", "interface", iface, opts)
