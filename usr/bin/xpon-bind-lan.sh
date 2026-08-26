@@ -3,7 +3,7 @@
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/userfs/bin
 TAG=xpon-bind; LOCK=/var/run/xpon-bind-lan.lock; LIST=/tmp/xpon-bind-vlans.$$; BRIDGE=br-lan
 log(){ logger -t "$TAG" -- "$*" 2>/dev/null || echo "$TAG: $*" >&2; }; get(){ uci -q get "$1" 2>/dev/null; }
-lock(){ mkdir "$LOCK" 2>/dev/null || { log "已有实例运行，跳过"; exit 0; }; trap 'rm -f "$LIST"; rmdir "$LOCK" 2>/dev/null' EXIT INT TERM; }
+lock(){ mkdir "$LOCK" 2>/dev/null || { log "已有实例运行，跳过"; exit 0; }; trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM; }
 
 # 生成 vlan|接口|模式|当前设备 清单；兼容 mode/payload 字段。
 collect(){
@@ -79,11 +79,13 @@ heal_gpon_omci(){
 runtime_member(){ [ -e "/sys/class/net/$1/brif/pon.$2" ] && return 0; command -v brctl >/dev/null 2>&1 && brctl show "$1" 2>/dev/null|awk 'NR>1{print $1}'|grep -qx "pon.$2"; }
 
 verify_later(){ (
+ trap 'rm -f "$LIST"' EXIT
  sleep 20; [ -s "$LIST" ] || exit 0; local bad=0 rec vid iface mode dev b
  while IFS='|' read -r vid iface mode dev; do
   if [ "$mode" = bridged ]; then b=$dev; [ -n "$b" ] || b=$BRIDGE; runtime_member "$b" "$vid" || bad=1; fi
   if [ "$mode" = routed ]; then for b in /sys/class/net/*/brif/pon.$vid; do [ -e "$b" ] && bad=1; done; fi
  done < "$LIST"; [ "$bad" = 0 ] && exit 0; log "20 秒校验发现运行态与 UCI 不一致，执行 netifd reload"; /etc/init.d/network reload >/dev/null 2>&1 || ubus call network reload >/dev/null 2>&1
+ rm -f "$LIST"
  ) >/dev/null 2>&1 & }
 
 main(){ lock; b=$(get xpon.bind_lan.bridge); [ -n "$b" ] && BRIDGE="$b"; apply_binding; /etc/init.d/network reload >/dev/null 2>&1 || ubus call network reload >/dev/null 2>&1; [ "$(pon_tech)" = EPON ] && heal_epon_oam || heal_gpon_omci; verify_later; }
