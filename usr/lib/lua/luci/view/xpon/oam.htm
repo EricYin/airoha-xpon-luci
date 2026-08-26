@@ -64,7 +64,7 @@ html.dark details.oam-sec[open] summary{border-bottom-color:#3c3c3c;}
 <% if not is_epon then %>
 <div class="alert-message warning">当前驱动模式不是 EPON 家族；本页仍可打开，但 OAM/LLID 输出可能为空。GPON/XGPON/XGSPON 请查看 OMCI 页面。</div>
 <% else %>
-<div class="alert-message">EPON 注册分为 MPCP/LLID 与 OAM 扩展认证。本页只读展示运行证据，不会修改认证参数。</div>
+<div class="alert-message">EPON 注册分为 MPCP/LLID 与 OAM 扩展认证。本页只读展示运行状态，不能修改认证参数。</div>
 <% end %>
 
 <div class="oam-cardrow">

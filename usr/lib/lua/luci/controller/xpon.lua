@@ -211,6 +211,32 @@ local function sh(cmd)
 	return util.trim((out:gsub("%z", "")))
 end
 
+local function onu_boot_values()
+	local env_val = sh("fw_printenv onu_type 2>/dev/null")
+	local env_bootargs = sh("fw_printenv -n bootargs 2>/dev/null")
+	local cmdline_val = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1")
+	cmdline_val = cmdline_val:match("=(.*)$") or cmdline_val
+	local env_num = env_val:match("=(.*)$") or env_val
+	if not env_num:match("^[0-9a-fA-F][0-9a-fA-F]$") then env_num = "" end
+	local bootargs_num = (" " .. env_bootargs .. " "):match("%sonu_type=([0-9a-fA-F][0-9a-fA-F])%s") or ""
+	-- Factory U-Boot may boot from legacy bootargs. If it exists, it is the
+	-- effective next-boot source; xpon-apply.sh keeps fw_printenv onu_type
+	-- synchronized but cannot make it override an existing bootargs value.
+	local next_num = (bootargs_num ~= "") and bootargs_num or env_num
+	local run_hex = (cmdline_val ~= "") and cmdline_val or next_num
+	return {
+		env = env_val,
+		env_hex = next_num,
+		fwenv_hex = env_num,
+		bootargs_hex = bootargs_num,
+		cmdline = cmdline_val,
+		pending = (next_num ~= "" and cmdline_val ~= "" and next_num ~= cmdline_val),
+		run_hex = run_hex,
+		run_dec = decode_onu(run_hex),
+		env_dec = decode_onu(next_num),
+	}
+end
+
 local function dsd_ascii24_ok(s)
 	s = tostring(s or "")
 	if #s > 24 then return false end
@@ -1483,21 +1509,11 @@ local function mvlan_snapshot()
 end
 
 function ponmode_values()
-	local env_val = sh("fw_printenv onu_type 2>/dev/null")
-	local env_bootargs = sh("fw_printenv -n bootargs 2>/dev/null")
-	local cmdline_val = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1")
-	cmdline_val = cmdline_val:match("=(.*)$") or cmdline_val
-	local env_num = env_val:match("=(.*)$") or env_val
-	if not env_num:match("^[0-9a-fA-F][0-9a-fA-F]$") then env_num = "" end
-	local bootargs_num = (" " .. env_bootargs .. " "):match("%sonu_type=([0-9a-fA-F][0-9a-fA-F])%s") or ""
-	-- Factory U-Boot may boot from legacy bootargs. If it exists, it is the
-	-- effective next-boot source; xpon-apply.sh keeps fw_printenv onu_type
-	-- synchronized but cannot make it override an existing bootargs value.
-	local next_num = (bootargs_num ~= "") and bootargs_num or env_num
+	local boot = onu_boot_values()
 	local sys_mode = sh("cat /proc/tc3162/sys_xpon_mode 2>/dev/null")
 
 	-- 当前生效 hex（cmdline 优先），用于预选与缺省技术推导
-	local cur_hex = (cmdline_val ~= "") and cmdline_val or next_num
+	local cur_hex = boot.run_hex
 	local cur_bits = tonumber(cur_hex, 16)
 	local cur_tech = (cur_bits and pon_tech_by_bits[math.floor(cur_bits / 16)]) or nil
 	-- ONU 形态只看 onu_type 最后一位：1=SFU、2=HGU。
@@ -1653,12 +1669,12 @@ function ponmode_values()
 	local mvlan_act, mvlan_cnt_raw = mvlan_snapshot()
 
 	return {
-		env           = env_val,
-		env_hex       = next_num,
-		fwenv_hex     = env_num,
-		bootargs_hex  = bootargs_num,
-		cmdline       = cmdline_val,
-		pending       = (next_num ~= "" and cmdline_val ~= "" and next_num ~= cmdline_val),
+		env           = boot.env,
+		env_hex       = boot.env_hex,
+		fwenv_hex     = boot.fwenv_hex,
+		bootargs_hex  = boot.bootargs_hex,
+		cmdline       = boot.cmdline,
+		pending       = boot.pending,
 		sys_mode      = sys_mode,
 		sys_mode_name = pon_mode_names[tonumber(sys_mode)] or "未知",
 		pon_tech      = tech,
@@ -1668,9 +1684,9 @@ function ponmode_values()
 		run_tech_short = pon_tech_short_names[cur_tech] or "未知",
 		tech_mismatch = tech_mismatch,
 		run_tech      = cur_tech,
-		run_hex       = cur_hex,
-		run_dec       = decode_onu(cur_hex),
-		env_dec       = decode_onu(next_num),
+		run_hex       = boot.run_hex,
+		run_dec       = boot.run_dec,
+		env_dec       = boot.env_dec,
 		forms         = opts,
 		cur_low       = cur_low,
 		sys_modes     = sys_modes,
@@ -3048,14 +3064,13 @@ local function build_gem_vlan_analysis(opt)
 		conclusion = {
 			level = "ok",
 			title = "OLT 已下发通配规则（vid=N/A）",
-			text = "上行表存在 " .. wild_gems .. " 个通配 GEM（任意 VLAN），所有带 Tag 的业务 VLAN 会自动匹配到对应 GEM，"
-				.. "无需手动添加任何规则。请保持「已存在则跳过」勾选；重复/错配写入可能引发匹配冲突（风暴）并被运营商封锁。",
+			text = "上行表存在 " .. wild_gems .. " 个通配 GEM（任意 VLAN），所有带 Tag 的业务 VLAN 会自动匹配到对应 GEM。",
 		}
 	elseif has_up then
 		conclusion = {
 			level = "warn",
 			title = "OLT 按 VID 显式下发（无通配）",
-			text = "上行表只有显式 VID 规则。页面已将其与本机 Services 自动匹配；未匹配项表示 OLT 工单与本机配置可能不一致，请核对业务配置，禁止在通配关系不明时重复写表。",
+			text = "上行表只有显式 VID 规则。页面已将其与本机 Services 自动匹配；未匹配项表示 OLT 工单与本机配置可能不一致，请核对业务配置。",
 		}
 	else
 		conclusion = {
@@ -4020,11 +4035,12 @@ local function collect_status(include_details)
 	local olt_device_label = is_epon and (olt_mac and ("OLT MAC " .. olt_mac) or "OLT MAC 未读取到")
 		or ((olt_label ~= "" and olt_label) or "N/A（未收到 ME131 OLT-G）")
 
-	local onu_env_raw = sh("fw_printenv onu_type 2>/dev/null")
-	local onu_env   = onu_env_raw:match("=([0-9a-fA-F]+)$") or onu_env_raw
-	local onu_cmd   = sh("grep -o 'onu_type=[0-9a-fA-F]*' /proc/cmdline | head -1"):match("=(.*)$") or ""
-	local onu_env_dec = decode_onu(onu_env)
-	local onu_cmd_dec = decode_onu(onu_cmd)
+	local onu_boot = onu_boot_values()
+	local function onu_form_label(dec)
+		return (dec and dec.form and dec.form ~= "") and dec.form or "未知"
+	end
+	local onu_env_label = onu_form_label(onu_boot.env_dec)
+	local onu_run_label = onu_form_label(onu_boot.run_dec)
 
 	local state_label
 	if is_epon then
@@ -4078,7 +4094,7 @@ local function collect_status(include_details)
 		{ label = "OLT 设备", value = olt_device_label,
 		  level = (is_epon and olt_mac or olt_vendor ~= "") and "ok" or "info", group = "reg" },
 		{ label = "PON 模式（驱动 sys_xpon_mode）", value = (sys_mode ~= "" and (sys_mode .. " → " .. (pon_mode_names[tonumber(sys_mode)] or "未知"))) or "N/A", group = "reg" },
-		{ label = "ONU 形态（env / 本次启动）", value = (onu_env_dec.form .. " / " .. onu_cmd_dec.form), group = "reg" },
+		{ label = "ONU 形态（系统变量/本次启动）", value = (onu_env_label .. " / " .. onu_run_label), group = "reg" },
 		{ label = "OMCC 分配（alloc / gemport）", value = ((alloc_id or "?") .. " / " .. (gem_id or "?")), group = "reg" },
 		{ label = "OLT 下发（GEM / TCONT）", value = ((gem_entries or "?") .. " 条 / " .. tcont_entries .. " 条"
 			.. (#gem_vlan.rows > 0 and "（关联见下）" or "")), group = "reg" },
