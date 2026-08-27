@@ -1,9 +1,9 @@
 #!/bin/sh
 # xpon-iptv.sh —— IPTV 组播配置后端
 #
-# 数据源：xpon.iptv.*（LuCI 业务页写入）
-#   vlan          IPTV 业务 VLAN（联通 3169）
-#   mcast_vlan    组播 VLAN（联通 3799；多数省份 OLT 直接在业务 VLAN 内送组播，
+# 数据源：xpon.iptv.*（旧版/兼容 IPTV 配置）
+#   vlan          IPTV 业务 VLAN（由用户或 OLT 业务配置决定）
+#   mcast_vlan    组播 VLAN（多数省份 OLT 直接在业务 VLAN 内送组播，
 #                 此值仅当需要单独登记 M-VLAN 过滤表时填写）
 #   igmp_version  2 | 3（每业务口 igmp_set_ver）
 #   igmp_fastleave 0|1（每业务口 igmp_set_fastleave）

@@ -1451,13 +1451,6 @@ local function iptv_business_values()
 			rows[#rows + 1] = { vlan_id=tostring(vid), name=s.remark or "IPTV", port=port_map[s.lan_port] or "1" }; seen[vid] = true
 		end
 	end)
-	uci.cursor():foreach("xpon", "service", function(s)
-		local vid = tonumber(s.vlan or "")
-		if s[".name"] == "iptv" and vid and vid >= 1 and vid <= 4094 and not seen[vid] then
-			local port = tonumber(s.iptv_port or "") or 1; if port < 1 or port > 4 then port = 1 end
-			rows[#rows + 1] = { vlan_id=tostring(vid), name="IPTV", port=tostring(port) }; seen[vid] = true
-		end
-	end)
 	table.sort(rows, function(a,b) return tonumber(a.vlan_id) < tonumber(b.vlan_id) end)
 	return rows
 end
@@ -1605,9 +1598,9 @@ function ponmode_values()
 	-- 空列表诊断（帮助区分“真没有接口”还是“读表途径缺失”）
 	local vlan_diag = {}
 	-- 方式1：/proc/net/vlan/config 逐行解析，兼容三种内核输出：
-	--   Name: pon.466  VID: 466  REORDER_HDR: 1 ...（5.x）
-	--   Name:"pon.466" VID: 466 PRIORITY: 0 ...（老内核）
-	--   pon.466  VID: 466  REORDER_HDR: 1 ...（更老）
+	--   Name: pon.100  VID: 100  REORDER_HDR: 1 ...（5.x）
+	--   Name:"pon.100" VID: 100 PRIORITY: 0 ...（老内核）
+	--   pon.100  VID: 100  REORDER_HDR: 1 ...（更老）
 	for line in (vc .. "\n"):gmatch("([^\n]+)") do
 		local name, vid = line:match('Name:%s*"?(pon%.[0-9]+)"?%s+VID:%s*(%d+)')
 		if not name then
@@ -1615,7 +1608,7 @@ function ponmode_values()
 		end
 		if name then add_vlan(name, vid, 0) end
 	end
-	-- 方式2：紧凑旧格式 pon.466 466 0x0000 ...
+	-- 方式2：紧凑旧格式 pon.100 100 0x0000 ...
 	if #vlans == 0 then
 		for name, vid, pri in vc:gmatch("(pon%.[0-9]+)%s+([0-9]+)%s+([0-9xXa-fA-F]+)%s") do
 			add_vlan(name, vid, pri)
@@ -1768,7 +1761,7 @@ local function validate_vid(s)
 	return n ~= nil and n >= 1 and n <= 4094
 end
 
--- 组播 M-VLAN 列表：接受 "3799" / "3799,4000"（含全角逗号），去重保序，仅保留 1~4094
+-- 组播 M-VLAN 列表：接受单个或逗号分隔 VLAN（含全角逗号），去重保序，仅保留 1~4094
 local function parse_mvids(s)
 	local seen, out = {}, {}
 	for m in (s or ""):gsub("[,，]+", ","):gmatch("(%d+)") do

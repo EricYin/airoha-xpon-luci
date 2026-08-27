@@ -115,6 +115,32 @@ for _, t in ipairs(v.pon_techs or {}) do
 			</div>
 		</div>
 
+		<div class="cbi-value xpon-loid">
+			<label class="cbi-value-title xpon-required" for="loid">逻辑 LOID（必填）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 LOID_EXAMPLE" />
+				<div class="cbi-value-description">最多 24 字节。
+					<span class="xpon-gpon-auth">GPON/XGPON/XGSPON：OLT 经 OMCI 校验。</span>
+					<span class="xpon-epon-auth">EPON/XEPON：经 OAM 扩展透传（loid0），部分运营商不校验，可填写 123456 。</span>
+					当前系统生效：<code><%=esc(rt.loid ~= "" and rt.loid or "（空）")%></code></div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-loid">
+			<label class="cbi-value-title" for="loid_password">LOID 密码</label>
+			<div class="cbi-value-field">
+				<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+					<input type="text" id="loid_password" name="loid_password" class="cbi-input-text" maxlength="12" autocomplete="new-password" placeholder="留空 = 保持当前选择" />
+					<label style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
+						<input type="checkbox" id="loid_password_clear" name="loid_password_clear" value="1"<% if not v.loid_password_set then %> checked="checked"<% end %> />
+						使用空 LOID 密码（LOID-only）
+					</label>
+				</div>
+				<div class="cbi-value-description">最多 12 字节；多数省份为空；LOID 密码 ≠ GPON PWD。<br />
+					当前已配置：<code><%=esc(v.loid_password ~= "" and v.loid_password or "（空）")%></code></div>
+			</div>
+		</div>
+
 		<div class="cbi-value xpon-epon-auth">
 			<label class="cbi-value-title xpon-required" for="epon_pon_mac">EPON MAC（必填）</label>
 			<div class="cbi-value-field">
@@ -124,6 +150,15 @@ for _, t in ipairs(v.pon_techs or {}) do
 				</div>
 				<div class="cbi-value-description">EPON一般都要求校验该MAC。必须勾选“永久写入”后重启。</div>
 				<div class="cbi-value-description">系统生效的MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code>；机器值：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
+			</div>
+		</div>
+
+		<div class="cbi-value xpon-epon-auth">
+			<label class="cbi-value-title" for="epon_serial">CTC ONUSN ID（可选）</label>
+			<div class="cbi-value-field">
+				<input type="text" id="epon_serial" name="epon_serial" class="cbi-input-text" maxlength="17" value="<%=v.epon_serial%>" placeholder="如 28:01:1C:B5:44:0B" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
+				<div class="cbi-value-description">传给 CTC OAM <code>ONUSN</code> 的 6 字节 ONU ID，使用 MAC 格式,一般可设置为EPON MAC相同值。当前系统值：<code><%=esc(rt.epon_serial ~= "" and rt.epon_serial or "（未读取/不支持）")%></code>
+				</div>
 			</div>
 		</div>
 
@@ -157,41 +192,6 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<div class="cbi-value-field">
 				<input type="text" id="epon_onu_vendor_id" name="epon_onu_vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.epon_onu_vendor_id%>" placeholder="例如 ZTEG" pattern="[\x20-\x7E]{4}" />
 				<div class="cbi-value-description">传给 OAM <code>onuVenID</code>，固定为 4 字节可打印 ASCII 厂商代码，例如 <code>ZTEG</code>；不要填写 8 位十六进制的 <code>localVenInfo</code>。当前系统值：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_serial">CTC ONUSN ID（可选）</label>
-			<div class="cbi-value-field">
-				<input type="text" id="epon_serial" name="epon_serial" class="cbi-input-text" maxlength="17" value="<%=v.epon_serial%>" placeholder="如 28:01:1C:B5:44:0B" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<div class="cbi-value-description">传给 CTC OAM <code>ONUSN</code> 的 6 字节 ONU ID，使用 MAC 格式,一般可设置为EPON MAC相同值。当前系统值：<code><%=esc(rt.epon_serial ~= "" and rt.epon_serial or "（未读取/不支持）")%></code>
-				</div>
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-loid">
-			<label class="cbi-value-title xpon-required" for="loid">逻辑 LOID（必填）</label>
-			<div class="cbi-value-field">
-				<input type="text" id="loid" name="loid" class="cbi-input-text" maxlength="24" value="<%=v.loid%>" placeholder="如 LOID_EXAMPLE" />
-				<div class="cbi-value-description">最多 24 字节。
-					<span class="xpon-gpon-auth">GPON/XGPON/XGSPON：OLT 经 OMCI 校验。</span>
-					<span class="xpon-epon-auth">EPON/XEPON：经 OAM 扩展透传（loid0），部分运营商不校验，可填写 123456 。</span>
-					当前系统生效：<code><%=esc(rt.loid ~= "" and rt.loid or "（空）")%></code></div>
-			</div>
-		</div>
-
-		<div class="cbi-value xpon-loid">
-			<label class="cbi-value-title" for="loid_password">LOID 密码</label>
-			<div class="cbi-value-field">
-				<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-					<input type="text" id="loid_password" name="loid_password" class="cbi-input-text" maxlength="12" autocomplete="new-password" placeholder="留空 = 保持当前选择" />
-					<label style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
-						<input type="checkbox" id="loid_password_clear" name="loid_password_clear" value="1"<% if not v.loid_password_set then %> checked="checked"<% end %> />
-						使用空 LOID 密码（LOID-only）
-					</label>
-				</div>
-				<div class="cbi-value-description">最多 12 字节；多数省份为空；LOID 密码 ≠ GPON PWD。<br />
-					当前已配置：<code><%=esc(v.loid_password ~= "" and v.loid_password or "（空）")%></code></div>
 			</div>
 		</div>
 
