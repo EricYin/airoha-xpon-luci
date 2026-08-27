@@ -211,6 +211,27 @@ local function sh(cmd)
 	return util.trim((out:gsub("%z", "")))
 end
 
+-- Extract a real registered LLID from mixed driver/cache/log output.  Some
+-- snapshots contain an initial `LLID = N/A` followed by a valid proc/log line.
+local function parse_epon_llid(text)
+	local lower = tostring(text or ""):lower()
+	local patterns = {
+		"llid%s*%b[]%s*[:=]%s*(0x%x+)",
+		"llid%s*%b[]%s*[:=]%s*(%d+)",
+		"llid%s*[:=]%s*(0x%x+)",
+		"llid%s*[:=]%s*(%d+)",
+		"llid%s+(0x%x+)",
+		"llid%s+(%d+)",
+	}
+	for _, pattern in ipairs(patterns) do
+		for token in lower:gmatch(pattern) do
+			local value = token:match("^0x%x+$") and tonumber(token:sub(3), 16) or tonumber(token)
+			if value and value > 0 and value < 65535 then return value end
+		end
+	end
+	return nil
+end
+
 local function ponmgr_cache(key)
 	if not tostring(key or ""):match("^[%w_]+$") then return "" end
 	local out = fs.readfile("/tmp/xpon_ponmgr_cache/" .. key) or ""
@@ -3561,6 +3582,7 @@ function action_oam()
 	local oam_log = sh("tail -160 /tmp/oam_debug 2>/dev/null")
 	local llid_proc = sh("cat /proc/epon/debug 2>/dev/null")
 	local klog = sh("dmesg 2>/dev/null | grep -Ei 'epon|mpcp|oam|register|llid|auth' | tail -160")
+	if klog == "" then klog = sh("logread 2>/dev/null | grep -Ei 'epon|mpcp|oam|register|llid|auth' | tail -160") end
 	local olt_mac = epon_olt_mac()
 	local auth_out = sh("/userfs/bin/oamcfgCmd get authStatus 2>&1")
 	local auth_status = tonumber(auth_out:match("[Aa]uth[Ss]tatus%s*=%s*(%d+)"))
@@ -3581,11 +3603,9 @@ function action_oam()
 		runtime_mac(sh("awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' /proc/cmdline 2>/dev/null")),
 		runtime_mac(sh("fw_printenv -n ethaddr 2>/dev/null")),
 		runtime_mac(uget("xpon", "device", "epon_pon_mac") or ""))
-	local llid_text = table.concat({ status_file, llid_proc, klog }, "\n")
-	local llid_token = llid_text:lower():match("llid%s*[:=]%s*([%w]+)")
-		or llid_text:lower():match("llid%s+(%d+)")
-		or llid_text:lower():match("llididx%s*[:=]%s*([%w]+)")
-	local llid_label = llid_token and ("LLID=" .. llid_token) or "未读取到明确 LLID"
+	local llid_text = table.concat({ status_file, llid_proc, klog, oam_log }, "\n")
+	local llid_value = parse_epon_llid(llid_text)
+	local llid_label = llid_value and ("LLID=" .. llid_value) or "未读取到明确 LLID"
 
 	local fields = {
 		{ label = "LOID", cmd = "loid0", secret = false },
@@ -3617,9 +3637,12 @@ function action_oam()
 	}
 
 	local evidence = (status_file .. "\n" .. oam_log):upper()
-	local registered = (status_file:lower():match("llid") ~= nil)
+	local registered = llid_value ~= nil
 		or evidence:match("REG_AND_AUTH") ~= nil
 		or evidence:match("REG_BUT_NOT_AUTH") ~= nil
+		or llid_text:upper():match("REGISTER%s*%+%s*GATE") ~= nil
+		or llid_text:upper():match("REGISTER%s+GATE") ~= nil
+		or llid_text:upper():match("REGISTER[_%s]+ACK") ~= nil
 	local auth_label, auth_level
 	if auth_status == 1 then
 		auth_label = "已认证（authStatus=1）"
@@ -3824,28 +3847,26 @@ local function collect_status(include_details)
 		or sys_mode_num == 5 or sys_mode_num == 12
 	local pon_family = is_epon and "epon" or "gpon"
 	local epon_llid_out, epon_auth_out, epon_status_file, epon_oam_log = "", "", "", ""
+	local epon_proc, epon_klog = "", ""
 	local pon_info
 	if is_epon then
 		epon_auth_out = sh("/userfs/bin/oamcfgCmd get authStatus 2>&1")
 		epon_status_file = sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
 		epon_oam_log = sh("tail -120 /tmp/oam_debug 2>/dev/null")
-		-- The 10-second poll never invokes ponmgr. It consumes the status file
-		-- maintained by xpon-app so the main MPCP label still has LLID evidence.
+		-- The poll never invokes ponmgr. It consumes the xpon-app snapshot and
+		-- read-only proc/kernel evidence, so a valid LLID is not hidden merely
+		-- because the snapshot is stale or the ioctl is unavailable.
+		epon_proc = sh("cat /proc/epon/debug 2>/dev/null")
+		epon_klog = sh("dmesg 2>/dev/null | grep -Ei 'epon|mpcp|register|llid' | tail -120")
+		if epon_klog == "" then epon_klog = sh("logread 2>/dev/null | grep -Ei 'epon|mpcp|register|llid' | tail -120") end
 		epon_llid_out = epon_status_file
-		-- Details also consume the same cache. LuCI must never start a second
-		-- ponmgr reader because timeout cannot terminate an ioctl stuck in D state.
-		if include_details then
-			local epon_proc = sh("cat /proc/epon/debug 2>/dev/null")
-			local epon_klog = sh("dmesg 2>/dev/null | grep -Ei 'epon|mpcp|register|llid' | tail -120")
-			if epon_llid_out == "" then
-				epon_llid_out = epon_proc
-			elseif epon_proc ~= "" then
-				epon_llid_out = epon_llid_out .. "\n\n---- /proc/epon/debug ----\n" .. epon_proc
-			end
-			if epon_klog ~= "" then
-				epon_llid_out = (epon_llid_out ~= "" and (epon_llid_out .. "\n\n") or "")
-					.. "---- kernel log ----\n" .. epon_klog
-			end
+		if epon_proc ~= "" then
+			epon_llid_out = (epon_llid_out ~= "" and (epon_llid_out .. "\n\n") or "")
+			epon_llid_out = epon_llid_out .. "---- /proc/epon/debug ----\n" .. epon_proc
+		end
+		if epon_klog ~= "" then
+			epon_llid_out = (epon_llid_out ~= "" and (epon_llid_out .. "\n\n") or "")
+			epon_llid_out = epon_llid_out .. "---- kernel log ----\n" .. epon_klog
 		end
 		pon_info = epon_llid_out
 	else
@@ -3966,21 +3987,18 @@ local function collect_status(include_details)
 		or epon_llid_lower:match("number%s*[:=]%s*(%d+)"))
 	-- llidIdx is an internal/control index on some kernels and may stay at zero
 	-- even when the registered data LLID is non-zero. Only parse an explicit LLID.
-	local epon_llid_token = epon_llid_lower:match("llid%s*[:=]%s*([%w]+)")
-	local epon_llid
-	if epon_llid_token then
-		if epon_llid_token:match("^0x%x+$") then
-			epon_llid = tonumber(epon_llid_token:sub(3), 16)
-		else
-			epon_llid = tonumber(epon_llid_token)
-		end
-	end
+	local epon_mpcp_text = epon_llid_out .. "\n" .. epon_oam_log
+	local epon_llid = parse_epon_llid(epon_mpcp_text)
 	local epon_auth_status = tonumber(epon_auth_out:match("[Aa]uth[Ss]tatus%s*=%s*(%d+)"))
 	local epon_auth_evidence = (epon_status_file .. "\n" .. epon_oam_log):upper()
+	local epon_mpcp_evidence = epon_mpcp_text:upper()
 	local epon_registered = is_epon and ((epon_entry_num and epon_entry_num > 0)
-		or (epon_llid ~= nil and epon_llid_out ~= "")
+		or (epon_llid ~= nil and epon_llid > 0 and epon_llid < 65535)
 		or epon_auth_evidence:match("REG_AND_AUTH") ~= nil
-		or epon_auth_evidence:match("REG_BUT_NOT_AUTH") ~= nil) or false
+		or epon_auth_evidence:match("REG_BUT_NOT_AUTH") ~= nil
+		or epon_mpcp_evidence:match("REGISTER%s*%+%s*GATE") ~= nil
+		or epon_mpcp_evidence:match("REGISTER%s+GATE") ~= nil
+		or epon_mpcp_evidence:match("REGISTER[_%s]+ACK") ~= nil) or false
 	-- 当前共享内存 authStatus 优先；只有命令不可读时，才回退文件/日志，
 	-- 避免旧日志中的成功或失败记录覆盖当前状态。
 	local epon_oam_authenticated = epon_auth_status == 1
