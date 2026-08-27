@@ -151,27 +151,6 @@ function xponAuthToggle() {
 	});
 }
 
-function xponDeriveEponSerial() {
-	var macInput = document.getElementById('epon_pon_mac') || document.getElementById('pon_mac');
-	var serialInput = document.getElementById('epon_serial');
-	var mac = macInput ? macInput.value.trim() : '';
-	if (!serialInput || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
-		alert('请先填写并确认原装 ONU 的 PON MAC');
-		return;
-	}
-	var parts = mac.toUpperCase().split(':');
-	var last = parseInt(parts[5], 16) + 0x08;
-	if (last > 0xFF) {
-		alert('PON MAC 末字节加 0x08 后溢出，无法生成候选值');
-		return;
-	}
-	var candidate = parts.slice(0, 5).concat(('0' + last.toString(16).toUpperCase()).slice(-2)).join(':');
-	if (serialInput.value && serialInput.value.toUpperCase() !== candidate &&
-		!confirm('将当前 EPON SN 替换为候选值 ' + candidate + '？')) return;
-	serialInput.value = candidate;
-	serialInput.focus();
-}
-
 function xponSyncEponOui() {
 	var mac = document.getElementById('epon_pon_mac');
 	var oui = document.getElementById('epon_oui');

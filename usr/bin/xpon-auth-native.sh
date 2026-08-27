@@ -82,6 +82,34 @@ omci_read() {
 oam_read() {
 	$OAM get "$1" 2>>"$LOG" | sed -n 's/^[^=:]*[=:][[:space:]]*//p' | head -1
 }
+normalize_oam_hex() {
+	printf '%s' "$1" | sed 's/^0[xX]//' | tr 'a-f' 'A-F'
+}
+require_oam_hex() {
+	label=$1
+	value=$2
+	length=$3
+	[ -z "$value" ] && return 0
+	if [ "${#value}" -ne "$length" ]; then
+		echo "EPON OAM 参数非法：$label='$value'，必须为 $length 位十六进制" >> "$LOG"
+		exit 64
+	fi
+	case "$value" in
+		*[!0-9A-F]*)
+			echo "EPON OAM 参数非法：$label='$value'，只允许十六进制字符 0-9/A-F" >> "$LOG"
+			exit 64
+			;;
+	esac
+}
+require_oam_ascii4() {
+	label=$1
+	value=$2
+	[ -z "$value" ] && return 0
+	if [ "${#value}" -ne 4 ] || ! printf '%s' "$value" | LC_ALL=C grep -q '^[ -~][ -~][ -~][ -~]$'; then
+		echo "EPON OAM 参数非法：$label='$value'，必须为 4 字节可打印 ASCII" >> "$LOG"
+		exit 64
+	fi
+}
 verify() {
 	attr=$1
 	want=$2
@@ -196,6 +224,13 @@ if [ "$mode" = "EPON" ]; then
 			epon_oui=$(printf '%s' "$pmac" | tr -d ':' | cut -c 1-6 | tr 'a-f' 'A-F')
 			;;
 	esac
+	epon_oui=$(normalize_oam_hex "$epon_oui")
+	epon_ctc_oui=$(normalize_oam_hex "$epon_ctc_oui")
+	epon_ven=$(normalize_oam_hex "$epon_ven")
+	require_oam_hex localOui "$epon_oui" 6
+	require_oam_hex ctcOui "$epon_ctc_oui" 6
+	require_oam_hex localVenInfo "$epon_ven" 8
+	require_oam_ascii4 onuVenID "$epon_onu_vendor"
 fi
 
 # PON SN 是唯一输入源；SDK 仍要求分别设置 ME 256 SN 与 ME 7 Vendor ID。

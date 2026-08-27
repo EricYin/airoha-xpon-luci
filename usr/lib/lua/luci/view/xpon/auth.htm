@@ -122,8 +122,8 @@ for _, t in ipairs(v.pon_techs or {}) do
 					<input type="text" id="epon_pon_mac" name="epon_pon_mac" class="cbi-input-text" maxlength="17" value="<%=v.epon_pon_mac%>" data-default="<%=esc(v.pon_mac_default or "")%>" placeholder="留空 = dsd wan_mac" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
 					<label class="xpon-danger-inline"><input type="checkbox" name="dsd_wan_mac_sync" value="1" /><span>永久写入</span></label>
 				</div>
-				<div class="cbi-value-description">EPON一般都要求校验该MAC。当前模式必须勾选“永久写入”后重启。</div>
-				<div class="cbi-value-description">系统生效的MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code>；DSD值：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
+				<div class="cbi-value-description">EPON一般都要求校验该MAC。必须勾选“永久写入”后重启。</div>
+				<div class="cbi-value-description">系统生效的MAC：<code><%=esc(rt.epon_mac ~= "" and rt.epon_mac or "（未读取）")%></code>；机器值：<code><%=esc(v.pon_mac_default or "（未取到 dsd wan_mac）")%></code></div>
 			</div>
 		</div>
 
@@ -131,16 +131,16 @@ for _, t in ipairs(v.pon_techs or {}) do
 			<label class="cbi-value-title xpon-required" for="epon_oui">EPON OUI（必填）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_oui" name="epon_oui" class="cbi-input-text" maxlength="6" value="<%=v.epon_oui%>" placeholder="089AC7" pattern="[0-9A-Fa-f]{6}" />
-				<div class="cbi-value-description">OAM 发现阶段上报的厂商标识（OUI，3 字节 hex），须与 PON MAC 前 3 字节一致。当前系统值：<code><%=esc(rt.epon_oui ~= "" and rt.epon_oui or "（空）")%></code>
+				<div class="cbi-value-description">OAM 发现阶段上报的厂商标识（OUI），须与 PON MAC 前 3 字节一致。当前系统值：<code><%=esc(rt.epon_oui ~= "" and rt.epon_oui or "（空）")%></code>
 				</div>
 			</div>
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_ven_info">EPON Vendor（可选）</label>
+			<label class="cbi-value-title" for="epon_ven_info">Local Vendor Info（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_ven_info" name="epon_ven_info" class="cbi-input-text" maxlength="8" value="<%=v.epon_ven_info%>" placeholder="4D150100" pattern="[0-9A-Fa-f]{8}" />
-				<div class="cbi-value-description">OAM 扩展的 厂商Vendor-Specific 信息（4 字节 hex）；当前系统值：<code><%=esc(rt.epon_ven_info ~= "" and rt.epon_ven_info or "（空）")%></code></div>
+				<div class="cbi-value-description">传给 OAM <code>localVenInfo</code>，必须是 4 字节（8 位）十六进制，例如 <code>4D150100</code>；不是 <code>ZTEG</code> 等 ASCII 厂商代码。当前系统值：<code><%=esc(rt.epon_ven_info ~= "" and rt.epon_ven_info or "（空）")%></code></div>
 			</div>
 		</div>
 
@@ -155,18 +155,16 @@ for _, t in ipairs(v.pon_techs or {}) do
 		<div class="cbi-value xpon-epon-auth">
 			<label class="cbi-value-title" for="epon_onu_vendor_id">ONU Vendor ID（可选）</label>
 			<div class="cbi-value-field">
-				<input type="text" id="epon_onu_vendor_id" name="epon_onu_vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.epon_onu_vendor_id%>" placeholder="例如 HWTC" pattern="[\x20-\x7E]{4}" />
-				<div class="cbi-value-description">OAM <code>onuVenID</code>，固定 4 字节ASCII厂商代码；当前系统值：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
+				<input type="text" id="epon_onu_vendor_id" name="epon_onu_vendor_id" class="cbi-input-text" maxlength="4" value="<%=v.epon_onu_vendor_id%>" placeholder="例如 ZTEG" pattern="[\x20-\x7E]{4}" />
+				<div class="cbi-value-description">传给 OAM <code>onuVenID</code>，固定为 4 字节可打印 ASCII 厂商代码，例如 <code>ZTEG</code>；不要填写 8 位十六进制的 <code>localVenInfo</code>。当前系统值：<code><%=esc(rt.epon_onu_vendor_id ~= "" and rt.epon_onu_vendor_id or "（空）")%></code></div>
 			</div>
 		</div>
 
 		<div class="cbi-value xpon-epon-auth">
-			<label class="cbi-value-title" for="epon_serial">CTC ONUSN（可选）</label>
+			<label class="cbi-value-title" for="epon_serial">CTC ONUSN ID（可选）</label>
 			<div class="cbi-value-field">
 				<input type="text" id="epon_serial" name="epon_serial" class="cbi-input-text" maxlength="17" value="<%=v.epon_serial%>" placeholder="如 28:01:1C:B5:44:0B" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" />
-				<button type="button" class="cbi-button cbi-button-neutral" onclick="xponDeriveEponSerial()" style="display:block;margin-top:6px;white-space:normal;">按 PON MAC +0x08 生成候选</button>
-				<div class="cbi-value-description">CTC OAM <code>ONUSN</code>扩展MAC地址，与EPON MAC不同。
-				留空保持固件默认；当前系统值：<code><%=esc(rt.epon_serial ~= "" and rt.epon_serial or "（未读取/不支持）")%></code>
+				<div class="cbi-value-description">传给 CTC OAM <code>ONUSN</code> 的 6 字节 ONU ID，使用 MAC 格式,一般可设置为EPON MAC相同值。当前系统值：<code><%=esc(rt.epon_serial ~= "" and rt.epon_serial or "（未读取/不支持）")%></code>
 				</div>
 			</div>
 		</div>
