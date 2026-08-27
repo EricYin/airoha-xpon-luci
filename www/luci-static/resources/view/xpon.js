@@ -1,5 +1,75 @@
 // xpon-luci：认证/业务表单联动校验 + 状态页自动刷新
 
+(function () {
+	function hasArgonDarkStylesheet() {
+		return !!document.querySelector('link[href*="/argon/css/dark.css"],link[href*="argon/css/dark.css"]');
+	}
+	function prefersDarkColorScheme() {
+		return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+	}
+	function colorLooksDark(color) {
+		var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(color || '');
+		return !!m && (parseInt(m[1], 10) + parseInt(m[2], 10) + parseInt(m[3], 10)) < 384;
+	}
+	function hasDarkComputedBody() {
+		return document.body && window.getComputedStyle && colorLooksDark(window.getComputedStyle(document.body).backgroundColor);
+	}
+	function darkModeAttribute(el) {
+		var value = el && el.getAttribute('data-darkmode');
+		if (value === 'true') return true;
+		if (value === 'false') return false;
+		return null;
+	}
+	function shouldUseDark() {
+		var root = document.documentElement;
+		var body = document.body;
+		var rootMode = darkModeAttribute(root);
+		var bodyMode = darkModeAttribute(body);
+		if (root.classList.contains('dark') || (body && body.classList.contains('dark'))) return true;
+		if (rootMode === true || bodyMode === true) return true;
+		if (rootMode === false || bodyMode === false) return false;
+		return hasArgonDarkStylesheet() || hasDarkComputedBody() || prefersDarkColorScheme();
+	}
+	function installDarkAlertStyle() {
+		if (document.getElementById('xpon-dark-alert-style')) return;
+		var style = document.createElement('style');
+		style.id = 'xpon-dark-alert-style';
+		style.textContent =
+			'html.xpon-dark .alert-message{color:#d7d7d7!important;background:#2b2b2b!important;border-color:#3c3c3c!important;box-shadow:1px 1px 1px #111!important;}' +
+			'html.xpon-dark .alert-message.warning,html.xpon-dark .alert-message.notice{color:#ffd899!important;background:#3a3020!important;border-color:#6b5630!important;}' +
+			'html.xpon-dark .alert-message.error,html.xpon-dark .alert-message.danger{color:#ffb4b4!important;background:#3a2020!important;border-color:#6b3030!important;}' +
+			'html.xpon-dark .alert-message.success{color:#b7f0c2!important;background:#1f3524!important;border-color:#3a5c40!important;}' +
+			'html.xpon-dark .alert-message code{background:#252526!important;color:#e6e6e6!important;}' +
+			'html.xpon-dark .alert-message pre{background:#252526!important;border-color:#3c3c3c!important;color:#ccc!important;}' +
+			'html.xpon-dark .alert-message a{color:#8ab4f8!important;}';
+		(document.head || document.documentElement).appendChild(style);
+	}
+	function applyDarkState() {
+		installDarkAlertStyle();
+		document.documentElement.classList.toggle('xpon-dark', shouldUseDark());
+	}
+	applyDarkState();
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', applyDarkState);
+	} else {
+		window.setTimeout(applyDarkState, 0);
+	}
+	if (window.MutationObserver) {
+		var observer = new MutationObserver(applyDarkState);
+		observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-darkmode'] });
+		if (document.head) {
+			observer.observe(document.head, { childList: true, subtree: true, attributes: true, attributeFilter: ['href', 'media'] });
+		}
+		if (document.body) {
+			observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-darkmode'] });
+		} else {
+			document.addEventListener('DOMContentLoaded', function () {
+				if (document.body) observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-darkmode'] });
+			});
+		}
+	}
+})();
+
 // 认证页：记录打开时的初始值（页面默认已回显系统当前生效值），
 // 用户修改后提交前弹窗确认“将重启 OMCI 重新注册”。
 var xponAuthInit = {};

@@ -86,21 +86,95 @@ normalize_managed_lan_ports() {
 	logger -t xpon "已从 br-lan 持久配置移除受管端口，避免 netifd 桥成员循环"
 }
 
-refresh_epon_status() {
-	local mode tmp=/tmp/epon_reg_auth_status.$$
+PONMGR_CACHE_DIR=/tmp/xpon_ponmgr_cache
+
+cache_ponmgr() {
+	local key="$1" tmp stamp blocked now last
+	shift
+	blocked="$PONMGR_CACHE_DIR/.$key.blocked"
+	now=$(date +%s)
+	last=$(cat "$blocked" 2>/dev/null)
+	case "$last" in
+		''|*[!0-9]*) ;;
+		*) [ $((now - last)) -lt 300 ] && return 0 ;;
+	esac
+	tmp="$PONMGR_CACHE_DIR/.$key.$$"
+	stamp="$PONMGR_CACHE_DIR/.$key.updated.$$"
+	if timeout 3 /userfs/bin/ponmgr "$@" >"$tmp" 2>&1 && [ -s "$tmp" ]; then
+		mv -f "$tmp" "$PONMGR_CACHE_DIR/$key"
+		rm -f "$blocked"
+		date +%s >"$stamp"
+		mv -f "$stamp" "$PONMGR_CACHE_DIR/$key.updated"
+	else
+		rm -f "$tmp" "$stamp"
+		printf '%s\n' "$now" >"$blocked"
+	fi
+}
+
+refresh_gpon_core() {
+	cache_ponmgr gpon_info gpon get info
+	cache_ponmgr gpon_omcc gpon get omcc
+	cache_ponmgr gpon_tcont gpon get tcont
+	cache_ponmgr gpon_gemport gpon get gemport
+	cache_ponmgr gpon_fec_status gpon get fec_status
+	cache_ponmgr gpon_WanCnt gpon get WanCnt
+}
+
+refresh_gpon_extended() {
+	cache_ponmgr gpon_sys_link_cfg gpon get sys_link_cfg
+	cache_ponmgr gpon_onlineDuration gpon get onlineDuration
+	cache_ponmgr gpon_PloamGtcInfo gpon get PloamGtcInfo
+	cache_ponmgr gpon_key_info gpon get key_info
+	cache_ponmgr gpon_AllTcontTxCnt gpon get AllTcontTxCnt
+	cache_ponmgr gpon_fecCnt gpon get fecCnt
+	cache_ponmgr gpon_rx_fec_cfg gpon get rx_fec_cfg
+	cache_ponmgr gpon_phyTransParams gpon get phyTransParams
+	cache_ponmgr gpon_DrvPowerLevel gpon get DrvPowerLevel
+	cache_ponmgr gpon_rsp_time gpon get rsp_time
+	cache_ponmgr gpon_eqd_off gpon get eqd_off
+	cache_ponmgr gpon_spf gpon get spf
+	cache_ponmgr gpon_tod_info gpon get tod_info
+}
+
+refresh_ponmgr_status() {
+	local mode tmp=/tmp/epon_reg_auth_status.$$ cycle=0 now last blocked
+	mkdir -p "$PONMGR_CACHE_DIR"
 	while true; do
 		mode=$(cat /proc/tc3162/sys_xpon_mode 2>/dev/null)
 		case "$mode" in
 			2|3|4|5|12)
-				if timeout 3 /userfs/bin/ponmgr epon get llid_info >"$tmp" 2>/dev/null &&
-				   [ -s "$tmp" ]; then
-					mv -f "$tmp" /tmp/epon_reg_auth_status
-				else
+				blocked="$PONMGR_CACHE_DIR/.epon_llid_info.blocked"
+				now=$(date +%s); last=$(cat "$blocked" 2>/dev/null)
+				case "$last" in
+					''|*[!0-9]*)
+						if timeout 3 /userfs/bin/ponmgr epon get llid_info >"$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+							mv -f "$tmp" /tmp/epon_reg_auth_status
+							rm -f "$blocked"
+						else
+							rm -f "$tmp"
+							printf '%s\n' "$now" >"$blocked"
+						fi
+						;;
+					*) [ $((now - last)) -ge 300 ] && rm -f "$blocked" ;;
+				esac
+				if [ ! -s /tmp/epon_reg_auth_status ]; then
 					printf 'LLID = N/A\n' >"$tmp"
 					mv -f "$tmp" /tmp/epon_reg_auth_status
 				fi
+				cache_ponmgr epon_devMac epon get devMac
+				cycle=0
+				;;
+			1|6|7|8|9|10|11)
+				rm -f "$tmp" /tmp/epon_reg_auth_status
+				refresh_gpon_core
+				if [ "$cycle" -eq 0 ]; then
+					refresh_gpon_extended
+				fi
+				cycle=$(( (cycle + 1) % 10 ))
 				;;
 			*)
+				# Unknown/initializing mode: do not touch ponmgr until the driver
+				# exposes a confirmed technology.
 				rm -f "$tmp" /tmp/epon_reg_auth_status
 				;;
 		esac
@@ -108,12 +182,14 @@ refresh_epon_status() {
 	done
 }
 
-start_epon_status_refresher() {
-	local pid
-	pid=$(cat /var/run/xpon-epon-status.pid 2>/dev/null)
+start_ponmgr_status_refresher() {
+	local pid oldpid
+	pid=$(cat /var/run/xpon-ponmgr-status.pid 2>/dev/null)
 	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
-	refresh_epon_status >/dev/null 2>&1 &
-	echo $! >/var/run/xpon-epon-status.pid
+	oldpid=$(cat /var/run/xpon-epon-status.pid 2>/dev/null)
+	[ -n "$oldpid" ] && kill "$oldpid" 2>/dev/null
+	refresh_ponmgr_status >/dev/null 2>&1 &
+	echo $! >/var/run/xpon-ponmgr-status.pid
 }
 
 start() {
@@ -141,14 +217,18 @@ start() {
 	# netifd/vendor control paths may restart epon_oam again after the initial
 	# replay. Track process changes and restore the complete OAM identity.
 	/usr/bin/xpon-epon-sn.sh watch 5 >/dev/null 2>&1 &
-	start_epon_status_refresher
+	start_ponmgr_status_refresher
 	[ "$(uci -q get xpon.fallback.enable)" = "1" ] && /usr/bin/xpon-fallback.sh &
 }
 
 stop() {
+	status_pid=$(cat /var/run/xpon-ponmgr-status.pid 2>/dev/null)
+	[ -n "$status_pid" ] && kill "$status_pid" 2>/dev/null
 	status_pid=$(cat /var/run/xpon-epon-status.pid 2>/dev/null)
 	[ -n "$status_pid" ] && kill "$status_pid" 2>/dev/null
-	rm -f /var/run/xpon-epon-status.pid /tmp/epon_reg_auth_status
+	rm -f /var/run/xpon-ponmgr-status.pid /var/run/xpon-epon-status.pid /tmp/epon_reg_auth_status
+	rm -f "$PONMGR_CACHE_DIR"/* "$PONMGR_CACHE_DIR"/.[!.]* 2>/dev/null
+	rmdir "$PONMGR_CACHE_DIR" 2>/dev/null
 	watch_pid=$(cat /var/run/xpon-epon-sn-watch.pid 2>/dev/null)
 	[ -n "$watch_pid" ] && kill "$watch_pid" 2>/dev/null
 	rm -f /var/run/xpon-epon-sn-watch.pid

@@ -211,6 +211,12 @@ local function sh(cmd)
 	return util.trim((out:gsub("%z", "")))
 end
 
+local function ponmgr_cache(key)
+	if not tostring(key or ""):match("^[%w_]+$") then return "" end
+	local out = fs.readfile("/tmp/xpon_ponmgr_cache/" .. key) or ""
+	return util.trim((out:gsub("%z", "")))
+end
+
 local function onu_boot_values()
 	local env_val = sh("fw_printenv onu_type 2>/dev/null")
 	local env_bootargs = sh("fw_printenv -n bootargs 2>/dev/null")
@@ -469,6 +475,16 @@ local function command_dump(defs)
 	return table.concat(out, "\n")
 end
 
+local function ponmgr_cache_dump(defs)
+	local out = {}
+	for _, d in ipairs(defs) do
+		out[#out + 1] = "==== " .. d[1] .. "（xpon-app 单写者缓存） ===="
+		local body = ponmgr_cache(d[2])
+		out[#out + 1] = body ~= "" and body or "（缓存尚未生成）"
+	end
+	return table.concat(out, "\n")
+end
+
 ------------------------------------------------------------------------
 -- 极简 JSON 编码（不依赖 luci.jsonc，裁剪版也能跑）
 ------------------------------------------------------------------------
@@ -704,7 +720,7 @@ function auth_values()
 	-- ARMv8 平台最终仍读取本次启动 early_param("ethaddr") 的值。它是
 	-- EPON 驱动生成 LLID 0..N 注册 MAC 的基准值，不是 pon netdev 地址，
 	-- 也不是 EPON_ADDR_REG_LOW/HIGH 寄存器的直接读回。
-	rt.epon_mac = is_epon and runtime_mac(sh("timeout 2 /userfs/bin/ponmgr epon get devMac 2>/dev/null")) or ""
+	rt.epon_mac = is_epon and runtime_mac(ponmgr_cache("epon_devMac")) or ""
 	if rt.epon_mac == "" then
 		rt.epon_mac = runtime_mac(sh("awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' /proc/cmdline 2>/dev/null"))
 	end
@@ -2941,7 +2957,7 @@ local function build_gem_vlan_analysis(opt)
 	local up_text    = opt.up_text    or klog_show("/userfs/bin/gponmapcmd showGemPortRule")
 	local down_text  = opt.down_text  or klog_show("/userfs/bin/gponmapcmd showDownRule")
 	local queue_text = opt.queue_text or klog_show("/userfs/bin/gponmapcmd showQueueRule")
-	local gp_out     = opt.gp_out     or sh("/userfs/bin/ponmgr gpon get gemport 2>&1")
+	local gp_out     = opt.gp_out     or ponmgr_cache("gpon_gemport")
 	local me84_out   = opt.me84_out   or sh("cat /tmp/ponstatus/me84_tag_info 2>/dev/null")
 	local me171_out  = opt.me171_out  or sh("cat /tmp/ponstatus/me171_tag_info 2>/dev/null")
 	local up_rows, _ = parse_gem_up(up_text)
@@ -2983,7 +2999,8 @@ local function build_gem_vlan_analysis(opt)
 	for _, r in ipairs(queue_rows) do
 		queue_map[r.gemPort] = { tcont = r.tcont, queue = r.queue, pq = r.pqMode }
 	end
-	local omcc_gem = sh("/userfs/bin/ponmgr gpon get omcc 2>&1"):match("gemport%s+ID%s*:%s*(%d+)") or "57"
+	local omcc_text = opt.omcc_out or ponmgr_cache("gpon_omcc")
+	local omcc_gem = omcc_text:match("gemport%s+ID%s*:%s*(%d+)") or "57"
 
 	-- GEM 全集：上行表 ∪ 下行表 ∪ ME84 ∪ ponmgr 硬表
 	local gem_set, gem_meta = {}, {}
@@ -3104,8 +3121,8 @@ function action_moci()
 	local gem_up_text = klog_show("/userfs/bin/gponmapcmd showGemPortRule")
 	local me84 = sh("cat /tmp/ponstatus/me84_tag_info 2>/dev/null")
 	local me171 = sh("cat /tmp/ponstatus/me171_tag_info 2>/dev/null")
-	local pon_info_text = sh("timeout 3 /userfs/bin/ponmgr gpon get info 2>&1")
-	local omcc_text = sh("timeout 3 /userfs/bin/ponmgr gpon get omcc 2>&1")
+	local pon_info_text = ponmgr_cache("gpon_info")
+	local omcc_text = ponmgr_cache("gpon_omcc")
 	local auth_stat_text = sh("/userfs/bin/omcicfgCmd get authStat 2>&1")
 	local omci_sn_text = sh("/userfs/bin/omcicfgCmd get sn 2>&1")
 	local omci_vendor_text = sh("/userfs/bin/omcicfgCmd get vendorId 2>&1")
@@ -3149,9 +3166,10 @@ function action_moci()
 			}
 		end
 	end
-	local tcont_text = sh("timeout 3 /userfs/bin/ponmgr gpon get tcont")
+	local tcont_text = ponmgr_cache("gpon_tcont")
 	local tcont_entries = parse_ponmgr_tcont(tcont_text)
-	local gem_entries = parse_ponmgr_gem(sh("timeout 3 /userfs/bin/ponmgr gpon get gemport"))
+	local gemport_text = ponmgr_cache("gpon_gemport")
+	local gem_entries = parse_ponmgr_gem(gemport_text)
 	local state_id = pon_info_text:match("ONU State:%s*O(%d+)") or pon_info_text:match("ONU%s+State%s*[:=]%s*(%d+)")
 	local auth_raw = auth_stat_text:match("authStat%s*=%s*(%d+)") or auth_stat_text:match("(%d+)")
 	local alloc_id = omcc_text:match("alloc%s+ID%s*:%s*(%d+)") or omcc_text:match("Alloc%-?ID%s*[:=]%s*(%d+)")
@@ -3232,9 +3250,9 @@ function action_moci()
 	local sn_hex_pw = saved_any("sn_hex_password")
 	local sn_regid_pw = saved_any("sn_regid_password")
 	local omci_fields = {}
-	append_omci_field(omci_fields, "当前 PON 状态", "ponmgr gpon get info", state_id and ("O" .. state_id) or "未读取", "O5 表示 GPON/XGPON/XGSPON 已进入运行态")
+	append_omci_field(omci_fields, "当前 PON 状态", "xpon-app 缓存：ponmgr gpon get info", state_id and ("O" .. state_id) or "未读取", "O5 表示 GPON/XGPON/XGSPON 已进入运行态")
 	append_omci_field(omci_fields, "OMCI 认证状态", "omcicfgCmd get authStat", show(auth_raw), auth_raw == "1" and "已认证" or "未认证/未读取")
-	append_omci_field(omci_fields, "OMCC alloc / GEM", "ponmgr gpon get omcc", show((alloc_id or "?") .. " / " .. (omcc_gem or "?")), "OMCI 管理通道，后续 ME 交互走这个 GEM")
+	append_omci_field(omci_fields, "OMCC alloc / GEM", "xpon-app 缓存：ponmgr gpon get omcc", show((alloc_id or "?") .. " / " .. (omcc_gem or "?")), "OMCI 管理通道，后续 ME 交互走这个 GEM")
 	append_omci_field(omci_fields, "OMCC Version（当前）", "omcicfgCmd get omccVersion", show(run_omcc_ver), "OMCI/OMCC 能力版本")
 	append_omci_field(omci_fields, "OMCC Version（配置）", "xpon.device.omcc_version", show(saved_omcc_ver), "认证页保存的期望值")
 	append_omci_field(omci_fields, "OMCI Spec Version（当前）", "omcicfgCmd get specVer", show(run_spec), "G.988/spec version 运行值")
@@ -3295,54 +3313,41 @@ function action_moci()
 	end
 
 	local ponmgr_groups = {
-		{ title = "注册、OMCC 与密钥", dump = command_dump({
-			{ "ponmgr gpon get info", "/userfs/bin/ponmgr gpon get info" },
-			{ "ponmgr gpon get omcc", "/userfs/bin/ponmgr gpon get omcc" },
-			{ "ponmgr gpon get sys_link_cfg", "/userfs/bin/ponmgr gpon get sys_link_cfg" },
-			{ "ponmgr gpon get onlineDuration", "/userfs/bin/ponmgr gpon get onlineDuration" },
-			{ "ponmgr gpon get PloamGtcInfo", "/userfs/bin/ponmgr gpon get PloamGtcInfo" },
-			{ "ponmgr gpon get key_info", "/userfs/bin/ponmgr gpon get key_info" },
+		{ title = "注册、OMCC 与密钥", dump = ponmgr_cache_dump({
+			{ "ponmgr gpon get info", "gpon_info" },
+			{ "ponmgr gpon get omcc", "gpon_omcc" },
+			{ "ponmgr gpon get sys_link_cfg", "gpon_sys_link_cfg" },
+			{ "ponmgr gpon get onlineDuration", "gpon_onlineDuration" },
+			{ "ponmgr gpon get PloamGtcInfo", "gpon_PloamGtcInfo" },
+			{ "ponmgr gpon get key_info", "gpon_key_info" },
 		}) },
-		{ title = "TCONT、GEM 与 WAN 计数", dump = command_dump({
-			{ "ponmgr gpon get tcont", "/userfs/bin/ponmgr gpon get tcont" },
-			{ "ponmgr gpon get gemport", "/userfs/bin/ponmgr gpon get gemport" },
-			{ "ponmgr gpon get AllTcontTxCnt", "/userfs/bin/ponmgr gpon get AllTcontTxCnt" },
-			{ "ponmgr gpon get WanCnt", "/userfs/bin/ponmgr gpon get WanCnt" },
+		{ title = "TCONT、GEM 与 WAN 计数", dump = ponmgr_cache_dump({
+			{ "ponmgr gpon get tcont", "gpon_tcont" },
+			{ "ponmgr gpon get gemport", "gpon_gemport" },
+			{ "ponmgr gpon get AllTcontTxCnt", "gpon_AllTcontTxCnt" },
+			{ "ponmgr gpon get WanCnt", "gpon_WanCnt" },
 		}) },
-		{ title = "FEC、光模块与时序", dump = command_dump({
-			{ "ponmgr gpon get fec_status", "/userfs/bin/ponmgr gpon get fec_status" },
-			{ "ponmgr gpon get fecCnt", "/userfs/bin/ponmgr gpon get fecCnt" },
-			{ "ponmgr gpon get rx_fec_cfg", "/userfs/bin/ponmgr gpon get rx_fec_cfg" },
-			{ "ponmgr gpon get phyTransParams", "/userfs/bin/ponmgr gpon get phyTransParams" },
-			{ "ponmgr gpon get DrvPowerLevel", "/userfs/bin/ponmgr gpon get DrvPowerLevel" },
-			{ "ponmgr gpon get rsp_time", "/userfs/bin/ponmgr gpon get rsp_time" },
-			{ "ponmgr gpon get eqd_off", "/userfs/bin/ponmgr gpon get eqd_off" },
-			{ "ponmgr gpon get spf", "/userfs/bin/ponmgr gpon get spf" },
-			{ "ponmgr gpon get tod_info", "/userfs/bin/ponmgr gpon get tod_info" },
+		{ title = "FEC、光模块与时序", dump = ponmgr_cache_dump({
+			{ "ponmgr gpon get fec_status", "gpon_fec_status" },
+			{ "ponmgr gpon get fecCnt", "gpon_fecCnt" },
+			{ "ponmgr gpon get rx_fec_cfg", "gpon_rx_fec_cfg" },
+			{ "ponmgr gpon get phyTransParams", "gpon_phyTransParams" },
+			{ "ponmgr gpon get DrvPowerLevel", "gpon_DrvPowerLevel" },
+			{ "ponmgr gpon get rsp_time", "gpon_rsp_time" },
+			{ "ponmgr gpon get eqd_off", "gpon_eqd_off" },
+			{ "ponmgr gpon get spf", "gpon_spf" },
+			{ "ponmgr gpon get tod_info", "gpon_tod_info" },
 		}) },
 	}
 
-	local counter_defs = {}
-	for _, t in ipairs(tcont_entries) do
-		counter_defs[#counter_defs + 1] = {
-			"TCONT index " .. t.index .. " / Alloc-ID " .. t.alloc,
-			"/userfs/bin/ponmgr gpon get TcontCnt " .. t.index,
-		}
-	end
-	for _, g in ipairs(gem_entries) do
-		counter_defs[#counter_defs + 1] = {
-			"GEM Port " .. g.gem,
-			"/userfs/bin/ponmgr gpon get GemCnt " .. g.gem,
-		}
-	end
-	local channel_counters = #counter_defs > 0 and command_dump(counter_defs)
-		or "当前没有可查询的 TCONT/GEM 实例。"
+	local channel_counters = "为避免页面按实例并发直调 ponmgr，已停止逐 TCONT/GEM 即时查询；汇总计数见上方 xpon-app 单写者缓存。"
 	local gem_down_text = klog_show("/userfs/bin/gponmapcmd showDownRule")
 	local down_total, gem_down_rows = parse_gem_down(gem_down_text)
 	local gem_queue_text = klog_show("/userfs/bin/gponmapcmd showQueueRule")
 	local gem_queue_rows = parse_gem_queue(gem_queue_text)
 	local analysis = build_gem_vlan_analysis({
 		up_text = gem_up_text, down_text = gem_down_text, queue_text = gem_queue_text,
+		gp_out = gemport_text, omcc_out = omcc_text,
 		me84_out = me84, me171_out = me171,
 	})
 	local interaction_rows = {
@@ -3353,7 +3358,7 @@ function action_moci()
 			purpose = "ONU 进入 O5 后建立 OMCI 管理控制通道；OMCC alloc-id 通常来自 ONU-ID，OMCI GEM 承载后续 OMCI 消息。",
 			values = "ONU State=" .. (state_id and ("O" .. state_id) or "未读取")
 				.. "；OMCC alloc=" .. (alloc_id or "?") .. "；OMCI GEM=" .. (omcc_gem or "?"),
-			evidence = "ponmgr gpon get info / omcc",
+			evidence = "xpon-app ponmgr 快照：info / omcc",
 			level = (state_id == "5" or (alloc_id and omcc_gem)) and "ok" or "warn",
 		},
 		{
@@ -3392,7 +3397,7 @@ function action_moci()
 			purpose = "OLT 建立上行业务承载：TCONT 对应 alloc-id，GEM Port 对应业务/组播/OMCC 通道。",
 			values = "TCONT=" .. tostring(#tcont_entries) .. " 个；GEM=" .. tostring(#gem_entries)
 				.. " 个；OMCC GEM=" .. (omcc_gem or "?"),
-			evidence = "ponmgr gpon get tcont / gemport",
+			evidence = "xpon-app ponmgr 快照：tcont / gemport",
 			level = (#tcont_entries > 0 or #gem_entries > 0) and "ok" or "warn",
 		},
 		{
@@ -3554,7 +3559,6 @@ function action_oam()
 	local oam_ready = sh("pidof epon_oam >/dev/null 2>&1 && echo yes || echo no") == "yes"
 	local status_file = sh("cat /tmp/epon_reg_auth_status 2>/dev/null")
 	local oam_log = sh("tail -160 /tmp/oam_debug 2>/dev/null")
-	local llid_live = sh("timeout 2 /userfs/bin/ponmgr epon get llid_info 2>/dev/null")
 	local llid_proc = sh("cat /proc/epon/debug 2>/dev/null")
 	local klog = sh("dmesg 2>/dev/null | grep -Ei 'epon|mpcp|oam|register|llid|auth' | tail -160")
 	local olt_mac = epon_olt_mac()
@@ -3572,12 +3576,12 @@ function action_oam()
 		return ""
 	end
 	local onu_mac = first_nonempty(
-		runtime_mac(sh("timeout 2 /userfs/bin/ponmgr epon get devMac 2>/dev/null")),
+		runtime_mac(ponmgr_cache("epon_devMac")),
 		runtime_mac(sh("cat /sys/class/net/oam/address 2>/dev/null")),
 		runtime_mac(sh("awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ethaddr=/) { print substr($i, 9); exit } }' /proc/cmdline 2>/dev/null")),
 		runtime_mac(sh("fw_printenv -n ethaddr 2>/dev/null")),
 		runtime_mac(uget("xpon", "device", "epon_pon_mac") or ""))
-	local llid_text = table.concat({ llid_live, llid_proc, status_file, klog }, "\n")
+	local llid_text = table.concat({ status_file, llid_proc, klog }, "\n")
 	local llid_token = llid_text:lower():match("llid%s*[:=]%s*([%w]+)")
 		or llid_text:lower():match("llid%s+(%d+)")
 		or llid_text:lower():match("llididx%s*[:=]%s*([%w]+)")
@@ -3616,7 +3620,6 @@ function action_oam()
 	local registered = (status_file:lower():match("llid") ~= nil)
 		or evidence:match("REG_AND_AUTH") ~= nil
 		or evidence:match("REG_BUT_NOT_AUTH") ~= nil
-		or llid_live:lower():match("llid") ~= nil
 	local auth_label, auth_level
 	if auth_status == 1 then
 		auth_label = "已认证（authStatus=1）"
@@ -3680,9 +3683,9 @@ function action_oam()
 	append_field("当前 PON 技术模式", "/proc/tc3162/sys_xpon_mode", show(sys_mode) .. " → " .. (pon_mode_names[sys_mode_num] or "未知"), "2/3/4/5/12 为 EPON/OAM 家族")
 	append_field("epon_oam 进程", "pidof epon_oam", oam_ready and "运行中" or "未运行", "OAM 身份字段只有进程起来后才可靠")
 	append_field("OAM 认证状态", "oamcfgCmd get authStatus", auth_status ~= nil and tostring(auth_status) or show(auth_out), auth_label)
-	append_field("MPCP 注册状态", "llid_info / 状态文件 / 内核日志", registered and "已检测到 LLID/注册证据" or "未检测到有效 LLID", llid_label)
+	append_field("MPCP 注册状态", "xpon-app LLID 缓存 / 内核日志", registered and "已检测到 LLID/注册证据" or "未检测到有效 LLID", llid_label)
 	append_field("OLT MAC", "devmem 0x1FB66390/0x1FB66394", show(olt_mac), "来自 EPON MAC 寄存器，只读")
-	append_field("EPON 注册 MAC（当前）", "ponmgr epon get devMac / oam / ethaddr", show(onu_mac), "REGISTER_REQ 使用的 ONU/MPCP MAC")
+	append_field("EPON 注册 MAC（当前）", "xpon-app devMac 缓存 / oam / ethaddr", show(onu_mac), "REGISTER_REQ 使用的 ONU/MPCP MAC")
 	append_field("EPON 注册 MAC（配置）", "xpon.device.epon_pon_mac / pon_mac / DSD wan_mac", show(desired_mac), "留空时通常回退 DSD wan_mac")
 	append_field("oam 接口 MAC", "/sys/class/net/oam/address", show(oam_if_mac), "OAM netdev 地址，可能跟注册基准 MAC 联动")
 	append_field("pon 接口 MAC", "/sys/class/net/pon/address", show(pon_if_mac), "业务侧 pon netdev 地址")
@@ -3722,7 +3725,7 @@ function action_oam()
 			packet = "REGISTER_REQ",
 			purpose = "ONU 上报 MPCP 注册 MAC，OLT 用它识别 ONU 并测距。",
 			values = "ONU/MPCP MAC：" .. (onu_mac ~= "" and onu_mac or "未读取到"),
-			evidence = "ponmgr epon get devMac / oam netdev / ethaddr",
+			evidence = "xpon-app devMac 缓存 / oam netdev / ethaddr",
 			level = onu_mac ~= "" and "ok" or "warn",
 		},
 		{
@@ -3731,7 +3734,7 @@ function action_oam()
 			packet = "REGISTER + GATE",
 			purpose = "OLT 分配 LLID，并开始给该 LLID 授权上行时隙。",
 			values = llid_label,
-			evidence = "llid_info / /proc/epon/debug / 状态文件",
+			evidence = "xpon-app LLID 缓存 / /proc/epon/debug",
 			level = registered and "ok" or "warn",
 		},
 		{
@@ -3774,7 +3777,6 @@ function action_oam()
 
 	local raw_groups = {
 		{ title = "MPCP / LLID", body = command_dump({
-			{ "ponmgr epon get llid_info（timeout 2）", "timeout 2 /userfs/bin/ponmgr epon get llid_info" },
 			{ "/proc/epon/debug", "cat /proc/epon/debug 2>/dev/null" },
 			{ "/tmp/epon_reg_auth_status", "cat /tmp/epon_reg_auth_status 2>/dev/null" },
 		}) },
@@ -3797,7 +3799,7 @@ function action_oam()
 		interaction_rows = interaction_rows,
 		oam_fields = oam_fields,
 		raw_groups = raw_groups,
-		llid_live = llid_live,
+		llid_live = status_file,
 		llid_proc = llid_proc,
 		status_file = status_file,
 		auth_out = auth_out,
@@ -3830,16 +3832,11 @@ local function collect_status(include_details)
 		-- The 10-second poll never invokes ponmgr. It consumes the status file
 		-- maintained by xpon-app so the main MPCP label still has LLID evidence.
 		epon_llid_out = epon_status_file
-		-- Keep ponmgr out of the 10-second status poll, but allow one bounded query
-		-- while rendering the detailed view. A successful live result takes priority
-		-- over the cache; proc and kernel output remain supplementary evidence.
+		-- Details also consume the same cache. LuCI must never start a second
+		-- ponmgr reader because timeout cannot terminate an ioctl stuck in D state.
 		if include_details then
-			local epon_live = sh("timeout 2 /userfs/bin/ponmgr epon get llid_info 2>/dev/null")
 			local epon_proc = sh("cat /proc/epon/debug 2>/dev/null")
 			local epon_klog = sh("dmesg 2>/dev/null | grep -Ei 'epon|mpcp|register|llid' | tail -120")
-			if epon_live ~= "" then
-				epon_llid_out = epon_live
-			end
 			if epon_llid_out == "" then
 				epon_llid_out = epon_proc
 			elseif epon_proc ~= "" then
@@ -3852,16 +3849,16 @@ local function collect_status(include_details)
 		end
 		pon_info = epon_llid_out
 	else
-		pon_info = sh("/userfs/bin/ponmgr gpon get info 2>&1")
+		pon_info = ponmgr_cache("gpon_info")
 	end
 	local fec_out
 	local mac_cnt
 	if is_epon then
-		fec_out = "（10 秒轮询不调用 ponmgr；详情页和状态文件刷新器均使用 timeout 保护）"
+		fec_out = "（10 秒轮询不调用 ponmgr；由 xpon-app 单写者刷新器统一读取）"
 		mac_cnt = "（EPON 使用 pon 接口计数与只读内核证据）"
 	else
-		fec_out = sh("/userfs/bin/ponmgr gpon get fec_status 2>&1")
-		mac_cnt = sh("/userfs/bin/ponmgr gpon get WanCnt 2>&1")
+		fec_out = ponmgr_cache("gpon_fec_status")
+		mac_cnt = ponmgr_cache("gpon_WanCnt")
 	end
 
 	-- 光模块 DDM：收发光 dBm / BOSA 温度 / CPU 温度
@@ -3940,11 +3937,11 @@ local function collect_status(include_details)
 		and "warn" or "ok"
 
 	-- 摘要：ONU State / 认证 / OMCC / 模式 / OLT 下发（尽量取 OMCI 可查状态）
-	local omcc_out  = is_epon and "" or sh("/userfs/bin/ponmgr gpon get omcc 2>&1")
+	local omcc_out  = is_epon and "" or ponmgr_cache("gpon_omcc")
 	local alloc_id  = omcc_out:match("alloc%s+ID%s*:%s*(%d+)")
 	local gem_id    = omcc_out:match("gemport%s+ID%s*:%s*(%d+)")
-	local gemport_out = is_epon and "" or sh("/userfs/bin/ponmgr gpon get gemport 2>&1")
-	local tcont_out = is_epon and "" or sh("/userfs/bin/ponmgr gpon get tcont 2>&1")
+	local gemport_out = is_epon and "" or ponmgr_cache("gpon_gemport")
+	local tcont_out = is_epon and "" or ponmgr_cache("gpon_tcont")
 	local gem_entries = gemport_out:match("Entries%s*:%s*(%d+)")
 	local tcont_entries = is_epon and "?" or tostring(select(2, tcont_out:gsub("ALLOC ID:", "")))
 	-- GEM ↔ VLAN 关联：ponmgr GEM 表 × 上行映射（vid 列）× ME84 显式打标

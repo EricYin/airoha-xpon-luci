@@ -64,7 +64,7 @@ cat /tmp/epon_reg_auth_status
 tail -100 /tmp/oam_debug
 ```
 
-某些固件的 `ponmgr epon get llid_info` 会段错误，并在 `libxpon` 的 GPON 事件队列路径产生 `Invalid shared information`。10 秒状态轮询不会直接调用它，而是解析 `/tmp/epon_reg_auth_status` 维持主页面的 LLID/MPCP 标签；详情页只执行一次受 `timeout 2` 保护的查询，`xpon-app` 则每 30 秒用 `timeout 3` 刷新状态文件。查询失败时继续回退到状态文件、`/proc/epon/debug`、内核日志或直接抓包。
+某些固件的 `ponmgr epon get llid_info` 会段错误，并在 `libxpon` 的 GPON 事件队列路径产生 `Invalid shared information`。`ponmgr` 的 `get` 查询现在只由 `xpon-app` 单写者后台每 30 秒顺序刷新：EPON LLID/注册 MAC 写入 `/tmp/epon_reg_auth_status` 和 `/tmp/xpon_ponmgr_cache/`，GPON 的 `info/omcc/tcont/gemport/FEC/WanCnt` 及扩展诊断写入同一缓存目录。OAM、OMCI 和状态页只读这些快照，不再因打开详情或 10 秒轮询启动第二个 `ponmgr` 进程。即使某固件 ioctl 卡在 D 状态，页面也不会继续叠加调用；`timeout` 只限制可终止的用户态等待，不能杀掉 D 态内核线程。查询失败时保留上一份有效快照，并继续回退到 `/proc/epon/debug`、内核日志或直接抓包。
 
 ## 身份模板
 

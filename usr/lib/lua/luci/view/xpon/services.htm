@@ -1,4 +1,4 @@
-<%+header%><script src="<%=resource%>/view/xpon.js?v=<%=devstamp or "prod"%>"></script>
+<%+header%><script src="<%=resource%>/view/xpon.js?v=<%=devstamp or "20260827-dark"%>"></script>
 <style>
 .svc-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:10px 0}.svc-list{display:grid;gap:12px}.svc-card{border:1px solid #ccd3da;padding:12px;background:#f8fafb}.svc-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.svc-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.svc-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}.svc-fields label{display:flex;flex-direction:column;gap:4px}.svc-wide{grid-column:1/-1}.svc-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.svc-dialog{border:1px solid #ccd3da;padding:12px;margin:8px 0;background:#f8fafb}.svc-control-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.svc-control{display:flex;flex-direction:column;gap:6px}.svc-control-state{display:flex;align-items:center;gap:10px}.xpon-mcast-badge{display:inline-block;padding:2px 8px;border-radius:3px;font-weight:600}.xpon-mcast-ok{color:#237804;background:#f6ffed;border:1px solid #b7eb8f}.xpon-mcast-warn{color:#ad6800;background:#fffbe6;border:1px solid #ffe58f}.xpon-mcast-err{color:#a8071a;background:#fff1f0;border:1px solid #ffa39e}.xpon-toggle{position:relative;display:inline-block;width:42px;height:22px}.xpon-toggle input{opacity:0;width:0;height:0}.xpon-toggle span{position:absolute;inset:0;background:#9aa4ad;border-radius:11px;cursor:pointer}.xpon-toggle span:before{content:'';position:absolute;width:18px;height:18px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}.xpon-toggle input:checked+span{background:#237804}.xpon-toggle input:checked+span:before{transform:translateX(20px)}.xpon-pwset{font-size:11px;color:#237804;font-weight:600}
 @media (prefers-color-scheme: dark){
@@ -11,14 +11,14 @@
 	.xpon-toggle input:checked+span{background:#66bb6a;}
 	.xpon-pwset{color:#66bb6a;}
 }
-html.dark .svc-card,html.dark .svc-dialog{background:#1e1e1e;border-color:#3c3c3c;color:#ccc;}
-html.dark .xpon-mcast-ok{color:#66bb6a;background:#1f3524;border-color:#3a5c40;}
-html.dark .xpon-mcast-warn{color:#ffa726;background:#3a3020;border-color:#6b5630;}
-html.dark .xpon-mcast-err{color:#ef5350;background:#3a2020;border-color:#6b3030;}
-html.dark .xpon-toggle span{background:#4a4a4a;}
-html.dark .xpon-toggle span:before{background:#ccc;}
-html.dark .xpon-toggle input:checked+span{background:#66bb6a;}
-html.dark .xpon-pwset{color:#66bb6a;}
+html.xpon-dark .svc-card,html.xpon-dark .svc-dialog{background:#1e1e1e;border-color:#3c3c3c;color:#ccc;}
+html.xpon-dark .xpon-mcast-ok{color:#66bb6a;background:#1f3524;border-color:#3a5c40;}
+html.xpon-dark .xpon-mcast-warn{color:#ffa726;background:#3a3020;border-color:#6b5630;}
+html.xpon-dark .xpon-mcast-err{color:#ef5350;background:#3a2020;border-color:#6b3030;}
+html.xpon-dark .xpon-toggle span{background:#4a4a4a;}
+html.xpon-dark .xpon-toggle span:before{background:#ccc;}
+html.xpon-dark .xpon-toggle input:checked+span{background:#66bb6a;}
+html.xpon-dark .xpon-pwset{color:#66bb6a;}
 </style>
 <% local m=multicast or {} %><h2 name="content">PON 设置 - 业务</h2>
 <% if saved then %><div class="alert-message">受管业务配置已保存，网络正在重载。</div><% end %>

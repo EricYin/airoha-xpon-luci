@@ -1,4 +1,5 @@
 <%+header%>
+<script type="text/javascript" src="<%=resource%>/view/xpon.js?v=<%=devstamp or "20260827-dark"%>"></script>
 <style>
 .oam-cardrow{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;}
 .oam-card{flex:1 1 220px;border:1px solid #ddd;border-left:4px solid #999;border-radius:3px;background:#fff;padding:7px 9px;box-sizing:border-box;}
@@ -40,22 +41,22 @@ details.oam-sec[open] summary{border-bottom:1px solid #ddd;}
 	details.oam-sec summary:hover,details.oam-sec[open] summary{background:#2d2d2d;}
 	details.oam-sec[open] summary{border-bottom-color:#3c3c3c;}
 }
-html.dark .oam-card{background:#1e1e1e;border-color:#3c3c3c;}
-html.dark .oam-card-ok{border-left-color:#66bb6a;}
-html.dark .oam-card-warn{border-left-color:#ffa726;}
-html.dark .oam-card-err{border-left-color:#ef5350;}
-html.dark .oam-card-info{border-left-color:#78909c;}
-html.dark .oam-label{color:#adb5bd;}
-html.dark .oam-value{color:#ccc;}
-html.dark .oam-pill-ok{background:#66bb6a;color:#111;}
-html.dark .oam-pill-warn{background:#ffa726;color:#111;}
-html.dark .oam-pill-err{background:#ef5350;color:#111;}
-html.dark .oam-dump{background:#252526;border-color:#3c3c3c;color:#ccc;}
-html.dark .oam-na{color:#8a8a8a;}
-html.dark details.oam-sec{background:#1e1e1e;border-color:#3c3c3c;}
-html.dark details.oam-sec summary{color:#ccc;background:#252526;}
-html.dark details.oam-sec summary:hover,html.dark details.oam-sec[open] summary{background:#2d2d2d;}
-html.dark details.oam-sec[open] summary{border-bottom-color:#3c3c3c;}
+html.xpon-dark .oam-card{background:#1e1e1e;border-color:#3c3c3c;}
+html.xpon-dark .oam-card-ok{border-left-color:#66bb6a;}
+html.xpon-dark .oam-card-warn{border-left-color:#ffa726;}
+html.xpon-dark .oam-card-err{border-left-color:#ef5350;}
+html.xpon-dark .oam-card-info{border-left-color:#78909c;}
+html.xpon-dark .oam-label{color:#adb5bd;}
+html.xpon-dark .oam-value{color:#ccc;}
+html.xpon-dark .oam-pill-ok{background:#66bb6a;color:#111;}
+html.xpon-dark .oam-pill-warn{background:#ffa726;color:#111;}
+html.xpon-dark .oam-pill-err{background:#ef5350;color:#111;}
+html.xpon-dark .oam-dump{background:#252526;border-color:#3c3c3c;color:#ccc;}
+html.xpon-dark .oam-na{color:#8a8a8a;}
+html.xpon-dark details.oam-sec{background:#1e1e1e;border-color:#3c3c3c;}
+html.xpon-dark details.oam-sec summary{color:#ccc;background:#252526;}
+html.xpon-dark details.oam-sec summary:hover,html.xpon-dark details.oam-sec[open] summary{background:#2d2d2d;}
+html.xpon-dark details.oam-sec[open] summary{border-bottom-color:#3c3c3c;}
 </style>
 <% local function esc(s) return (tostring(s or ''):gsub('&','&amp;'):gsub('<','&lt;'):gsub('>','&gt;')) end %>
 
