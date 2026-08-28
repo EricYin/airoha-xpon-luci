@@ -135,8 +135,8 @@ repair_runtime_drift() {
 		repaired="$repaired onuVersion/omccVersion"
 	fi
 	if [ "$need_sn" -eq 1 ]; then
-		"$OMCI" set vendorId "$vendor" >/dev/null 2>&1
 		"$OMCI" set sn "$sn" >/dev/null 2>&1
+		"$OMCI" set vendorId "$vendor" >/dev/null 2>&1
 		repaired="$repaired sn/vendorId"
 	fi
 	if [ "$need_loid" -eq 1 ]; then

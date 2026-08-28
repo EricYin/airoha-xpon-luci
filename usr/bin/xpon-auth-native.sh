@@ -285,8 +285,10 @@ if [ "$mode" = "EPON" ]; then
 else
 	[ -x "$OMCI" ] || { echo "omcicfgCmd 不存在或不可执行" >> "$LOG"; exit 127; }
 	echo "GPON identity: auth=$auth auth_method=${auth_method:-none} sn=$valid_sn vendor_id=$vendor onu_version=${onuver:-skip}" >> "$LOG"
-	[ -n "$vendor" ] && run "$OMCI" set vendorId "$vendor"
 	[ -n "$valid_sn" ] && run "$OMCI" set sn "$valid_sn"
+	# 部分固件路径在接受 SN 时会刷新 Vendor ID；最后写 vendorId，
+	# 确保 omcicfgCmd get vendorId 等于配置 SN 的前四位。
+	[ -n "$vendor" ] && run "$OMCI" set vendorId "$vendor"
 	case "$auth" in
 		LOID|loid)
 			[ -n "$loid" ] && run "$OMCI" set loid "$loid"
@@ -299,8 +301,8 @@ else
 	[ -n "$spec" ] && run "$OMCI" set specVer "$spec"
 
 	# 命令返回 0 不足以证明共享配置已更新；重启前必须核对当前生效值。
-	verify vendorId "$vendor"
 	verify sn "$valid_sn"
+	verify vendorId "$vendor"
 	case "$auth" in
 		LOID|loid) verify loid "$loid"; verify_secret loidPasswd "$loidpw" ;;
 	esac

@@ -17,6 +17,150 @@ disable_factory_uenv_autostart() {
 	fi
 }
 
+service_key_base() {
+	local access="$1" vid="$2"
+	if [ "$access" = untagged ]; then
+		printf '%s\n' untag
+		return 0
+	fi
+	case "$vid" in ''|*[!0-9]*) return 1 ;; esac
+	if ! { [ "$vid" -ge 1 ] 2>/dev/null && [ "$vid" -le 4094 ] 2>/dev/null; }; then
+		return 1
+	fi
+	printf '%s\n' "$vid"
+}
+
+service_next_key() {
+	local base="$1" var n
+	var="svc_count_v$base"
+	eval "n=\${$var:-0}"
+	n=$((n + 1))
+	eval "$var=\$n"
+	printf '%s_%s\n' "$base" "$n"
+}
+
+service_iface_name() {
+	printf 'XPON_%s\n' "$1"
+}
+
+service_pppname() {
+	local seq="${1:-1}" idx
+	case "$seq" in ''|*[!0-9]*) seq=1 ;; esac
+	[ "$seq" -ge 1 ] 2>/dev/null || seq=1
+	idx=$((seq + 7))
+	printf 'nas%d_%d\n' $((idx / 8)) $((idx % 8))
+}
+
+rename_managed_section() {
+	local old="$1" new="$2"
+	[ "$old" != "$new" ] || return 1
+	[ "$(uci -q get "network.$old.xpon_managed")" = 1 ] || return 1
+	uci -q get "network.$new" >/dev/null && return 1
+	uci rename "network.$old=$new"
+}
+
+normalize_service_names() {
+	local meta access vid base key old_key new_meta old_iface new_iface old_vlan new_vlan old_br new_br old_brname new_brname dev wan_ifaces changed=0
+	for meta in $(uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=xpon_service$/\1/p"); do
+		[ "$(uci -q get "network.$meta.xpon_managed")" = 1 ] || continue
+		access=$(uci -q get "network.$meta.access_mode")
+		[ "$access" = untagged ] || access=tagged
+		vid=$(uci -q get "network.$meta.vlan_id")
+		base=$(service_key_base "$access" "$vid") || continue
+		key=$(service_next_key "$base")
+		old_key=$(uci -q get "network.$meta.service_key")
+		[ -n "$old_key" ] || old_key=${meta#xpon_service_}
+		case "$old_key" in *[!A-Za-z0-9_]*|'') old_key="$key" ;; esac
+		new_meta="xpon_service_$key"
+		old_iface=$(uci -q get "network.$meta.interface")
+		if [ -z "$old_iface" ] || [ "$(uci -q get "network.$old_iface.xpon_managed")" != 1 ]; then
+			[ "$(uci -q get "network.xpon_$old_key.xpon_managed")" = 1 ] && old_iface="xpon_$old_key"
+			[ "$(uci -q get "network.XPON_$old_key.xpon_managed")" = 1 ] && old_iface="XPON_$old_key"
+		fi
+		new_iface=$(service_iface_name "$key")
+		old_vlan="xpon_vlan_$old_key"; new_vlan="xpon_vlan_$key"
+		old_br="xpon_bridge_$old_key"; new_br="xpon_bridge_$key"
+		old_brname="bx-$old_key"; new_brname="bx-$key"
+
+		if [ "$meta" != "$new_meta" ]; then
+			if uci -q get "network.$new_meta" >/dev/null; then
+				logger -t xpon "跳过业务命名迁移：$new_meta 已存在"
+				continue
+			fi
+			uci rename "network.$meta=$new_meta" || continue
+			meta="$new_meta"
+			changed=1
+		fi
+		if [ "$(uci -q get "network.$meta.service_key")" != "$key" ]; then
+			uci set "network.$meta.service_key=$key"; changed=1
+		fi
+		if [ "$(uci -q get "network.$meta.interface")" != "$new_iface" ]; then
+			uci set "network.$meta.interface=$new_iface"; changed=1
+		fi
+
+		if [ -n "$old_iface" ] && [ "$old_iface" != "$new_iface" ] &&
+		   [ "$(uci -q get "network.$old_iface.xpon_managed")" = 1 ]; then
+			if ! uci -q get "network.$new_iface" >/dev/null; then
+				uci rename "network.$old_iface=$new_iface" && changed=1
+			fi
+		fi
+		if [ "$(uci -q get "network.$new_iface.xpon_managed")" = 1 ]; then
+			[ "$(uci -q get "network.$new_iface.xpon_service")" = "$key" ] || { uci set "network.$new_iface.xpon_service=$key"; changed=1; }
+			dev=$(uci -q get "network.$new_iface.device")
+			[ "$dev" = "$old_brname" ] && { uci set "network.$new_iface.device=$new_brname"; changed=1; }
+		fi
+
+		rename_managed_section "$old_vlan" "$new_vlan" && changed=1
+		if [ "$(uci -q get "network.$new_vlan.xpon_managed")" = 1 ] &&
+		   [ "$(uci -q get "network.$new_vlan.xpon_service")" != "$key" ]; then
+			uci set "network.$new_vlan.xpon_service=$key"; changed=1
+		fi
+		rename_managed_section "$old_br" "$new_br" && changed=1
+		if [ "$(uci -q get "network.$new_br.xpon_managed")" = 1 ]; then
+			[ "$(uci -q get "network.$new_br.xpon_service")" = "$key" ] || { uci set "network.$new_br.xpon_service=$key"; changed=1; }
+			[ "$(uci -q get "network.$new_br.name")" = "$new_brname" ] || { uci set "network.$new_br.name=$new_brname"; changed=1; }
+		fi
+	done
+
+	[ "$changed" = 1 ] || return 0
+	uci commit network
+
+	wan_ifaces=
+	for meta in $(uci show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=xpon_service$/\1/p"); do
+		[ "$(uci -q get "network.$meta.xpon_managed")" = 1 ] || continue
+		[ "$(uci -q get "network.$meta.mode")" = routed ] || continue
+		new_iface=$(uci -q get "network.$meta.interface")
+		[ -n "$new_iface" ] && wan_ifaces="$wan_ifaces $new_iface"
+	done
+	normalize_firewall_wan "$wan_ifaces"
+	logger -t xpon "已迁移受管业务命名为 XPON_<VLAN>_<序号>"
+}
+
+normalize_firewall_wan() {
+	local wan_ifaces="$1" zone old item keep have iface changed=0
+	for zone in $(uci show firewall 2>/dev/null | sed -n "s/^firewall\.\([^.=]*\)=zone$/\1/p"); do
+		[ "$(uci -q get "firewall.$zone.name")" = wan ] && break
+		zone=
+	done
+	[ -n "$zone" ] || return 0
+	old=$(uci -q get xpon.firewall.wan_networks)
+	for item in $(uci -q get "firewall.$zone.network"); do
+		case " $old " in *" $item "*) changed=1; continue ;; esac
+		case "$item" in xpon_*|XPON_*) changed=1; continue ;; esac
+		case " $keep " in *" $item "*) ;; *) keep="$keep $item"; have="$have $item" ;; esac
+	done
+	for iface in $wan_ifaces; do
+		case " $have " in *" $iface "*) ;; *) keep="$keep $iface"; have="$have $iface"; changed=1 ;; esac
+	done
+	uci -q delete "firewall.$zone.network"
+	for item in $keep; do uci -q add_list "firewall.$zone.network=$item"; done
+	[ "$changed" = 0 ] || uci commit firewall
+	uci -q get xpon.firewall >/dev/null || uci set xpon.firewall=firewall
+	uci -q delete xpon.firewall.wan_networks
+	for iface in $wan_ifaces; do uci -q add_list "xpon.firewall.wan_networks=$iface"; done
+	uci commit xpon
+}
+
 normalize_pppoe_names() {
 	local meta iface expected current changed=0 pppoe_index=0
 
@@ -31,7 +175,7 @@ normalize_pppoe_names() {
 		[ "$(uci -q get "network.$iface.xpon_managed")" = 1 ] || continue
 		[ "$(uci -q get "network.$iface.proto")" = pppoe ] || continue
 		pppoe_index=$((pppoe_index + 1))
-		expected="nas${pppoe_index}_0"
+		expected=$(service_pppname "$pppoe_index")
 		current=$(uci -q get "network.$iface.pppname")
 		[ "$current" = "$expected" ] && continue
 		uci set "network.$iface.pppname=$expected" || continue
@@ -196,6 +340,7 @@ start() {
 	disable_factory_uenv_autostart
 	[ -f /etc/config/xpon ] || [ ! -x /etc/uci-defaults/zzz-xpon ] || /etc/uci-defaults/zzz-xpon
 	[ -f /etc/config/xpon ] || return 0
+	normalize_service_names
 	normalize_managed_lan_ports
 	normalize_pppoe_names
 	# preinit 未能读取 DSD 时再补建一次。

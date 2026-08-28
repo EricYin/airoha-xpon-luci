@@ -16,7 +16,7 @@ collect(){
   en=$(get network.$s.enable); [ "$en" = 0 ] && continue
   m=$(get network.$s.mode); [ -n "$m" ] || m=$(get network.$s.payload); m=$(printf '%s' "$m"|tr 'A-Z' 'a-z')
   case "$m" in bridged|bridge) m=bridged;; routed|route) m=routed;; *) continue;; esac
-  i=$(get network.$s.interface); [ -n "$i" ] || i="xpon_internet_$vid"; d=$(get network.$i.device)
+  i=$(get network.$s.interface); [ -n "$i" ] || i="XPON_${vid}_1"; d=$(get network.$i.device)
   printf '%s|%s|%s|%s\n' "$vid" "$i" "$m" "$d" >> "$LIST"
  done
  # 没有 xpon_service 元数据时，使用 bind_lan 兼容段。

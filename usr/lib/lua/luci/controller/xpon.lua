@@ -826,6 +826,32 @@ function auth_values()
 	return v
 end
 
+local function service_key_from_section(s)
+	local key = s.service_key or (s[".name"] or ""):match("^xpon_service_(.+)$") or s[".name"] or ""
+	if #key > 16 or not key:match("^[A-Za-z0-9_]+$") then return nil end
+	return key
+end
+
+local function service_key_base(access_mode, vlan_id)
+	if access_mode == "untagged" then return "untag" end
+	local vid = tonumber(vlan_id or "")
+	if vid and vid >= 1 and vid <= 4094 then return tostring(vid) end
+	return nil
+end
+
+local function service_iface_name(key)
+	return "XPON_" .. key
+end
+
+local function service_pppname(seq)
+	-- Airoha PPE parses nasX_Y as WAN index X*8+Y. Keep the first
+	-- managed PPPoE as nas1_0, then advance through nas1_1 ... nas1_7.
+	seq = tonumber(seq) or 1
+	if seq < 1 then seq = 1 end
+	local idx = seq + 7
+	return "nas" .. tostring(math.floor(idx / 8)) .. "_" .. tostring(idx % 8)
+end
+
 local function service_values()
 	local rows, owners, untag_owner = {}, {}, nil
 	local uc = uci.cursor()
@@ -838,10 +864,9 @@ local function service_values()
 		local access_mode = s.access_mode == "untagged" and "untagged" or "tagged"
 		local vid = tonumber(s.vlan_id or "")
 		if s.xpon_managed == "1" and (access_mode == "untagged" or (vid and vid >= 1 and vid <= 4094)) then
-			local key = s.service_key or s[".name"]
-			if #key > 12 or not key:match("^[A-Za-z0-9_]+$") then key = "svc" .. tostring(#rows + 1) end
+			local key = service_key_from_section(s) or ("svc" .. tostring(#rows + 1))
 			local shared_owner = access_mode == "untagged" and untag_owner or owners[tostring(vid)]
-			local iface = s.interface or ("xpon_" .. key)
+			local iface = s.interface or service_iface_name(key)
 			local owner = shared_owner and shared_owner[".name"] == iface and shared_owner or nil
 			local raw = sh("ubus call network.interface." .. iface .. " status 2>/dev/null")
 			local up = raw:match('"up"%s*:%s*true') ~= nil
@@ -870,6 +895,7 @@ local function service_values()
 	table.sort(rows, function(a,b)
 		local av = a.access_mode == "untagged" and -1 or tonumber(a.vlan_id) or 0
 		local bv = b.access_mode == "untagged" and -1 or tonumber(b.vlan_id) or 0
+		if av == bv then return a.key < b.key end
 		return av < bv
 	end)
 	return rows
@@ -2312,8 +2338,7 @@ end
 
 local function save_services(fv)
 	local rows, count = {}, tonumber(fv("vlan_count") or "0") or 0
-	local ports, keys, mvids = {}, {}, {}
-	local next_key = 1
+	local ports, keys, mvids, key_counts = {}, {}, {}, {}
 	local allowed_type = { internet=true, tr069=true, iptv=true, voice=true, other=true }
 	local allowed_proto = { pppoe=true, dhcp=true, static=true, none=true }
 	local allowed_port = { none=true, lan1=true, lan2=true, lan3=true, lan4=true }
@@ -2332,7 +2357,7 @@ local function save_services(fv)
 		if fv("vlan_" .. i .. "_deleted") ~= "1" then
 			local p = "vlan_" .. i .. "_"
 			local row = {
-				key=fv(p.."key") or "", interface=fv(p.."interface") or "", adopt=fv(p.."adopt") == "1",
+				old_key=fv(p.."key") or "", interface=fv(p.."interface") or "", adopt=fv(p.."adopt") == "1",
 				access_mode=fv(p.."access_mode") == "untagged" and "untagged" or "tagged",
 				vlan_id=fv(p.."id") or "", priority=fv(p.."priority") or "0",
 				remark="", enable=fv(p.."enable") == "1" and "1" or "0",
@@ -2345,12 +2370,8 @@ local function save_services(fv)
 			}
 			local vid = tonumber(row.vlan_id)
 			local pri, mtu, mvid = tonumber(row.priority), tonumber(row.mtu), tonumber(row.mcast_vlan)
-			if row.key == "" or #row.key > 12 or not row.key:match("^[A-Za-z0-9_]+$") then
-				repeat row.key = "svc" .. tostring(next_key); next_key = next_key + 1 until not keys[row.key]
-			end
-			if keys[row.key] then return nil, "service_key" end
+			if row.old_key ~= "" and (#row.old_key > 32 or not row.old_key:match("^[A-Za-z0-9_]+$")) then row.old_key = "" end
 			if row.interface ~= "" and not row.interface:match("^[A-Za-z0-9_]+$") then return nil, "interface_name" end
-			keys[row.key] = true
 			if row.access_mode == "tagged" then
 				if not vid or vid < 1 or vid > 4094 then return nil, "vlan" end
 				row.vlan_id = tostring(vid)
@@ -2358,6 +2379,12 @@ local function save_services(fv)
 				row.vlan_id = ""
 				row.priority = "0"
 			end
+			local base = service_key_base(row.access_mode, row.vlan_id)
+			if not base then return nil, "vlan" end
+			key_counts[base] = (key_counts[base] or 0) + 1
+			row.key = base .. "_" .. tostring(key_counts[base])
+			if keys[row.key] then return nil, "service_key" end
+			keys[row.key] = true
 			if row.access_mode == "tagged" and (not pri or pri < 0 or pri > 7) then return nil, "vlan" end
 			if not allowed_type[row.service_type] or (row.mode ~= "routed" and row.mode ~= "bridged") or not allowed_proto[row.proto] then return nil, "service_mode" end
 			if row.mode == "bridged" then row.proto = "none" end
@@ -2441,7 +2468,7 @@ local function save_services(fv)
 			for _, row in ipairs(rows) do
 				local target_dev = row.access_mode == "untagged" and "pon" or ("pon." .. row.vlan_id)
 				local adopt_this = row.adopt and s[".type"] == "interface" and s[".name"] == row.interface and s.device == target_dev
-				if not adopt_this and s[".name"] == "xpon_" .. row.key then conflict = "iface_" .. row.key end
+				if not adopt_this and (s[".name"] == service_iface_name(row.key) or s[".name"] == "xpon_" .. row.key) then conflict = "iface_" .. row.key end
 			end
 		end
 	end)
@@ -2470,7 +2497,7 @@ local function save_services(fv)
 	local pppoe_index = 0
 	for _, row in ipairs(rows) do
 		local meta = "xpon_service_" .. row.key
-		local iface = row.adopt and row.interface or ("xpon_" .. row.key)
+		local iface = row.adopt and row.interface or service_iface_name(row.key)
 		local ifdev = row.access_mode == "untagged" and "pon" or ("pon." .. row.vlan_id)
 		u:section("network", "xpon_service", meta, {
 			service_key=row.key, vlan_id=row.vlan_id, access_mode=row.access_mode, priority=row.priority, remark=row.remark,
@@ -2497,12 +2524,11 @@ local function save_services(fv)
 		if row.proto == "pppoe" then
 			pppoe_index = pppoe_index + 1
 			opts.username=row.username; opts.ipv6="auto"
-			-- 厂商 PPE 只接受 nasX_Y 形态，首条 Internet PPPoE 使用 nas1_0。
-			opts.pppname="nas" .. tostring(pppoe_index) .. "_0"
+			opts.pppname=service_pppname(pppoe_index)
 		end
 		if row.proto == "static" then opts.ipaddr=row.ipaddr; opts.netmask=row.netmask; opts.gateway=row.gateway end
 		u:section("network", "interface", iface, opts)
-		local password = row.password ~= "" and row.password or old_password[row.key] or old_password_iface[iface]
+		local password = row.password ~= "" and row.password or old_password[row.key] or old_password[row.old_key] or old_password_iface[iface] or old_password_iface[row.interface]
 		if password then u:set("network", iface, "password", password) end
 		local dns = {}; if row.dns1 ~= "" then dns[#dns+1]=row.dns1 end; if row.dns2 ~= "" then dns[#dns+1]=row.dns2 end
 		if #dns > 0 then u:set("network", iface, "peerdns", "0"); u:set_list("network", iface, "dns", dns) end
@@ -2521,7 +2547,7 @@ local function save_services(fv)
 	end
 	xu:save("xpon"); xu:commit("xpon")
 	-- 将路由业务加入 firewall wan zone。用独立清单记录本插件拥有的列表项，
-	-- 更新时只替换这些项，并顺带清除旧版本遗留的 xpon_* 接口名。
+	-- 更新时只替换这些项，并顺带清除旧版本遗留的 xpon_* / XPON_* 接口名。
 	local fu, wan_zone = uci.cursor(), nil
 	fu:foreach("firewall", "zone", function(s) if s.name == "wan" then wan_zone = s[".name"] end end)
 	if wan_zone then
@@ -2532,7 +2558,7 @@ local function save_services(fv)
 		local old_managed, drop, merged, have = as_list(xu:get("xpon", "firewall", "wan_networks")), {}, {}, {}
 		for _, n in ipairs(old_managed) do drop[n] = true end
 		for _, n in ipairs(as_list(fu:get("firewall", wan_zone, "network"))) do
-			if not drop[n] and not n:match("^xpon_") and not have[n] then merged[#merged + 1] = n; have[n] = true end
+			if not drop[n] and not n:match("^xpon_") and not n:match("^XPON_") and not have[n] then merged[#merged + 1] = n; have[n] = true end
 		end
 		for _, n in ipairs(wan_ifaces) do if not have[n] then merged[#merged + 1] = n; have[n] = true end end
 		fu:set_list("firewall", wan_zone, "network", merged)
@@ -2929,7 +2955,7 @@ function action_services()
 		port_mode = "LAN/STB 端口只能绑定到桥接业务",
 	}
 	if err and err:match("^unmanaged_conflict_") then
-		err = "未受管接口名冲突：xpon_" .. (err:match("^unmanaged_conflict_iface_(.+)$") or "")
+		err = "未受管接口名冲突：" .. service_iface_name(err:match("^unmanaged_conflict_iface_(.+)$") or "")
 	else
 		err = err_text[err] or err
 	end
@@ -2952,7 +2978,7 @@ function action_service_action()
 	uc:foreach("network", "xpon_service", function(v)
 		if v.xpon_managed == "1" and v.service_key == key then iface = v.interface end
 	end)
-	iface = iface or ("xpon_" .. key)
+	iface = iface or service_iface_name(key)
 	local s = uc:get_all("network", iface)
 	if not s or s[".type"] ~= "interface" or s.xpon_managed ~= "1" or s.xpon_service ~= key then
 		http.redirect(xpon_url("services", "err=service_owner")); return

@@ -244,8 +244,8 @@ for _, t in ipairs(v.pon_techs or {}) do
 				</div>
 				<div class="cbi-value-description">只能统一12字符，前4位为厂商代码Vendor ID，后8位为十六进制序列号。
 					<span class="xpon-epon-auth">EPON 模式：不随 OAM 下发，EPON 身份以 PON MAC / OUI 为准。</span><br />
-					当前系统生效GPON SN：<code><%=esc(rt.sn ~= "" and rt.sn or "（空）")%></code>；当前系统生效Vendor ID：<code><%=esc(v.vendor_id ~= "" and v.vendor_id or "（空）")%></code>；<br />
-					出厂Vendor ID：<code><%=esc(rt.vendor_id ~= "" and rt.vendor_id or "（空）")%></code>；出厂GPON SN（FSAN）：<code><%=esc(v.dsd_fsan ~= "" and v.dsd_fsan or "（未读取）")%></code></div>
+					当前系统生效 GPON SN：<code><%=esc(rt.sn ~= "" and rt.sn or "（空）")%></code>；Vendor ID（当前）：<code><%=esc(rt.vendor_id ~= "" and rt.vendor_id or "（空）")%></code>；<br />
+					Vendor ID（配置）：<code><%=esc(v.vendor_id ~= "" and v.vendor_id or "（空）")%></code>；出厂 GPON SN（FSAN）：<code><%=esc(v.dsd_fsan ~= "" and v.dsd_fsan or "（未读取）")%></code></div>
 			</div>
 		</div>
 

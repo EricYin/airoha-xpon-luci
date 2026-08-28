@@ -106,6 +106,31 @@ reassert_gpon_loid_after_reconfig() {
 	return 1
 }
 
+reassert_gpon_identity_after_reconfig() {
+	local want_sn want_vendor want_serial try have_sn have_vendor
+	want_sn=$(printf '%s' "$1" | tr -d '[:space:]' | tr 'a-z' 'A-Z')
+	[ "${#want_sn}" -eq 12 ] || return 0
+	want_vendor=${want_sn%????????}
+	want_serial=${want_sn#????}
+	case "$want_vendor" in *[!A-Z0-9]*|'') return 0 ;; esac
+	case "$want_serial" in *[!0-9A-F]*|'') return 0 ;; esac
+	try=0
+	while [ "$try" -lt 5 ]; do
+		sleep 1
+		$OMCI set sn "$want_sn" >/dev/null 2>&1
+		$OMCI set vendorId "$want_vendor" >/dev/null 2>&1
+		have_sn=$(omci_value sn | tr -d '[:space:]' | tr 'a-z' 'A-Z')
+		have_vendor=$(omci_value vendorId | tr -d '[:space:]' | tr 'a-z' 'A-Z')
+		if [ "$have_sn" = "$want_sn" ] && [ "$have_vendor" = "$want_vendor" ]; then
+			logger -t xpon "apply_auth: GPON reconfig 后已复写 sn='$want_sn' vendorId='$want_vendor'"
+			return 0
+		fi
+		try=$((try + 1))
+	done
+	logger -t xpon "apply_auth: GPON reconfig 后 SN/Vendor ID 复写失败 want_sn='$want_sn' want_vendor='$want_vendor' have_sn='$have_sn' have_vendor='$have_vendor'"
+	return 1
+}
+
 # 开机恢复：新版 S00xponconfig 在驱动初始化阶段直接调用本函数；旧固件
 # 仍由 S11xpon-app 在 S20network/netifd 读取配置前调用。两条路径都从
 # LuCI 持久源 /etc/config/xpon（auth 类型段 device）镜像 network.xpon_auth，
@@ -548,6 +573,7 @@ apply_auth() {
 		# 设备未运行时由 xpon-app 开机流程负责拉起，不在这里强制重启。
 		if [ -x "$OMCID" ]; then
 			$OMCID set reconfig >/dev/null 2>&1
+			reassert_gpon_identity_after_reconfig "$sn" || return 1
 			# 原厂 reconfig 会重新跑一遍 netifd/OMCI 缺省路径；LOID-only
 			# 场景下它可能短暂恢复内置 Econet。reconfig 完成后再复写一次。
 			if [ "$auth" = "loid" ]; then

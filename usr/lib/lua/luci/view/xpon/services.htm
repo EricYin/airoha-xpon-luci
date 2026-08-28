@@ -51,7 +51,7 @@ html.xpon-dark .xpon-pwset{color:#66bb6a;}
 <div class="svc-actions"><% if not s.external_owner then %><form method="post" action="services/action"><input type="hidden" name="token" value="<%=token%>"/><input type="hidden" name="service" value="<%=s.key%>"/><button name="op" value="<%=s.runtime and 'down' or 'up'%>" class="cbi-button"><%=s.runtime and '停止' or '启动'%></button></form><% else %><span class="xpon-na">接管后可启停</span><% end %><button type="button" class="cbi-button cbi-button-remove" onclick="xponVlanDelete(this)">删除</button></div>
 </div><% end %>
 </div>
-<p class="cbi-value-description">允许多个业务共用同一个 tag VLAN 或 untag 接入。LAN/STB 绑定仍仅适用于桥接业务，同一物理 LAN/STB 端口只能绑定一个业务。</p>
+<p class="cbi-value-description">允许多个业务共用同一个 tag VLAN 或 untag 接入。逻辑接口按 XPON_&lt;VLAN&gt;_&lt;序号&gt; 命名；PPPoE 运行名按厂商短格式 nas%d_%d（nas1_0 起）生成，VLAN 不写入 nas 名。LAN/STB 绑定仍仅适用于桥接业务，同一物理 LAN/STB 端口只能绑定一个业务。</p>
 <div class="cbi-page-actions"><button form="pon-service-form" type="submit" class="cbi-button cbi-button-apply">保存并重载受管业务</button></div>
 </fieldset>
 
