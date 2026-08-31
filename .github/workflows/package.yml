@@ -29,6 +29,8 @@ jobs:
           bash -n usr/bin/xpon-epon-oam-save.sh
           bash -n usr/bin/xpon-gpon-identity-watch.sh
           bash -n usr/bin/xpon-replay.sh
+          bash -n usr/bin/xg2010g-tlsfix.sh
+          bash -n etc/hotplug.d/iface/30-xg2010g-tlsfix
           bash -n etc/init.d/xpon-app
           file usr/libexec/xpon-epon-oam-tcapi-save | grep -q 'ARM aarch64'
 

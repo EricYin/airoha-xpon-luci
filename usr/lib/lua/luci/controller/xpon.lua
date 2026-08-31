@@ -839,10 +839,6 @@ local function service_key_base(access_mode, vlan_id)
 	return nil
 end
 
-local function service_iface_name(key)
-	return "XPON_" .. key
-end
-
 local function service_pppname(seq)
 	-- Airoha PPE parses nasX_Y as WAN index X*8+Y. Keep the first
 	-- managed PPPoE as nas1_0, then advance through nas1_1 ... nas1_7.
@@ -850,6 +846,19 @@ local function service_pppname(seq)
 	if seq < 1 then seq = 1 end
 	local idx = seq + 7
 	return "nas" .. tostring(math.floor(idx / 8)) .. "_" .. tostring(idx % 8)
+end
+
+local function service_iface_name(seq)
+	return service_pppname(seq)
+end
+
+local function service_iface_seq(name)
+	local bank, slot = tostring(name or ""):match("^nas([1-9][0-9]*)_([0-9]+)$")
+	bank, slot = tonumber(bank), tonumber(slot)
+	if not bank or not slot or slot > 7 then return nil end
+	local seq = bank * 8 + slot - 7
+	if seq < 1 then return nil end
+	return seq
 end
 
 local function service_values()
@@ -866,7 +875,7 @@ local function service_values()
 		if s.xpon_managed == "1" and (access_mode == "untagged" or (vid and vid >= 1 and vid <= 4094)) then
 			local key = service_key_from_section(s) or ("svc" .. tostring(#rows + 1))
 			local shared_owner = access_mode == "untagged" and untag_owner or owners[tostring(vid)]
-			local iface = s.interface or service_iface_name(key)
+			local iface = s.interface or (service_iface_seq(key) and key) or service_iface_name(#rows + 1)
 			local owner = shared_owner and shared_owner[".name"] == iface and shared_owner or nil
 			local raw = sh("ubus call network.interface." .. iface .. " status 2>/dev/null")
 			local up = raw:match('"up"%s*:%s*true') ~= nil
@@ -2404,6 +2413,31 @@ local function save_services(fv)
 		end
 	end
 	local u = uci.cursor()
+	local iface_ids, next_iface_id = {}, 1
+	for _, row in ipairs(rows) do
+		if row.adopt then
+			row.iface_name = row.interface
+		else
+			local id = service_iface_seq(row.interface)
+			if id and iface_ids[id] then id = nil end
+			if id then
+				local existing = u:get_all("network", service_iface_name(id))
+				if existing and row.interface ~= service_iface_name(id) then id = nil end
+			end
+			if not id then
+				while iface_ids[next_iface_id] or
+					(u:get_all("network", service_iface_name(next_iface_id)) and
+					 row.interface ~= service_iface_name(next_iface_id)) do
+					next_iface_id = next_iface_id + 1
+				end
+				id = next_iface_id
+				next_iface_id = next_iface_id + 1
+			end
+			iface_ids[id] = true
+			row.iface_name = service_iface_name(id)
+		end
+		row.key = row.iface_name
+	end
 	local desired_lan_devices = {}
 	for _, row in ipairs(rows) do
 		if row.enable == "1" and row.mode == "bridged" and row.lan_port ~= "none" then
@@ -2468,7 +2502,7 @@ local function save_services(fv)
 			for _, row in ipairs(rows) do
 				local target_dev = row.access_mode == "untagged" and "pon" or ("pon." .. row.vlan_id)
 				local adopt_this = row.adopt and s[".type"] == "interface" and s[".name"] == row.interface and s.device == target_dev
-				if not adopt_this and (s[".name"] == service_iface_name(row.key) or s[".name"] == "xpon_" .. row.key) then conflict = "iface_" .. row.key end
+				if not adopt_this and s[".name"] == row.iface_name then conflict = "iface_" .. row.iface_name end
 			end
 		end
 	end)
@@ -2494,37 +2528,60 @@ local function save_services(fv)
 			created_devices[s.name] = true
 		end
 	end)
-	local pppoe_index = 0
+	local default_wan, previous_default = nil, xu:get("xpon", "ppe", "default_wan_itf")
 	for _, row in ipairs(rows) do
-		local meta = "xpon_service_" .. row.key
-		local iface = row.adopt and row.interface or service_iface_name(row.key)
+		if row.iface_name == previous_default and row.enable == "1" and
+		   row.mode == "routed" and row.proto == "pppoe" and
+		   row.service_type == "internet" and service_iface_seq(row.iface_name) then
+			default_wan = row.iface_name
+			break
+		end
+	end
+	for _, row in ipairs(rows) do
+		if not default_wan and row.enable == "1" and row.mode == "routed" and row.proto == "pppoe" and
+		   row.service_type == "internet" and service_iface_seq(row.iface_name) then
+			default_wan = row.iface_name
+			break
+		end
+	end
+	if not default_wan then
+		for _, row in ipairs(rows) do
+			if row.enable == "1" and row.mode == "routed" and row.proto == "pppoe" and service_iface_seq(row.iface_name) then
+				default_wan = row.iface_name
+				break
+			end
+		end
+	end
+	for _, row in ipairs(rows) do
+		local iface = row.iface_name
 		local ifdev = row.access_mode == "untagged" and "pon" or ("pon." .. row.vlan_id)
-		u:section("network", "xpon_service", meta, {
+		u:section("network", "xpon_service", nil, {
 			service_key=row.key, vlan_id=row.vlan_id, access_mode=row.access_mode, priority=row.priority, remark=row.remark,
 			enable=row.enable, service_type=row.service_type, mode=row.mode, proto=row.proto,
 			mtu=row.mtu, username=row.username, ipaddr=row.ipaddr, netmask=row.netmask,
 			gateway=row.gateway, dns1=row.dns1, dns2=row.dns2, lan_port=row.lan_port,
-			mcast_vlan=row.mcast_vlan
+			mcast_vlan=row.mcast_vlan, interface=iface, payload=row.mode,
+			xpon_managed="1", xpon_service=row.key
 		})
-		u:set("network", meta, "interface", iface); u:set("network", meta, "payload", row.mode); u:set("network", meta, "xpon_managed", "1")
 		if row.access_mode == "tagged" and not created_devices[ifdev] then
-			local devsec = "xpon_vlan_" .. row.key
-			u:section("network", "device", devsec, { type="8021q", ifname="pon", vid=row.vlan_id, name=ifdev, mtu=row.mtu, xpon_managed="1", xpon_service=row.key })
+			u:section("network", "device", nil, { type="8021q", ifname="pon", vid=row.vlan_id, name=ifdev, mtu=row.mtu, xpon_managed="1", xpon_service=row.key })
 			created_devices[ifdev] = true
 		end
 		if row.mode == "bridged" then
-			local brsec, brname = "xpon_bridge_" .. row.key, "bx-" .. row.key
-			u:section("network", "device", brsec, { type="bridge", name=brname, xpon_managed="1", xpon_service=row.key })
+			local brname = "br-" .. row.key
+			local brsec = u:section("network", "device", nil, { type="bridge", name=brname, xpon_managed="1", xpon_service=row.key })
 			local list = { ifdev }
 			if row.enable == "1" and row.lan_port ~= "none" then list[#list + 1] = lan_port_devices[row.lan_port] end
 			u:set_list("network", brsec, "ports", list); ifdev = brname
 		end
 		local opts = { device=ifdev, proto=row.proto, auto=row.enable, mtu=row.mtu, xpon_managed="1", xpon_service=row.key }
-		if row.mode == "routed" then wan_ifaces[#wan_ifaces + 1] = iface end
+		if row.mode == "routed" then
+			wan_ifaces[#wan_ifaces + 1] = iface
+			if row.proto == "pppoe" then wan_ifaces[#wan_ifaces + 1] = iface .. "_6" end
+		end
 		if row.proto == "pppoe" then
-			pppoe_index = pppoe_index + 1
 			opts.username=row.username; opts.ipv6="auto"
-			opts.pppname=service_pppname(pppoe_index)
+			opts.pppname=iface
 		end
 		if row.proto == "static" then opts.ipaddr=row.ipaddr; opts.netmask=row.netmask; opts.gateway=row.gateway end
 		u:section("network", "interface", iface, opts)
@@ -2544,6 +2601,12 @@ local function save_services(fv)
 		xu:set_list("xpon", "lan_binding", "detached_ports", detached_list)
 	else
 		xu:delete("xpon", "lan_binding", "detached_ports")
+	end
+	ensure_section(xu, "xpon", "ppe", "ppe")
+	if default_wan then
+		xu:set("xpon", "ppe", "default_wan_itf", default_wan)
+	else
+		xu:delete("xpon", "ppe", "default_wan_itf")
 	end
 	xu:save("xpon"); xu:commit("xpon")
 	-- 将路由业务加入 firewall wan zone。用独立清单记录本插件拥有的列表项，
@@ -2905,7 +2968,7 @@ function action_save()
 	elseif page == "services" then
 		-- xpon-bind-lan.sh 先提交桥接/路由归属，再统一触发 netifd reload；
 		-- 避免先 reload 读取旧配置而与脚本 add/remove 形成竞态。
-		sys.call("( /usr/bin/xpon-bind-lan.sh all; /etc/init.d/firewall reload; /usr/bin/pon-multicast apply-all ) >/tmp/pon-services.log 2>&1 </dev/null &")
+		sys.call("( /usr/bin/xpon-bind-lan.sh all; /etc/init.d/firewall reload; /usr/bin/pon-multicast apply-all; /usr/bin/xg2010g-tlsfix.sh apply ) >/tmp/pon-services.log 2>&1 </dev/null &")
 	end
 
 	http.redirect(xpon_url(page, "saved=1"))
@@ -2955,7 +3018,7 @@ function action_services()
 		port_mode = "LAN/STB 端口只能绑定到桥接业务",
 	}
 	if err and err:match("^unmanaged_conflict_") then
-		err = "未受管接口名冲突：" .. service_iface_name(err:match("^unmanaged_conflict_iface_(.+)$") or "")
+		err = "未受管接口名冲突：" .. (err:match("^unmanaged_conflict_iface_(.+)$") or "未知")
 	else
 		err = err_text[err] or err
 	end
@@ -2978,7 +3041,10 @@ function action_service_action()
 	uc:foreach("network", "xpon_service", function(v)
 		if v.xpon_managed == "1" and v.service_key == key then iface = v.interface end
 	end)
-	iface = iface or service_iface_name(key)
+	iface = iface or (service_iface_seq(key) and key)
+	if not iface then
+		http.redirect(xpon_url("services", "err=service_owner")); return
+	end
 	local s = uc:get_all("network", iface)
 	if not s or s[".type"] ~= "interface" or s.xpon_managed ~= "1" or s.xpon_service ~= key then
 		http.redirect(xpon_url("services", "err=service_owner")); return

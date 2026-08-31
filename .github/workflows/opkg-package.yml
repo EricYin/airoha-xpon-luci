@@ -51,6 +51,8 @@ jobs:
           bash -n usr/bin/xpon-mvlan-snap.sh
           bash -n usr/bin/xpon-mvlan.sh
           bash -n usr/bin/xpon-replay.sh
+          bash -n usr/bin/xg2010g-tlsfix.sh
+          bash -n etc/hotplug.d/iface/30-xg2010g-tlsfix
           bash -n etc/init.d/pon-services
           bash -n etc/init.d/xpon-app
           bash -n etc/init.d/xponconfig

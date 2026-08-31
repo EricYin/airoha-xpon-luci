@@ -1,9 +1,10 @@
-xpon-luci 2.9 2026-08-26
+xpon-luci 2.9 2026-08-31
 auth: 认证页 Vendor ID（当前）改为直接显示 omcicfgCmd get vendorId；GPON 重放/reconfig 后最后复写 vendorId，修复保存 NBEL 后运行态仍停在 AXON 的漂移
-services: 受管业务命名改为 XPON_<VLAN>_<序号>；PPPoE 运行名统一为厂商 PPE 短格式 nas%d_%d（nas1_0 起），VLAN 不写入 nas 名
+services: 新建受管业务的 service_key/xpon_service/interface/pppname 统一为 nasX_Y；xpon_service/device 使用匿名 UCI 段，VLAN 仅保留在 pon.<VLAN>
+ppe: 首个启用的 INTERNET 路由 PPPoE 业务写入 xpon.ppe.default_wan_itf；启动重试与 iface hotplug 将对应 nasX_Y 写入 fe_default_wan_itf
 runtime: ponmgr get 改由 xpon-app 单写者按 30 秒快照刷新；OAM/OMCI/状态页面只读缓存，避免 timeout 无法终止 D 态 ioctl 导致并发锁死
 ui: XPON 页面兼容 argon 深色模式；检测 argon dark.css/LuCI data-darkmode 后启用 xpon-dark，并覆盖 alert-message 深色说明条
-services: PPPoE 运行接口名改为厂商 PPE 可识别的 nas%d_%d；首条受管 PPPoE 为 nas1_0，启动时迁移旧 ppp*/pppoe-pon* 配置
+services: 新建业务直接采用厂商 PPE 可识别的 nasX_Y，不在启动阶段迁移或改写旧接口
 auth: GPON LOID-only 空密码在 network 镜像保存为 "" 哨兵；OMCI reconfig 后立即复写 loidPasswd，并由 GPON 守护检测/修复 Econet 漂移
 epon: LOID-only 空密码严格重放时不再跳过 loidPasswd0 空值回读；有 LOID 才校验空密码，守护继续兜底修复漂移
 ui: OMCI SN Password 运行字段不再调用不存在的 ponmgr gpon get passwd，改显示配置值与最近 set passwd 下发日志
